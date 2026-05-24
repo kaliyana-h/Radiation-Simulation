@@ -1,0 +1,147 @@
+# ============================================================
+# TOPAS Parameter File
+# Geometry: Al slab + particle scorer
+# ============================================================
+#
+# Layout (along z-axis, beam travels in +z direction):
+#
+#   [Source]  -->  [Al Slab]  --gap--  [Scorer]
+#   z=-20cm       z=0cm               z=+5.5cm
+#
+# Al slab:    40 x 40 cm face, 5 cm thick (HLZ = 2.5 cm)
+# Scorer:     20 x 20 cm face, 2 cm thick (HLZ = 1.0 cm)
+#             positioned 2 cm behind the slab rear face
+#
+# ============================================================
+
+
+# ------------------------------------------------------------
+# Top-level settings
+# ------------------------------------------------------------
+i:Ts/Seed                = 1        # random seed (change for independent runs)
+i:Ts/NumberOfThreads     = 1        # increase for multi-threading
+b:Ts/PauseBeforeQuit     = "true"   # keeps visualisation window open
+
+
+# ------------------------------------------------------------
+# Physics
+# ------------------------------------------------------------
+# QGSP_BIC: suitable for proton/ion transport in this energy range.
+# "Modular" is not supported in TOPAS 3.x — use a Geant4 reference list directly.
+# Other options to discuss with UniBW: FTFP_BERT, QGSP_BIC_HP, QGSP_BIC_AllHP
+s:Ph/Default/Type = "QGSP_BIC"
+
+
+# ------------------------------------------------------------
+# World volume
+# ------------------------------------------------------------
+s:Ge/World/Type      = "TsBox"
+s:Ge/World/Material  = "G4_AIR"
+d:Ge/World/HLX       = 50.0 cm
+d:Ge/World/HLY       = 50.0 cm
+d:Ge/World/HLZ       = 50.0 cm
+b:Ge/World/Invisible = "true"
+
+
+# ------------------------------------------------------------
+# Aluminium slab
+# Centred at origin; 40 x 40 cm face, 5 cm thick
+# Front face: z = -2.5 cm   Rear face: z = +2.5 cm
+# ------------------------------------------------------------
+s:Ge/AlSlab/Type         = "TsBox"
+s:Ge/AlSlab/Parent       = "World"
+s:Ge/AlSlab/Material     = "G4_Al"
+d:Ge/AlSlab/HLX          = 20.0 cm
+d:Ge/AlSlab/HLY          = 20.0 cm
+d:Ge/AlSlab/HLZ          = 2.5 cm
+d:Ge/AlSlab/TransX       = 0.0 cm
+d:Ge/AlSlab/TransY       = 0.0 cm
+d:Ge/AlSlab/TransZ       = 0.0 cm
+s:Ge/AlSlab/Color        = "grey"
+s:Ge/AlSlab/DrawingStyle = "Wireframe"
+
+
+# ------------------------------------------------------------
+# Scorer volume (water — tissue-equivalent proxy)
+# 20 x 20 cm face, 2 cm thick
+# Slab rear face at z = +2.5 cm
+# 2 cm air gap -> scorer front face at z = +4.5 cm
+# Scorer centre: z = +5.5 cm
+# ------------------------------------------------------------
+s:Ge/ScorerBox/Type         = "TsBox"
+s:Ge/ScorerBox/Parent       = "World"
+s:Ge/ScorerBox/Material     = "G4_WATER"
+d:Ge/ScorerBox/HLX          = 10.0 cm
+d:Ge/ScorerBox/HLY          = 10.0 cm
+d:Ge/ScorerBox/HLZ          = 1.0 cm
+d:Ge/ScorerBox/TransX       = 0.0 cm
+d:Ge/ScorerBox/TransY       = 0.0 cm
+d:Ge/ScorerBox/TransZ       = 5.5 cm
+s:Ge/ScorerBox/Color        = "blue"
+s:Ge/ScorerBox/DrawingStyle = "Wireframe"
+
+
+# ------------------------------------------------------------
+# Beam position anchor (Group component)
+# Beam fires in the +z direction from this component's origin
+# ------------------------------------------------------------
+s:Ge/BeamPosition/Type   = "Group"
+s:Ge/BeamPosition/Parent = "World"
+d:Ge/BeamPosition/TransX = 0.0 cm
+d:Ge/BeamPosition/TransY = 0.0 cm
+d:Ge/BeamPosition/TransZ = -20.0 cm
+
+
+# ------------------------------------------------------------
+# Particle source
+# 200 MeV proton beam, parallel, flat circular cross-section
+# ------------------------------------------------------------
+s:So/ProtonBeam/Type                    = "Beam"
+s:So/ProtonBeam/Component               = "BeamPosition"
+s:So/ProtonBeam/BeamParticle            = "proton"
+d:So/ProtonBeam/BeamEnergy              = 200.0 MeV
+u:So/ProtonBeam/BeamEnergySpread        = 0.0
+s:So/ProtonBeam/BeamPositionDistribution = "Flat"
+s:So/ProtonBeam/BeamPositionCutoffShape  = "Ellipse"
+d:So/ProtonBeam/BeamPositionCutoffX     = 15.0 cm
+d:So/ProtonBeam/BeamPositionCutoffY     = 15.0 cm
+s:So/ProtonBeam/BeamAngularDistribution = "None"
+i:So/ProtonBeam/NumberOfHistoriesInRun  = 1000
+# Increase histories for better statistics; 10000+ recommended for production runs
+
+
+# ------------------------------------------------------------
+# Scorer 1: Fluence through scorer volume
+# Reports particles per cm^2 entering the scorer.
+# Total particle count ≈ Fluence x scorer face area (400 cm^2)
+# ------------------------------------------------------------
+s:Sc/FluenceScorer/Quantity                  = "Fluence"
+s:Sc/FluenceScorer/Component                 = "ScorerBox"
+s:Sc/FluenceScorer/OutputFile                = "fluence"
+s:Sc/FluenceScorer/OutputType                = "csv"
+s:Sc/FluenceScorer/IfOutputFileAlreadyExists = "Overwrite"
+
+
+# ------------------------------------------------------------
+# Scorer 2: Dose deposited in scorer volume
+# Useful as a secondary metric alongside particle count
+# ------------------------------------------------------------
+s:Sc/DoseScorer/Quantity                  = "DoseToMedium"
+s:Sc/DoseScorer/Component                 = "ScorerBox"
+s:Sc/DoseScorer/OutputFile                = "dose"
+s:Sc/DoseScorer/OutputType                = "csv"
+s:Sc/DoseScorer/IfOutputFileAlreadyExists = "Overwrite"
+
+
+# ------------------------------------------------------------
+# Visualisation
+# ------------------------------------------------------------
+s:Gr/MyView/Type             = "OpenGL"
+d:Gr/MyView/Theta            = 90.0 deg
+d:Gr/MyView/Phi              = 90.0 deg
+s:Gr/MyView/Projection       = "Perspective"
+d:Gr/MyView/PerspectiveAngle = 45.0 deg
+b:Gr/MyView/IncludeAxes      = "true"
+d:Gr/MyView/AxesSize         = 10.0 cm
+i:Gr/MyView/WindowSizeX      = 1200
+i:Gr/MyView/WindowSizeY      = 600

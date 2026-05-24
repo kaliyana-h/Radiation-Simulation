@@ -1,0 +1,81 @@
+# Proton beam irradiating an aluminium sheet
+# Beam fires in -Z by default from origin
+# Sheet placed at Z=-30cm, offset in X so beam path is visible from side
+
+# World Volume
+s:Ge/World/Material = "Vacuum"
+d:Ge/World/HLX      = 1.0 m
+d:Ge/World/HLY      = 1.0 m
+d:Ge/World/HLZ      = 1.0 m
+b:Ge/World/Invisible = "True"
+
+# Aluminium Sheet - at Z=-30cm (in path of beam), offset in X to see beam approach
+s:Ge/AlSheet/Type          = "TsBox"
+s:Ge/AlSheet/Parent        = "World"
+s:Ge/AlSheet/Material      = "G4_Al"
+d:Ge/AlSheet/HLX           = 10.0 cm
+d:Ge/AlSheet/HLY           = 10.0 cm
+d:Ge/AlSheet/HLZ           = 0.5 cm
+d:Ge/AlSheet/TransX        = 0.0 cm
+d:Ge/AlSheet/TransY        = 0.0 cm
+d:Ge/AlSheet/TransZ        = -30.0 cm
+s:Ge/AlSheet/Color         = "red"
+s:Ge/AlSheet/DrawingStyle  = "Solid"
+
+# No BeamPosition component - use default which fires from origin in -Z
+s:So/ProtonBeam/Type                     = "Beam"
+s:So/ProtonBeam/Component                = "BeamPosition"
+s:So/ProtonBeam/BeamParticle             = "proton"
+d:So/ProtonBeam/BeamEnergy               = 48.0 MeV
+u:So/ProtonBeam/BeamEnergySpread         = 0.0
+s:So/ProtonBeam/BeamPositionDistribution = "Flat"
+s:So/ProtonBeam/BeamPositionCutoffShape  = "Rectangle"
+d:So/ProtonBeam/BeamPositionCutoffX      = 5.0 cm
+d:So/ProtonBeam/BeamPositionCutoffY      = 5.0 cm
+s:So/ProtonBeam/BeamAngularDistribution  = "None"
+ic:So/ProtonBeam/NumberOfHistoriesInRun  = 100
+
+# Default BeamPosition component at origin
+s:Ge/BeamPosition/Type     = "Group"
+s:Ge/BeamPosition/Parent   = "World"
+d:Ge/BeamPosition/TransX   = 0.0 cm
+d:Ge/BeamPosition/TransY   = 0.0 cm
+d:Ge/BeamPosition/TransZ   = 0.0 cm
+
+# Dose Scorer
+s:Sc/DoseScorer/Quantity                   = "DoseToMedium"
+s:Sc/DoseScorer/Component                  = "AlSheet"
+b:Sc/DoseScorer/OutputToConsole            = "False"
+s:Sc/DoseScorer/OutputFile                 = "ProtonAlDose"
+s:Sc/DoseScorer/OutputType                 = "csv"
+i:Sc/DoseScorer/XBins                      = 1
+i:Sc/DoseScorer/YBins                      = 1
+i:Sc/DoseScorer/ZBins                      = 10
+s:Sc/DoseScorer/IfOutputFileAlreadyExists  = "Overwrite"
+
+# Physics
+sv:Ph/Default/Modules = 1 "g4em-standard_opt0"
+
+# Visualisation - Theta=90, Phi=0 gives a pure side view along X axis
+# so Z axis goes left-right and beam path is fully visible
+s:Gr/ViewA/Type                   = "OpenGL"
+i:Gr/ViewA/WindowSizeX            = 1024
+i:Gr/ViewA/WindowSizeY            = 768
+b:Gr/ViewA/IncludeAxes            = "True"
+b:Gr/ViewA/IncludeTrajectories    = "True"
+b:Gr/ViewA/IncludeStepPoints      = "True"
+b:Gr/ViewA/UseSmoothTrajectories  = "False"
+d:Gr/ViewA/AxesSize               = 10. cm
+s:Gr/ViewA/CenterOn               = "AlSheet"
+d:Gr/ViewA/Theta                  = 55 deg
+d:Gr/ViewA/Phi                    = 20 deg
+s:Gr/ViewA/Projection             = "Perspective"
+d:Gr/ViewA/PerspectiveAngle       = 30 deg
+u:Gr/ViewA/Zoom                   = 2.
+
+s:Gr/ViewA/ColorBy                  = "Generation"
+sv:Gr/ViewA/ColorByGenerationColors = 2 "blue" "red"
+
+s:Gr/RefreshEvery = "Run"
+b:Ts/PauseBeforeQuit            = "True"
+i:Ts/ShowHistoryCountAtInterval = 1
