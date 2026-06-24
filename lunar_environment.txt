@@ -1,0 +1,94 @@
+# ============================================================
+# lunar_environment.txt  —  REDMoon lunar surface environment
+# ------------------------------------------------------------
+# Self-contained include defining the matched pair this sim needs:
+#
+#   (1) FTFP_BERT_HP physics  — high-precision (HP) neutron
+#       transport <20 MeV (G4NDL), needed because the secondary
+#       neutron field inside the regolith dominates the dose
+#       behind shielding. Bertini cascade <10 GeV, Fritiof above.
+#
+#   (2) A realistic Apollo-17 high-Ti mare regolith material
+#       (Taurus-Littrow), not the old pure-SiO2 proxy.
+#
+#   (3) The REDMoon 4-layer density profile (Dobynde & Guo 2021,
+#       doi:10.1029/2021JE006930), collapsed to 3 distinct slabs
+#       because their layers 3 & 4 share rho = 1.78 g/cm3:
+#         0  -> 22 cm   rho = 1.76 g/cm3
+#         22 -> 49 cm   rho = 2.11 g/cm3   (compacted band)
+#         49 -> 300 cm  rho = 1.78 g/cm3   (to saturation depth)
+#       Top face at Z = 0 (habitat floor level); 700 cm XY half-width.
+#
+# Pull into a habitat file with:  includeFile = lunar_environment.txt
+#
+# PHYSICS NOTE: the host habitat file must set the physics list
+# ABSOLUTELY in its own top level —
+#     s:Ph/Default/Type = "FTFP_BERT_HP"
+# It is NOT set here: with the GCR source also included, two include
+# chains touching Ph/Default/Type without a top-file absolute value
+# is a TOPAS error. A top-file absolute setting overrides cleanly.
+# Regenerate notes / source: see make_source.py + project memory.
+# ============================================================
+
+# ---- Regolith composition ---------------------------------
+# Elemental mass fractions for Apollo-17 high-Ti mare soil,
+# reduced from the major-oxide assay (SiO2 39.9, TiO2 9.4,
+# Al2O3 11.3, FeO 17.5, MgO 9.6, CaO 10.7, Na2O 0.35 wt%) to the
+# 8 dominant elements and renormalised to 1.0. Same composition
+# at three densities -> three materials (TsBox needs a material
+# per density). Note the high Ti/Fe content (mare basalt) vs the
+# old quartz proxy: heavier nuclei shift the secondary spectrum.
+
+s:Ma/LunarReg176/State        = "Solid"
+d:Ma/LunarReg176/Density      = 1.76 g/cm3
+sv:Ma/LunarReg176/Components  = 8 "Oxygen" "Sodium" "Magnesium" "Aluminum" "Silicon" "Calcium" "Titanium" "Iron"
+uv:Ma/LunarReg176/Fractions   = 8 0.4184 0.0026 0.0585 0.0604 0.1885 0.0773 0.0569 0.1374
+
+s:Ma/LunarReg211/State        = "Solid"
+d:Ma/LunarReg211/Density      = 2.11 g/cm3
+sv:Ma/LunarReg211/Components  = 8 "Oxygen" "Sodium" "Magnesium" "Aluminum" "Silicon" "Calcium" "Titanium" "Iron"
+uv:Ma/LunarReg211/Fractions   = 8 0.4184 0.0026 0.0585 0.0604 0.1885 0.0773 0.0569 0.1374
+
+s:Ma/LunarReg178/State        = "Solid"
+d:Ma/LunarReg178/Density      = 1.78 g/cm3
+sv:Ma/LunarReg178/Components  = 8 "Oxygen" "Sodium" "Magnesium" "Aluminum" "Silicon" "Calcium" "Titanium" "Iron"
+uv:Ma/LunarReg178/Fractions   = 8 0.4184 0.0026 0.0585 0.0604 0.1885 0.0773 0.0569 0.1374
+
+# ---- Layer 1:  0 -> -22 cm  (rho 1.76) --------------------
+s:Ge/RegolithL1/Type         = "TsBox"
+s:Ge/RegolithL1/Parent       = "World"
+s:Ge/RegolithL1/Material     = "LunarReg176"
+d:Ge/RegolithL1/HLX          = 700.0 cm
+d:Ge/RegolithL1/HLY          = 700.0 cm
+d:Ge/RegolithL1/HLZ          = 11.0 cm
+d:Ge/RegolithL1/TransX       = 0.0 cm
+d:Ge/RegolithL1/TransY       = 0.0 cm
+d:Ge/RegolithL1/TransZ       = -11.0 cm
+s:Ge/RegolithL1/Color        = "yellow"
+s:Ge/RegolithL1/DrawingStyle = "Solid"
+
+# ---- Layer 2:  -22 -> -49 cm  (rho 2.11, compacted) -------
+s:Ge/RegolithL2/Type         = "TsBox"
+s:Ge/RegolithL2/Parent       = "World"
+s:Ge/RegolithL2/Material     = "LunarReg211"
+d:Ge/RegolithL2/HLX          = 700.0 cm
+d:Ge/RegolithL2/HLY          = 700.0 cm
+d:Ge/RegolithL2/HLZ          = 13.5 cm
+d:Ge/RegolithL2/TransX       = 0.0 cm
+d:Ge/RegolithL2/TransY       = 0.0 cm
+d:Ge/RegolithL2/TransZ       = -35.5 cm
+s:Ge/RegolithL2/Color        = "orange"
+s:Ge/RegolithL2/DrawingStyle = "Solid"
+
+# ---- Layer 3:  -49 -> -300 cm  (rho 1.78, to saturation) --
+s:Ge/RegolithL3/Type         = "TsBox"
+s:Ge/RegolithL3/Parent       = "World"
+s:Ge/RegolithL3/Material     = "LunarReg178"
+d:Ge/RegolithL3/HLX          = 700.0 cm
+d:Ge/RegolithL3/HLY          = 700.0 cm
+d:Ge/RegolithL3/HLZ          = 125.5 cm
+d:Ge/RegolithL3/TransX       = 0.0 cm
+d:Ge/RegolithL3/TransY       = 0.0 cm
+d:Ge/RegolithL3/TransZ       = -174.5 cm
+s:Ge/RegolithL3/Color        = "brown"
+s:Ge/RegolithL3/DrawingStyle = "Solid"

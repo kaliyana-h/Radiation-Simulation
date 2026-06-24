@@ -1,0 +1,55 @@
+/* Radiation Simulation Tool -- dark theme, red-orange accent.
+   Lives in assets/ so Dash auto-serves it (index_string was unreliable). */
+
+body { margin: 0; background: #0a0d12;
+       font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: #222a34; border-radius: 6px; }
+
+/* ---- sliders (rc-slider) ---- */
+.rc-slider-track { background-color: #f24f3d !important; }
+.rc-slider-handle,
+.rc-slider-handle:hover,
+.rc-slider-handle:active,
+.rc-slider-handle-click-focused:focus {
+    border-color: #f24f3d !important; background: #f24f3d !important;
+    box-shadow: none !important; opacity: 1 !important; }
+.rc-slider-rail { background-color: #2a313b !important; }
+.rc-slider-dot { border-color: #2a313b !important; background: #11161d !important; }
+.rc-slider-dot-active { border-color: #f24f3d !important; }
+.rc-slider-mark-text { color: #b8c2cf !important; font-size: 10px !important; }
+
+/* ---- dropdowns (dcc.Dropdown -> react-select v1 classes) ---- */
+.Select-control,
+.is-open > .Select-control,
+.is-focused > .Select-control {
+    background: #0b0f15 !important; border: 1px solid #222a34 !important;
+    color: #e6edf3 !important; border-radius: 6px !important; }
+.Select-value-label,
+.Select--single > .Select-control .Select-value,
+.Select-placeholder,
+.Select-input > input { color: #e6edf3 !important; }
+.Select-menu-outer {
+    background: #0e131a !important; border: 1px solid #222a34 !important; }
+.VirtualizedSelectOption, .Select-option {
+    background: #0e131a !important; color: #e6edf3 !important; }
+.VirtualizedSelectFocusedOption, .Select-option.is-focused {
+    background: #1a222d !important; }
+.Select-arrow { border-color: #8b97a7 transparent transparent !important; }
+
+/* ---- native radios / checkboxes ---- */
+input[type="radio"], input[type="checkbox"] { accent-color: #f24f3d; }
+
+/* fallback: every label / option text stays light on the dark theme
+   (Dash RadioItems & Checklist labels do not inherit the container colour) */
+label { color: #e6edf3; }
+.dash-radio-items label, .dash-checklist label { color: #e6edf3 !important; }
+
+/* ---- details disclosure ("Extra shielding layer") ---- */
+details > summary {
+    cursor: pointer; color: #e6edf3; font-size: 13px; list-style: none;
+    padding: 8px 0; user-select: none; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "\25B8  "; color: #8b97a7; }
+details[open] > summary::before { content: "\25BE  "; }

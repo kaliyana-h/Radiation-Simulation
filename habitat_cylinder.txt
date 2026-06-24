@@ -1,0 +1,237 @@
+# ============================================================
+# Lunar Habitat — Upright Cylinder
+# ============================================================
+#
+# A full cylindrical shell standing upright on the lunar surface.
+# Cylinder axis along Z. Base at Z=0 (ground level).
+# Top closed by a flat end cap at Z = HabitatHeight + WallThickness/2.
+#
+# Appearance matches dome file:
+#   HabitatBarrel + HabitatTopCap  — grey solid (the wall)
+#   OuterShell                     — yellow wireframe, just outside barrel
+#   InnerShell                     — green  wireframe, just inside  barrel
+#   Phantom                        — blue solid water sphere (crew proxy)
+#
+# GUI shielding metrics:
+#   Transmission = fluence_inside / fluence_outside
+#   Crew dose    = PhantomDose (Gy)
+#
+# NOTE: HabitatHalfHeight and TopCapZ are hardcoded derived values.
+# Update them manually if HabitatHeight or WallThickness change:
+#   HabitatHalfHeight = HabitatHeight / 2
+#   TopCapZ           = HabitatHeight + WallThickness / 2
+# ============================================================
+
+
+# ------------------------------------------------------------
+# Top-level settings
+# ------------------------------------------------------------
+i:Ts/Seed            = 1
+i:Ts/NumberOfThreads = 1
+b:Ts/PauseBeforeQuit = "true"
+
+
+# ------------------------------------------------------------
+# Physics
+# ------------------------------------------------------------
+s:Ph/Default/Type = "FTFP_BERT_HP"   # REDMoon neutron transport (see lunar_environment.txt)
+
+
+# ------------------------------------------------------------
+# World volume
+# ------------------------------------------------------------
+s:Ge/World/Type      = "TsBox"
+s:Ge/World/Material  = "Vacuum"
+d:Ge/World/HLX       = 1200.0 cm
+d:Ge/World/HLY       = 1200.0 cm
+d:Ge/World/HLZ       = 1200.0 cm
+b:Ge/World/Invisible = "true"
+
+
+# ============================================================
+# GUI-FACING PARAMETERS
+# ============================================================
+s:Ge/DomeMaterial       = "G4_POLYETHYLENE"
+d:Ge/HabitatInnerRadius = 400.0 cm
+d:Ge/WallThickness      = 5.0 cm
+d:Ge/HabitatHeight      = 600.0 cm
+
+# Hardcoded derived values — update if HabitatHeight or WallThickness change
+d:Ge/HabitatHalfHeight  = 300.0 cm   # = HabitatHeight / 2
+d:Ge/TopCapZ            = 602.5 cm   # = HabitatHeight + WallThickness / 2
+
+
+# ============================================================
+# DERIVED PARAMETERS
+# ============================================================
+d:Ge/HabitatOuterRadius = Ge/HabitatInnerRadius + Ge/WallThickness cm
+
+d:Ge/OuterShellRMin = Ge/HabitatOuterRadius + 1.0 cm
+d:Ge/OuterShellRMax = Ge/HabitatOuterRadius + 3.0 cm
+d:Ge/InnerShellRMax = Ge/HabitatInnerRadius - 1.0 cm
+d:Ge/InnerShellRMin = Ge/HabitatInnerRadius - 3.0 cm
+
+
+# ------------------------------------------------------------
+# Cylinder barrel wall — grey solid
+# Base at Z=0, top at Z=HabitatHeight, centre at HalfHeight.
+# ------------------------------------------------------------
+iv:Gr/Color/DomeGlass = 4 170 170 170 60
+
+s:Ge/HabitatBarrel/Type         = "TsCylinder"
+s:Ge/HabitatBarrel/Parent       = "World"
+s:Ge/HabitatBarrel/Material     = Ge/DomeMaterial
+d:Ge/HabitatBarrel/RMin         = Ge/HabitatInnerRadius cm
+d:Ge/HabitatBarrel/RMax         = Ge/HabitatOuterRadius cm
+d:Ge/HabitatBarrel/HL           = Ge/HabitatHalfHeight cm
+d:Ge/HabitatBarrel/SPhi         = 0.0 deg
+d:Ge/HabitatBarrel/DPhi         = 360.0 deg
+d:Ge/HabitatBarrel/TransX       = 0.0 cm
+d:Ge/HabitatBarrel/TransY       = 0.0 cm
+d:Ge/HabitatBarrel/TransZ       = Ge/HabitatHalfHeight cm
+s:Ge/HabitatBarrel/Color        = "DomeGlass"
+s:Ge/HabitatBarrel/DrawingStyle = "Solid"
+
+
+# ------------------------------------------------------------
+# Top end cap — grey solid
+# ------------------------------------------------------------
+s:Ge/HabitatTopCap/Type         = "TsCylinder"
+s:Ge/HabitatTopCap/Parent       = "World"
+s:Ge/HabitatTopCap/Material     = Ge/DomeMaterial
+d:Ge/HabitatTopCap/RMin         = 0.0 cm
+d:Ge/HabitatTopCap/RMax         = Ge/HabitatOuterRadius cm
+d:Ge/HabitatTopCap/HL           = 2.5 cm
+d:Ge/HabitatTopCap/SPhi         = 0.0 deg
+d:Ge/HabitatTopCap/DPhi         = 360.0 deg
+d:Ge/HabitatTopCap/TransX       = 0.0 cm
+d:Ge/HabitatTopCap/TransY       = 0.0 cm
+d:Ge/HabitatTopCap/TransZ       = Ge/TopCapZ cm
+s:Ge/HabitatTopCap/Color        = "DomeGlass"
+s:Ge/HabitatTopCap/DrawingStyle = "Solid"
+
+
+# ------------------------------------------------------------
+# Outer shell scorer — yellow wireframe, just outside the barrel
+# Mirrors the dome file's OuterShell pattern exactly.
+# ------------------------------------------------------------
+s:Ge/OuterShell/Type         = "TsCylinder"
+s:Ge/OuterShell/Parent       = "World"
+s:Ge/OuterShell/Material     = "G4_AIR"
+d:Ge/OuterShell/RMin         = Ge/OuterShellRMin cm
+d:Ge/OuterShell/RMax         = Ge/OuterShellRMax cm
+d:Ge/OuterShell/HL           = 302.5 cm
+d:Ge/OuterShell/SPhi         = 0.0 deg
+d:Ge/OuterShell/DPhi         = 360.0 deg
+d:Ge/OuterShell/TransX       = 0.0 cm
+d:Ge/OuterShell/TransY       = 0.0 cm
+d:Ge/OuterShell/TransZ       = 302.5 cm
+b:Ge/OuterShell/Invisible    = "true"
+
+
+# ------------------------------------------------------------
+# Inner shell scorer — green wireframe, just inside the barrel
+# ------------------------------------------------------------
+s:Ge/InnerShell/Type         = "TsCylinder"
+s:Ge/InnerShell/Parent       = "World"
+s:Ge/InnerShell/Material     = "G4_AIR"
+d:Ge/InnerShell/RMin         = Ge/InnerShellRMin cm
+d:Ge/InnerShell/RMax         = Ge/InnerShellRMax cm
+d:Ge/InnerShell/HL           = Ge/HabitatHalfHeight cm
+d:Ge/InnerShell/SPhi         = 0.0 deg
+d:Ge/InnerShell/DPhi         = 360.0 deg
+d:Ge/InnerShell/TransX       = 0.0 cm
+d:Ge/InnerShell/TransY       = 0.0 cm
+d:Ge/InnerShell/TransZ       = Ge/HabitatHalfHeight cm
+s:Ge/InnerShell/Color        = "green"
+s:Ge/InnerShell/DrawingStyle = "Wireframe"
+
+
+# ------------------------------------------------------------
+# Crew phantom — water sphere at cylinder mid-height
+# ------------------------------------------------------------
+s:Ge/Phantom/Type         = "TsSphere"
+s:Ge/Phantom/Parent       = "World"
+s:Ge/Phantom/Material     = "G4_WATER"
+d:Ge/Phantom/RMin         = 0.0 cm
+d:Ge/Phantom/RMax         = 20.0 cm
+d:Ge/Phantom/TransX       = 0.0 cm
+d:Ge/Phantom/TransY       = 0.0 cm
+d:Ge/Phantom/TransZ       = Ge/HabitatHalfHeight cm
+s:Ge/Phantom/Color        = "blue"
+s:Ge/Phantom/DrawingStyle = "Solid"
+
+
+# ------------------------------------------------------------
+# Lunar surface environment  (REDMoon 4-layer regolith + HP physics)
+# Defined in the shared, self-contained include below. It sets
+# Ph/Default/Type = FTFP_BERT_HP and builds RegolithL1/L2/L3.
+# Retune the regolith/physics there, once, for all habitats.
+# ------------------------------------------------------------
+includeFile = lunar_environment.txt
+
+
+# ============================================================
+# GCR primary source  (generated by make_source.py)
+# ------------------------------------------------------------
+# Isotropic upper-hemisphere field, solid-angle (Lambert) weighted,
+# with a force-field solar-minimum GCR proton spectrum.
+# Replaces the old 17 monoenergetic converging-proxy sources.
+# Regenerate / retune with, e.g.:
+#     python3 make_source.py --rings 5 --azimuth 8 --phi 400
+# ============================================================
+
+# BeamRadius (sky-dome source distance) and BeamSpot (per-source disc radius,
+# sized to cover the whole habitat footprint) are defined INSIDE
+# gcr_source.txt: an included file cannot read parameters from its host, so
+# they live in the include. Retune there via make_source.py --beam-radius /
+# --beam-spot, then regenerate.
+
+includeFile = gcr_source.txt
+
+
+# ------------------------------------------------------------
+# Scorer A: Fluence just outside barrel wall
+# ------------------------------------------------------------
+s:Sc/OutsideWallFluence/Quantity                  = "Fluence"
+s:Sc/OutsideWallFluence/Component                 = "OuterShell"
+s:Sc/OutsideWallFluence/OutputFile                = "cylinder_fluence_outside"
+s:Sc/OutsideWallFluence/OutputType                = "csv"
+s:Sc/OutsideWallFluence/IfOutputFileAlreadyExists = "Overwrite"
+
+
+# ------------------------------------------------------------
+# Scorer B: Fluence just inside barrel wall
+# ------------------------------------------------------------
+s:Sc/InsideWallFluence/Quantity                  = "Fluence"
+s:Sc/InsideWallFluence/Component                 = "InnerShell"
+s:Sc/InsideWallFluence/OutputFile                = "cylinder_fluence_inside"
+s:Sc/InsideWallFluence/OutputType                = "csv"
+s:Sc/InsideWallFluence/IfOutputFileAlreadyExists = "Overwrite"
+
+
+# ------------------------------------------------------------
+# Scorer C: Absorbed dose at crew position
+# ------------------------------------------------------------
+s:Sc/PhantomDose/Quantity                  = "DoseToMedium"
+s:Sc/PhantomDose/Component                 = "Phantom"
+s:Sc/PhantomDose/OutputFile                = "cylinder_dose"
+s:Sc/PhantomDose/OutputType                = "csv"
+s:Sc/PhantomDose/IfOutputFileAlreadyExists = "Overwrite"
+
+
+# ------------------------------------------------------------
+# Visualisation
+# ------------------------------------------------------------
+s:Gr/MyView/Type                = "OpenGL"
+uv:Gr/MyView/UpVector           = 3 0.0 0.0 1.0
+d:Gr/MyView/Theta               = 72.0 deg
+d:Gr/MyView/Phi                 = 25.0 deg
+s:Gr/MyView/Projection          = "Perspective"
+d:Gr/MyView/PerspectiveAngle    = 30.0 deg
+b:Gr/MyView/IncludeAxes         = "true"
+d:Gr/MyView/AxesSize            = 500.0 cm
+b:Gr/MyView/IncludeTrajectories = "true"
+i:Gr/MyView/TrajectoryLineWidth = 1
+i:Gr/MyView/WindowSizeX         = 1500
+i:Gr/MyView/WindowSizeY         = 1000

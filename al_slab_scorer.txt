@@ -3,10 +3,11 @@
 # Geometry: Al slab + particle scorer
 # ============================================================
 #
-# Layout (along z-axis, beam travels in +z direction):
+# TOPAS Beam sources fire in the -Z direction by default.
+# Layout (beam travels in -z direction):
 #
 #   [Source]  -->  [Al Slab]  --gap--  [Scorer]
-#   z=-20cm       z=0cm               z=+5.5cm
+#   z=+120cm      z=0cm               z=-5.5cm
 #
 # Al slab:    40 x 40 cm face, 5 cm thick (HLZ = 2.5 cm)
 # Scorer:     20 x 20 cm face, 2 cm thick (HLZ = 1.0 cm)
@@ -36,17 +37,17 @@ s:Ph/Default/Type = "QGSP_BIC"
 # World volume
 # ------------------------------------------------------------
 s:Ge/World/Type      = "TsBox"
-s:Ge/World/Material  = "G4_AIR"
-d:Ge/World/HLX       = 50.0 cm
-d:Ge/World/HLY       = 50.0 cm
-d:Ge/World/HLZ       = 50.0 cm
+s:Ge/World/Material  = "Vacuum"
+d:Ge/World/HLX       = 1.0 m
+d:Ge/World/HLY       = 1.0 m
+d:Ge/World/HLZ       = 1.0 m
 b:Ge/World/Invisible = "true"
 
 
 # ------------------------------------------------------------
 # Aluminium slab
 # Centred at origin; 40 x 40 cm face, 5 cm thick
-# Front face: z = -2.5 cm   Rear face: z = +2.5 cm
+# Beam-facing face: z = +2.5 cm   Downstream face: z = -2.5 cm
 # ------------------------------------------------------------
 s:Ge/AlSlab/Type         = "TsBox"
 s:Ge/AlSlab/Parent       = "World"
@@ -57,16 +58,16 @@ d:Ge/AlSlab/HLZ          = 2.5 cm
 d:Ge/AlSlab/TransX       = 0.0 cm
 d:Ge/AlSlab/TransY       = 0.0 cm
 d:Ge/AlSlab/TransZ       = 0.0 cm
-s:Ge/AlSlab/Color        = "grey"
-s:Ge/AlSlab/DrawingStyle = "Wireframe"
+s:Ge/AlSlab/Color        = "red"
+s:Ge/AlSlab/DrawingStyle = "Solid"
 
 
 # ------------------------------------------------------------
 # Scorer volume (water — tissue-equivalent proxy)
 # 20 x 20 cm face, 2 cm thick
-# Slab rear face at z = +2.5 cm
-# 2 cm air gap -> scorer front face at z = +4.5 cm
-# Scorer centre: z = +5.5 cm
+# Slab downstream face at z = -2.5 cm
+# 2 cm air gap -> scorer front face at z = -4.5 cm
+# Scorer centre: z = -5.5 cm
 # ------------------------------------------------------------
 s:Ge/ScorerBox/Type         = "TsBox"
 s:Ge/ScorerBox/Parent       = "World"
@@ -76,20 +77,21 @@ d:Ge/ScorerBox/HLY          = 10.0 cm
 d:Ge/ScorerBox/HLZ          = 1.0 cm
 d:Ge/ScorerBox/TransX       = 0.0 cm
 d:Ge/ScorerBox/TransY       = 0.0 cm
-d:Ge/ScorerBox/TransZ       = 5.5 cm
-s:Ge/ScorerBox/Color        = "blue"
-s:Ge/ScorerBox/DrawingStyle = "Wireframe"
+d:Ge/ScorerBox/TransZ       = -5.5 cm
+s:Ge/ScorerBox/Color        = "gray"
+s:Ge/ScorerBox/DrawingStyle = "Solid"
 
 
 # ------------------------------------------------------------
 # Beam position anchor (Group component)
-# Beam fires in the +z direction from this component's origin
+# TOPAS fires beams in -Z by default. Placing the source at
+# z=+25 cm puts the slab (z=0) and scorer (z=-5.5) downstream.
 # ------------------------------------------------------------
 s:Ge/BeamPosition/Type   = "Group"
 s:Ge/BeamPosition/Parent = "World"
 d:Ge/BeamPosition/TransX = 0.0 cm
 d:Ge/BeamPosition/TransY = 0.0 cm
-d:Ge/BeamPosition/TransZ = -20.0 cm
+d:Ge/BeamPosition/TransZ = 120.0 cm
 
 
 # ------------------------------------------------------------
@@ -99,15 +101,15 @@ d:Ge/BeamPosition/TransZ = -20.0 cm
 s:So/ProtonBeam/Type                    = "Beam"
 s:So/ProtonBeam/Component               = "BeamPosition"
 s:So/ProtonBeam/BeamParticle            = "proton"
-d:So/ProtonBeam/BeamEnergy              = 200.0 MeV
+d:So/ProtonBeam/BeamEnergy              = 120.0 MeV
 u:So/ProtonBeam/BeamEnergySpread        = 0.0
 s:So/ProtonBeam/BeamPositionDistribution = "Flat"
 s:So/ProtonBeam/BeamPositionCutoffShape  = "Ellipse"
 d:So/ProtonBeam/BeamPositionCutoffX     = 15.0 cm
 d:So/ProtonBeam/BeamPositionCutoffY     = 15.0 cm
 s:So/ProtonBeam/BeamAngularDistribution = "None"
-i:So/ProtonBeam/NumberOfHistoriesInRun  = 1000
-# Increase histories for better statistics; 10000+ recommended for production runs
+i:So/ProtonBeam/NumberOfHistoriesInRun  = 100
+# Use 100 for clean visualisation; raise to 10000+ for production scoring runs
 
 
 # ------------------------------------------------------------
@@ -136,12 +138,15 @@ s:Sc/DoseScorer/IfOutputFileAlreadyExists = "Overwrite"
 # ------------------------------------------------------------
 # Visualisation
 # ------------------------------------------------------------
-s:Gr/MyView/Type             = "OpenGL"
-d:Gr/MyView/Theta            = 90.0 deg
-d:Gr/MyView/Phi              = 90.0 deg
-s:Gr/MyView/Projection       = "Perspective"
-d:Gr/MyView/PerspectiveAngle = 45.0 deg
-b:Gr/MyView/IncludeAxes      = "true"
-d:Gr/MyView/AxesSize         = 10.0 cm
-i:Gr/MyView/WindowSizeX      = 1200
-i:Gr/MyView/WindowSizeY      = 600
+s:Gr/MyView/Type                = "OpenGL"
+# u:Gr/MyGraphic1/Zoom            = 0.25
+d:Gr/MyView/Theta               = 90.0 deg
+d:Gr/MyView/Phi                 = 25.0 deg
+s:Gr/MyView/Projection          = "Perspective"
+d:Gr/MyView/PerspectiveAngle    = -10.0 deg
+b:Gr/MyView/IncludeAxes         = "true"
+d:Gr/MyView/AxesSize            = 100.0 cm
+b:Gr/MyView/IncludeTrajectories = "true"
+i:Gr/MyView/TrajectoryLineWidth = 1
+i:Gr/MyView/WindowSizeX         = 1500
+i:Gr/MyView/WindowSizeY         = 1000

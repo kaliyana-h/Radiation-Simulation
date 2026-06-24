@@ -205,3 +205,35 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ----------------------------------------------------------------------
+# lunarsim / TOPAS project artifacts (regenerated every run -- not source)
+# ----------------------------------------------------------------------
+# Scorer output CSVs written to the repo root by loose runs
+/dose.csv
+/fluence.csv
+/fluence_inside.csv
+/fluence_outside.csv
+/ProtonAlDose.csv
+/*_dose.csv
+/*_fluence_inside.csv
+/*_fluence_outside.csv
+/cascade_*.csv
+/viz_*.csv
+/gcr_demo_fluence.csv
+
+# TOPAS run directories produced by visualisation / cascade runs
+/cascade_*/
+/vis_*/
+
+# Generated source includes and one-off demo/scratch parameter files
+/gcr_source.txt
+/gcr_viz.txt
+/gcr_demo.txt
+/cascade_shot.txt
+/spe_source.txt
+/magnetic.txt
+/lunar_habitat_viz.txt
+/shape_dome.txt
+/shape_cylinder.txt
+/shape_quonset.txt
