@@ -59,7 +59,7 @@ The system is a clean two-layer design with a single data contract between them:
   score on one scale.
 - "Evaluate protection" / "Cancel run" buttons.
 
-**Centre — live visualisation, four tabs:**
+**Centre — live visualisation, three tabs:**
 - **Spacecraft Overview:** live **3-D wireframe** of the habitat *and* a **2-D
   dose cross-section** (showing the layered wall, regolith ground, and the crew
   phantom). Both update instantly as the design changes. Plus a **particle-cascade
@@ -70,8 +70,6 @@ The system is a clean two-layer design with a single data contract between them:
 - **Dose Analysis:** the full per-quantity breakdown, including the **per-ion dose
   share** (H, He, C, Si, Fe groups) — visible proof that heavy ions, not just
   protons, drive the dose.
-- **Design Comparison:** placeholder for side-by-side design comparison (not yet
-  implemented).
 
 **Right rail — results:** a metric-card stack — the headline **Radiation
 Protection Score** (annual effective dose, colour-coded SAFE/MARGINAL/EXCEEDS vs
@@ -108,7 +106,6 @@ outer radius, estimated shell mass in tonnes).
   first-order approximation of representing the heavy-ion spectrum with a shared
   per-nucleon proton shape across 5 ion groups. Refinement (measured per-element
   heavy-ion spectra) is a flagged future upgrade.
-- **Design Comparison tab** is a stub.
 - SPE (solar particle event) source exists in the generator but isn't yet wired
   into the GUI scoring path.
 
