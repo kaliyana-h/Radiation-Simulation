@@ -9,12 +9,13 @@ from .bridge import (
     build_parameter_file, run_design, write_vis_run,
 )
 from .dosimetry import (
-    DoseAssessment, assess, gcr_scalar_fluence_rate,
+    DoseAssessment, assess, assess_composition, gcr_scalar_fluence_rate,
+    gcr_species_fluence_rate, GCR_COMPOSITION,
     DOSE_LIMITS_MSV, DEFAULT_QUALITY_FACTOR,
 )
 from .jobs import (
     Job, JobStatus, JobRunner, LocalThreadRunner, ConvergedResult,
-    run_converged, default_runner,
+    ConvergedComposition, run_converged, run_composition, default_runner,
 )
 from .trajviz import (
     run_cascade, build_cascade_run, load_tracks, build_figure, write_html,
@@ -25,8 +26,9 @@ __all__ = [
     "build_geometry", "build_scorers",
     "RunTier", "RunResult", "QUICK_LOOK", "FULL_RUN", "VIS_TIER", "TIERS",
     "build_parameter_file", "run_design", "write_vis_run",
-    "DoseAssessment", "assess", "gcr_scalar_fluence_rate",
+    "DoseAssessment", "assess", "assess_composition", "gcr_scalar_fluence_rate",
+    "gcr_species_fluence_rate", "GCR_COMPOSITION",
     "DOSE_LIMITS_MSV", "DEFAULT_QUALITY_FACTOR",
     "Job", "JobStatus", "JobRunner", "LocalThreadRunner", "ConvergedResult",
-    "run_converged", "default_runner",
+    "ConvergedComposition", "run_converged", "run_composition", "default_runner",
 ]

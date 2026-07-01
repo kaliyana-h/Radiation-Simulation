@@ -5,8 +5,7 @@ Layout matches the agreed mockup:
   * Left rail  : branded "Radiation Sim" -> Habitat Geometry -> Primary Wall
                  (+ collapsible extra shielding layer) -> exposure -> Run.
   * Header     : "Radiation Simulation Tool" + a live config subtitle line.
-  * Tabs       : Spacecraft Overview | GCR Environment | Dose Analysis |
-                 Design Comparison.
+  * Tabs       : Spacecraft Overview | GCR Environment | Dose Analysis.
   * Overview   : Dose cross-section / 3-D wireframe toggle over the habitat model.
   * Right rail : Dose Metrics card stack + Design Parameters.
 
@@ -584,14 +583,6 @@ dose_panel = html.Div(id="panel-dose", style={"display": "none"}, children=[
                  style={"color": MUTED, "fontSize": "13px"})]),
 ])
 
-compare_panel = html.Div(id="panel-compare", style={"display": "none"}, children=[
-    html.Div("Design Comparison", style={"color": INK, "fontSize": "15px",
-                                         "fontWeight": 700, "marginBottom": "12px"}),
-    html.Div(style=CARD, children=[
-        html.Div("Save and compare multiple designs side-by-side — coming soon.",
-                 style={"color": MUTED, "fontSize": "13px"})]),
-])
-
 centre = html.Div(style={"flex": "1", "padding": "26px 30px", "overflowY": "auto",
                          "height": "100vh", "boxSizing": "border-box"}, children=[
     html.H1("Radiation Simulation Tool", style={"color": INK, "fontSize": "30px",
@@ -613,11 +604,9 @@ centre = html.Div(style={"flex": "1", "padding": "26px 30px", "overflowY": "auto
                 style=TAB_STYLE, selected_style=TAB_SELECTED),
         dcc.Tab(label="\U0001F4CB Dose Analysis", value="dose",
                 style=TAB_STYLE, selected_style=TAB_SELECTED),
-        dcc.Tab(label="\U0001F5BC Design Comparison", value="compare",
-                style=TAB_STYLE, selected_style=TAB_SELECTED),
     ]),
     html.Div(style={"marginTop": "18px"}, children=[
-        overview_panel, gcr_panel, dose_panel, compare_panel]),
+        overview_panel, gcr_panel, dose_panel]),
 ])
 
 
@@ -648,14 +637,13 @@ app.layout = html.Div(style={"display": "flex", "background": BG}, children=[
 # ----------------------------------------------------------------------
 @app.callback(
     Output("panel-overview", "style"), Output("panel-gcr", "style"),
-    Output("panel-dose", "style"), Output("panel-compare", "style"),
+    Output("panel-dose", "style"),
     Input("tabs", "value"))
 def _switch_tab(tab):
     show, hide = {"display": "block"}, {"display": "none"}
     return (show if tab == "overview" else hide,
             show if tab == "gcr" else hide,
-            show if tab == "dose" else hide,
-            show if tab == "compare" else hide)
+            show if tab == "dose" else hide)
 
 
 # ----------------------------------------------------------------------
