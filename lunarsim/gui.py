@@ -27,8 +27,9 @@ import plotly.graph_objects as go
 
 from .spec import HabitatSpec, WallLayer, MATERIALS, SHAPES
 from .bridge import FULL_RUN
-from .dosimetry import assess, gcr_scalar_fluence_rate, DOSE_LIMITS_MSV
-from .jobs import default_runner, JobStatus
+from .dosimetry import (assess, assess_composition, gcr_scalar_fluence_rate,
+                        DOSE_LIMITS_MSV)
+from .jobs import default_runner, JobStatus, ConvergedComposition
 from .trajviz import run_cascade, build_figure
 
 # ----------------------------------------------------------------------
@@ -56,12 +57,15 @@ VERDICT_COLOUR = {"SAFE": "#3fb950", "MARGINAL": "#d29922", "EXCEEDS LIMIT": ACC
 # annual effective dose; converge it tightly since it is the official score.
 SCORING_TIER = FULL_RUN
 SCORING_MISSION_DAYS = 365
-# Converge on the SKIN (wall-lining) dose -- the official score -- not the noisy
-# central phantom, and to a tight 5% so genuinely different designs separate
-# beyond the statistical band instead of overlapping inside it.
+# Converge on BOTH the SKIN (wall-lining) dose -- the official score -- and the
+# central crew phantom, to a tight 5% so genuinely different designs separate
+# beyond the statistical band instead of overlapping inside it. The phantom is the
+# binding constraint for heavy ions (solid sphere, rare Bragg-peak stops), so this
+# keeps the diagnostic point dose honest instead of reporting a small error off a
+# couple of under-sampled stops -- at the cost of more HZE batches.
 SCORING_TARGET_REL_ERR = 0.05
 SCORING_MAX_BATCHES = 12
-SCORING_CONVERGE_ON = "skin"
+SCORING_CONVERGE_ON = "both"
 
 CARD = {"background": CARD_BG, "border": f"1px solid {BORDER}",
         "borderRadius": "10px", "padding": "16px", "marginBottom": "14px"}
@@ -87,14 +91,32 @@ def _marks(values):
 # Default wall stack the GUI opens on (innermost first; thickness in mm).
 DEFAULT_LAYERS = [{"m": "aluminium", "t": 6.0}, {"m": "regolith", "t": 300.0}]
 
+# The layer rows are a *fixed pool* baked into the initial layout (so the
+# browser always sends their values); the `active-rows` store lists which pool
+# rows are in use, innermost-first. No callback ever writes to a row's value —
+# add/remove only edit this index list — so typing in a field is never fought
+# by a "controlled value" re-render. Hidden (inactive) rows are ignored.
+MAX_LAYERS = 8
 
-def _layers_from_components(mats, ids, thks):
-    """Collect the live layer-row widgets into an innermost-first list of
-    {m, t(mm)} dicts. Pattern-matching ALL returns each property in its own
-    list; we sort by the row index carried in the component id so the order
-    matches the visual stack regardless of how Dash batches them."""
-    rows = sorted(zip(ids, mats, thks), key=lambda r: r[0]["index"])
-    return [{"m": m or "aluminium", "t": float(t or 0)} for _id, m, t in rows]
+
+def _layers_from_components(mats, ids, thks, active=None):
+    """Collect the live layer-row widgets into the wall stack (innermost first)
+    as a list of {m, t(mm)} dicts. Pattern-matching ALL returns each property
+    in its own list; we key them by the row index in the component id, then
+    read out in `active` order (the only rows that are part of the design).
+    `active=None` falls back to every present row, index-ordered."""
+    by_idx = {_id["index"]: (m, t) for _id, m, t in zip(ids, mats, thks)}
+    order = active if active is not None else sorted(by_idx)
+    return [{"m": (by_idx[i][0] or "aluminium"), "t": _num(by_idx[i][1])}
+            for i in order if i in by_idx]
+
+
+def _num(x):
+    """Parse a thickness field (text input) to mm; blank/garbage -> 0.0."""
+    try:
+        return float(str(x).strip())
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def spec_from_inputs(name, shape, inner_r_m, layers) -> HabitatSpec:
@@ -110,38 +132,69 @@ def spec_from_inputs(name, shape, inner_r_m, layers) -> HabitatSpec:
     )
 
 
-def _layer_row(i, material, thickness_mm, n_total):
-    """One editable wall layer (material + thickness mm + remove button).
-    index `i` is the position in the stack, innermost = 0."""
-    if n_total == 1:
-        where = "wall"
-    elif i == 0:
-        where = "innermost"
-    elif i == n_total - 1:
-        where = "outermost"
+LAYER_BOX_STYLE = {"background": "#0b0f15", "border": f"1px solid {BORDER}",
+                   "borderRadius": "8px", "padding": "10px 12px",
+                   "marginBottom": "10px"}
+
+
+def _layer_state(i, active):
+    """The display state of pool row `i` given the ordered `active` index list:
+    box style (hidden when i is not active), header label (numbered/located by
+    its *position* in the stack, not its pool index), and the remove button's
+    disabled flag and style. Shared by the initial render (`_layer_row`) and the
+    callback that maintains it (`_render_layers`) so first paint and updates
+    agree."""
+    n = len(active)
+    is_active = i in active
+    box = LAYER_BOX_STYLE if is_active else {"display": "none"}
+    if not is_active:
+        pos, where = i, ""
     else:
-        where = f"layer {i + 1}"
+        pos = active.index(i)
+        if n == 1:
+            where = "wall"
+        elif pos == 0:
+            where = "innermost"
+        elif pos == n - 1:
+            where = "outermost"
+        else:
+            where = f"layer {pos + 1}"
+    rm_disabled = (n == 1)
+    rm_style = {"background": "transparent",
+                "color": MUTED if rm_disabled else ACCENT,
+                "border": "none", "cursor": "pointer", "fontSize": "13px",
+                "padding": "0 4px"}
+    return box, f"Layer {pos + 1} · {where}", rm_disabled, rm_style
+
+
+def _layer_row(i, material, thickness_mm, active_init):
+    """One editable wall layer (material + thickness mm + remove button) in the
+    fixed pool. index `i` is the row's fixed slot in the pool. The box, label
+    and remove button carry stable ids so `_render_layers` can show/hide the row
+    and relabel it as the active set changes; `active_init` sets the correct
+    first-paint state so unused rows start hidden (no flash). The dropdown/input
+    values are never outputs of any callback, so editing is never fought."""
+    box, label, rm_disabled, rm_style = _layer_state(i, active_init)
     head = html.Div(style={"display": "flex", "justifyContent": "space-between",
                            "alignItems": "center", "marginBottom": "6px"}, children=[
-        html.Span(f"Layer {i + 1} · {where}",
+        html.Span(label, id={"type": "layer-label", "index": i},
                   style={"color": INK, "fontSize": "12px", "fontWeight": 700}),
         html.Button("✕", id={"type": "layer-remove", "index": i},
-                    disabled=(n_total == 1), n_clicks=0,
-                    style={"background": "transparent",
-                           "color": MUTED if n_total == 1 else ACCENT,
-                           "border": "none", "cursor": "pointer", "fontSize": "13px",
-                           "padding": "0 4px"}),
+                    disabled=rm_disabled, n_clicks=0, style=rm_style),
     ])
-    return html.Div(style={"background": "#0b0f15", "border": f"1px solid {BORDER}",
-                           "borderRadius": "8px", "padding": "10px 12px",
-                           "marginBottom": "10px"}, children=[
+    return html.Div(id={"type": "layer-box", "index": i}, style=box, children=[
         head,
         dcc.Dropdown(id={"type": "layer-mat", "index": i}, value=material,
                      options=MATERIAL_OPTIONS, clearable=False,
                      style={"marginBottom": "8px"}),
         html.Div("Thickness (mm)", style=FIELD_LABEL),
-        dcc.Input(id={"type": "layer-thk", "index": i}, type="number",
-                  value=thickness_mm, min=0.1, step=1, style=INPUT),
+        # type="text" (not "number"): the number widget doesn't reliably sync
+        # typed digits to Dash -- only its spinners/clears fire -- so typed
+        # thicknesses were lost. Text fires onChange every keystroke; _num()
+        # parses it. inputMode shows a numeric keypad on touch devices.
+        dcc.Input(id={"type": "layer-thk", "index": i}, type="text",
+                  inputMode="decimal", value=f"{thickness_mm:g}",
+                  debounce=False, style=INPUT),
     ])
 
 
@@ -423,12 +476,17 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
              "overburden as your team designed them.",
              style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
                     "marginBottom": "12px"}),
-    html.Div(id="layer-rows"),
+    html.Div(id="layer-rows", children=[
+        _layer_row(i,
+                   DEFAULT_LAYERS[i]["m"] if i < len(DEFAULT_LAYERS) else "regolith",
+                   DEFAULT_LAYERS[i]["t"] if i < len(DEFAULT_LAYERS) else 100.0,
+                   list(range(len(DEFAULT_LAYERS))))
+        for i in range(MAX_LAYERS)]),
     html.Button("+  Add layer", id="add-layer", n_clicks=0, style={
         "background": "transparent", "color": INK, "border": f"1px dashed {BORDER}",
         "borderRadius": "8px", "padding": "9px", "cursor": "pointer", "fontSize": "13px",
         "width": "100%", "marginTop": "2px"}),
-    dcc.Store(id="layers", data=DEFAULT_LAYERS),
+    dcc.Store(id="active-rows", data=list(range(len(DEFAULT_LAYERS)))),
 
     html.Div("Scoring Conditions", style=SECTION),
     html.Div(style={**CARD, "padding": "12px"}, children=[
@@ -603,40 +661,50 @@ def _switch_tab(tab):
 # ----------------------------------------------------------------------
 # Callbacks: wall-layer stack (add / remove / render)
 # ----------------------------------------------------------------------
-# The store is the source of truth for the *structure* of the stack; the
-# row widgets hold the live edits. Add/remove reads the current widget values
-# back into the store (so edits survive a re-render) and applies the change.
-# The store only updates on add/remove -- never on a keystroke -- so typing in
-# a thickness box does not re-render the rows and steal focus.
+# The layer rows are a fixed pool baked into the layout, so their values are
+# always sent to the back end. `active-rows` lists which pool slots are in the
+# stack, innermost-first. Add appends the lowest free slot; remove drops the
+# clicked slot from the list. Neither touches any row's value, so typing in a
+# field is never overwritten by a "controlled value" re-render or steals focus.
 @app.callback(
-    Output("layers", "data"),
+    Output("active-rows", "data"),
     Input("add-layer", "n_clicks"),
     Input({"type": "layer-remove", "index": ALL}, "n_clicks"),
-    State({"type": "layer-mat", "index": ALL}, "value"),
-    State({"type": "layer-mat", "index": ALL}, "id"),
-    State({"type": "layer-thk", "index": ALL}, "value"),
+    State("active-rows", "data"),
     prevent_initial_call=True)
-def _manage_layers(add_n, remove_n, mats, ids, thks):
+def _manage_layers(add_n, remove_n, active):
+    active = list(active or [0])
     trig = ctx.triggered_id
-    layers = _layers_from_components(mats, ids, thks)
+
     if trig == "add-layer" and add_n:
-        layers.append({"m": "regolith", "t": 100.0})
-    elif (isinstance(trig, dict) and trig.get("type") == "layer-remove"
-          and any(remove_n)):
-        layers = [L for L, rid in zip(layers, sorted(ids, key=lambda d: d["index"]))
-                  if rid["index"] != trig["index"]]
-        if not layers:
-            layers = [{"m": "aluminium", "t": 6.0}]
-    else:
-        return no_update                      # mount/no-op: leave the store alone
-    return layers
+        free = next((i for i in range(MAX_LAYERS) if i not in active), None)
+        if free is None:
+            return no_update                       # pool full
+        return active + [free]
+
+    if (isinstance(trig, dict) and trig.get("type") == "layer-remove"
+            and any(remove_n) and len(active) > 1):
+        return [i for i in active if i != trig["index"]]
+
+    return no_update                               # mount/no-op
 
 
-@app.callback(Output("layer-rows", "children"), Input("layers", "data"))
-def _render_layers(layers):
-    layers = layers or DEFAULT_LAYERS
-    n = len(layers)
-    return [_layer_row(i, L["m"], L["t"], n) for i, L in enumerate(layers)]
+@app.callback(
+    Output({"type": "layer-box", "index": ALL}, "style"),
+    Output({"type": "layer-label", "index": ALL}, "children"),
+    Output({"type": "layer-remove", "index": ALL}, "disabled"),
+    Output({"type": "layer-remove", "index": ALL}, "style"),
+    Input("active-rows", "data"))
+def _render_layers(active):
+    active = list(active or [0])
+    boxes, labels, disabled, rm_styles = [], [], [], []
+    for i in range(MAX_LAYERS):
+        box, label, rm_disabled, rm_style = _layer_state(i, active)
+        boxes.append(box)
+        labels.append(label)
+        disabled.append(rm_disabled)
+        rm_styles.append(rm_style)
+    return boxes, labels, disabled, rm_styles
 
 
 # ----------------------------------------------------------------------
@@ -650,11 +718,18 @@ def _render_layers(layers):
     Input({"type": "layer-mat", "index": ALL}, "value"),
     Input({"type": "layer-thk", "index": ALL}, "value"),
     Input("view-mode", "value"),
-    State({"type": "layer-mat", "index": ALL}, "id"))
-def _live(shape, inner_r, mats, thks, view_mode, ids):
+    State({"type": "layer-mat", "index": ALL}, "id"),
+    State("active-rows", "data"))
+def _live(shape, inner_r, mats, thks, view_mode, ids, active):
     r_label = f"{float(inner_r or 2.5):.2f}"
+    layers = _layers_from_components(mats, ids, thks, active)
+    if not any(L["t"] > 0 for L in layers):
+        # Every active layer's thickness is blank/zero (e.g. mid-edit). Don't
+        # fabricate a fake wall and show a misleading score -- say what's wrong.
+        return (no_update, no_update,
+                "⚠ Enter a wall thickness (mm) for at least one layer",
+                no_update, r_label)
     try:
-        layers = _layers_from_components(mats, ids, thks)
         spec = spec_from_inputs("design", shape, inner_r, layers)
         spec.validate()
     except Exception:
@@ -690,11 +765,12 @@ def _live(shape, inner_r, mats, thks, view_mode, ids):
     State({"type": "layer-mat", "index": ALL}, "value"),
     State({"type": "layer-mat", "index": ALL}, "id"),
     State({"type": "layer-thk", "index": ALL}, "value"),
+    State("active-rows", "data"),
     State("cascade-dir", "data"),
     prevent_initial_call=True)
-def _cascade(n, colour_by, shape, inner_r, mats, ids, thks, cascade_dir):
+def _cascade(n, colour_by, shape, inner_r, mats, ids, thks, active, cascade_dir):
     spec = spec_from_inputs("habitat", shape, inner_r,
-                            _layers_from_components(mats, ids, thks))
+                            _layers_from_components(mats, ids, thks, active))
     trigger = ctx.triggered_id
 
     if trigger == "cascade-colour":
@@ -737,21 +813,27 @@ def _style_cascade(fig):
 # ----------------------------------------------------------------------
 @app.callback(
     Output("job-store", "data"), Output("poll", "disabled"),
+    Output("status-line", "children", allow_duplicate=True),
     Input("run", "n_clicks"),
     State("shape", "value"), State("inner-r", "value"),
     State({"type": "layer-mat", "index": ALL}, "value"),
     State({"type": "layer-mat", "index": ALL}, "id"),
     State({"type": "layer-thk", "index": ALL}, "value"),
+    State("active-rows", "data"),
     prevent_initial_call=True)
-def _evaluate(n, shape, inner_r, mats, ids, thks):
-    spec = spec_from_inputs("habitat", shape, inner_r,
-                            _layers_from_components(mats, ids, thks))
+def _evaluate(n, shape, inner_r, mats, ids, thks, active):
+    layers = _layers_from_components(mats, ids, thks, active)
+    if not any(L["t"] > 0 for L in layers):
+        # No layer has a thickness -- refuse rather than score a fabricated wall.
+        return no_update, True, "⚠ Enter a wall thickness (mm) for at least one layer before evaluating."
+    spec = spec_from_inputs("habitat", shape, inner_r, layers)
     # Always the fixed scoring preset -- identical conditions for every team.
     jid = default_runner.submit(spec, tier=SCORING_TIER,
                                 target_rel_err=SCORING_TARGET_REL_ERR,
                                 max_batches=SCORING_MAX_BATCHES,
-                                converge_on=SCORING_CONVERGE_ON)
-    return jid, False
+                                converge_on=SCORING_CONVERGE_ON,
+                                composition=True)   # protons + heavy ions, summed
+    return jid, False, no_update
 
 
 @app.callback(Output("cancel", "n_clicks"), Input("cancel", "n_clicks"),
@@ -777,8 +859,9 @@ def _poll(_n, jid):
     bar = {"background": ACCENT, "height": "100%", "transition": "width .3s",
            "width": f"{job.progress * 100:.0f}%"}
     err = f" ±{job.rel_err:.0%}" if job.rel_err else ""
+    cap = job.progress_cap or job.max_batches
     status = (f"[{job.status.value}] {job.spec.name} — batch "
-              f"{job.batches_done}/{job.max_batches}{err} — {job.elapsed:.0f}s")
+              f"{job.batches_done}/{cap}{err} — {job.elapsed:.0f}s")
 
     terminal = job.status in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED)
     if not terminal:
@@ -789,10 +872,26 @@ def _poll(_n, jid):
                        style={"color": ACCENT, "fontSize": "13px"})
         return bar, status, no_update, [msg], True
 
-    a = assess(job.result, mission_days=SCORING_MISSION_DAYS)
-    a_skin = assess(job.result, mission_days=SCORING_MISSION_DAYS, skin=True)
-    s = a.summary("career")
+    a = _assess(job.result, skin=False)       # central phantom (noisy point dose)
+    a_skin = _assess(job.result, skin=True)   # habitat-wide lining (the headline)
+    primary = a_skin or a                     # whichever assessment we actually have
+    if primary is None:
+        msg = html.Div("Run finished but produced no usable dose — no scorer "
+                       "recorded any signal. Try more batches or a thinner design.",
+                       style={"color": ACCENT, "fontSize": "13px"})
+        return bar, status, no_update, [msg], True
+    s = primary.summary("career")
     return bar, status, _metric_cards(a, a_skin, s, job), _analysis_body(a, a_skin, s, job), True
+
+
+def _assess(result, skin):
+    """Dispatch to the per-species composition assessment (protons + heavy ions
+    summed) or the single-species path, depending on the result type."""
+    if isinstance(result, ConvergedComposition):
+        return assess_composition(result.species_results,
+                                  mission_days=SCORING_MISSION_DAYS,
+                                  phi_MV=SCORING_TIER.phi_mv, skin=skin)
+    return assess(result, mission_days=SCORING_MISSION_DAYS, skin=skin)
 
 
 def _score_card(score, rel_txt, verdict, frac):
@@ -816,7 +915,13 @@ def _score_card(score, rel_txt, verdict, frac):
 
 
 def _metric_cards(a, a_skin, s, job):
-    ratio = a.equiv_rate_msv_day / 0.70 if a.equiv_rate_msv_day else 0.0
+    # Dose-equivalent figures come from the same habitat-wide skin scorer as the
+    # headline (its LET-weighted Q(L)); absorbed dose stays on the phantom card.
+    aeq = a_skin if a_skin is not None else a
+    # Absorbed-dose source: prefer the phantom; fall back to the lining if the
+    # noisy central phantom recorded nothing (else the card would crash on None).
+    ab = a if a is not None else a_skin
+    ratio = aeq.equiv_rate_msv_day / 0.70 if aeq.equiv_rate_msv_day else 0.0
     # The graded score uses the habitat-wide (wall-lining) scorer: it samples the
     # whole inner surface, so it is far lower-variance than the central crew
     # phantom and gives a number two teams can be compared on. Fall back to the
@@ -829,19 +934,20 @@ def _metric_cards(a, a_skin, s, job):
         skin_rel = getattr(job.result, "skin_dose_rel_err", None)
         rel_txt = f" ± {skin_rel:.0%}" if skin_rel else ""
     else:
-        score, verdict = a.annual_msv, s["verdict"]
+        score, verdict = ab.annual_msv, s["verdict"]
         frac, rel_txt = s["fraction_of_limit"] * 100, ""
     phantom_rel = f" ±{job.result.dose_rel_err:.0%}" if job.result.dose_rel_err else ""
+    phantom_pt = (f"{a.annual_msv:.1f} mSv/year" if a is not None else "n/a")
     return [
         _score_card(score, rel_txt, verdict, frac),
         metric_card("Absorbed dose",
-                    f"{a.dose_rate_ugy_day / 1000:.3f} mGy/day",
-                    f"= {a.annual_mgy:.1f} mGy/year"),
+                    f"{ab.dose_rate_ugy_day / 1000:.3f} mGy/day",
+                    f"= {ab.annual_mgy:.1f} mGy/year"),
         metric_card("Dose equivalent",
-                    f"{a.equiv_rate_msv_day:.3f} mSv/day",
+                    f"{aeq.equiv_rate_msv_day:.3f} mSv/day",
                     f"ISS baseline = 0.70 mSv/day | ratio: {ratio:.2f}×"),
         metric_card("Crew-phantom point dose",
-                    f"{a.annual_msv:.1f} mSv/year",
+                    phantom_pt,
                     f"central self-shielded point{phantom_rel} — noisier diagnostic, "
                     "not the score"),
     ]
@@ -852,25 +958,52 @@ def _analysis_body(a, a_skin, s, job):
     skin_txt = (f"{a_skin.annual_msv:.1f} mSv/year"
                 f"{f' ± {skin_err:.0%}' if skin_err else ''}"
                 if a_skin is not None else "n/a")
+    # Dose-equivalent rows reflect the habitat-wide skin scorer (LET-weighted Q(L)),
+    # matching the headline; absorbed-dose rows stay on the phantom assessment.
+    aeq = a_skin if a_skin is not None else a
+    ab = a if a is not None else a_skin       # absorbed-dose / flux fallback source
+    seq = aeq.summary("career")
+    phantom_pt = f"{a.annual_msv:.1f} mSv/year" if a is not None else "n/a"
     return [
         _kv("◆ PROTECTION SCORE (habitat-wide)", skin_txt),
-        _kv("Crew-phantom dose (point, diagnostic)", f"{a.annual_msv:.1f} mSv/year"),
+        _kv("Crew-phantom dose (point, diagnostic)", phantom_pt),
         _kv("Absorbed dose rate", f"{s['dose_rate_uGy_per_day']:.3f} µGy/day"),
-        _kv("Equivalent dose rate", f"{a.equiv_rate_msv_day * 1000:.2f} µSv/day"),
-        _kv("Effective dose (mission)", f"{s['mission_mSv']:.1f} mSv "
-            f"over {int(s['mission_days'])} days"),
-        _kv("Fraction of career limit", f"{s['fraction_of_limit'] * 100:.1f} %"),
-        _kv("Quality factor (mean)", f"{s['quality_factor']}"),
+        _kv("Equivalent dose rate", f"{aeq.equiv_rate_msv_day * 1000:.2f} µSv/day"),
+        _kv("Effective dose (mission)", f"{seq['mission_mSv']:.1f} mSv "
+            f"over {int(seq['mission_days'])} days"),
+        _kv("Fraction of career limit", f"{seq['fraction_of_limit'] * 100:.1f} %"),
+        _kv("Quality factor (mean, LET-weighted)", f"{seq['quality_factor']:.2f}"),
         _kv("Wall transmission", f"{job.result.transmission:.2f}"
             if job.result.transmission else "n/a"),
-        _kv("GCR flux used", f"{a.real_flux_cm2_s:.2f} /cm²/s"),
+        _kv("GCR flux used", f"{ab.real_flux_cm2_s:.2f} /cm²/s"),
         _kv("Statistics", f"{job.result.n_batches} batches, "
             f"{job.result.total_primaries:,} primaries, {job.result.wall_seconds:.0f}s"),
-        html.Div("Equivalent dose uses a single mean field quality factor; secondary "
-                 "neutrons (high w_R) are not yet weighted per-particle, so treat mSv "
-                 "as indicative.", style={"color": MUTED, "fontSize": "10px",
-                                          "marginTop": "12px", "fontStyle": "italic"}),
+        *_species_breakdown(a_skin),
+        html.Div("Dose is summed over the GCR ion composition (H, He, C, Si, Fe "
+                 "groups), each transported separately and normalised to its real "
+                 "flux. Equivalent dose is LET-weighted per step (ICRP-60 Q(L)) by "
+                 "a custom scorer, so high-LET ions and secondaries carry their own "
+                 "quality factor; the mean Q shown above is the emergent H/D ratio.",
+                 style={"color": MUTED, "fontSize": "10px",
+                        "marginTop": "12px", "fontStyle": "italic"}),
     ]
+
+
+def _species_breakdown(a_skin):
+    """A small per-ion table of each GCR species' share of the absorbed dose --
+    the visible proof that heavy ions (not just protons) drive the score."""
+    contrib = getattr(a_skin, "contributions", None) if a_skin else None
+    if not contrib:
+        return []
+    rows = []
+    for c in contrib:
+        q = c.get("quality_factor")
+        qtxt = f", Q={q:.1f}" if q else ""
+        rows.append(_kv(f"  {c['species']} ({c['group']})",
+                        f"{c['dose_fraction'] * 100:.0f}% of dose{qtxt}"))
+    return [html.Div("Dose share by GCR ion", style={
+        "color": MUTED, "fontSize": "11px", "fontWeight": 700,
+        "marginTop": "12px", "marginBottom": "4px"}), *rows]
 
 
 def main_entry():

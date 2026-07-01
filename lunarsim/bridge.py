@@ -151,7 +151,9 @@ class RunResult:
     returncode: int
     wall_seconds: float
     dose_gy: Optional[float] = None              # central crew phantom (point dose)
+    phantom_doseeq_sv: Optional[float] = None    # central crew phantom, LET-weighted (ICRP-60 Q)
     skin_dose_gy: Optional[float] = None         # inner-wall lining (habitat-wide dose)
+    skin_doseeq_sv: Optional[float] = None       # inner-wall lining, LET-weighted (ICRP-60 Q)
     fluence_inside: Optional[float] = None
     fluence_outside: Optional[float] = None
     log_tail: str = ""
@@ -185,7 +187,7 @@ def build_parameter_file(spec: HabitatSpec, tier: RunTier,
                          source_include: str, env_include: str,
                          beam_radius_cm: float = 900.0,
                          threads: int = 0, seed: int = 1,
-                         viewer: str = "") -> str:
+                         viewer: str = "", ion_z: int = 0, ion_a: int = 0) -> str:
     """Return the full text of a runnable TOPAS habitat file.
 
     viewer="" (default) is headless for batch. "qt"/"oglx" open a live OpenGL
@@ -224,7 +226,7 @@ b:Ge/World/Invisible = "true"
 
 {build_geometry(spec)}
 
-{build_scorers(spec)}
+{build_scorers(spec, ion_z, ion_a)}
 
 # Lunar surface: regolith stack + realistic materials
 includeFile = {env_include}
@@ -239,8 +241,13 @@ includeFile = {source_include}
 # ----------------------------------------------------------------------
 def generate_source(run_dir: Path, tier: RunTier,
                     beam_radius_cm: float = 900.0,
-                    beam_spot_cm: float = 500.0) -> Path:
-    """Invoke make_source.py to write a GCR source include into run_dir."""
+                    beam_spot_cm: float = 500.0,
+                    particle: str = "proton",
+                    ion_z: int = 1, ion_a: int = 1) -> Path:
+    """Invoke make_source.py to write a GCR source include into run_dir.
+
+    particle/ion_z/ion_a select the GCR species (protons by default); the
+    heavy-ion species are transported one per run and summed in dosimetry."""
     out = run_dir / "gcr_source.txt"
     cmd = [
         sys.executable, str(MAKE_SOURCE),
@@ -251,6 +258,9 @@ def generate_source(run_dir: Path, tier: RunTier,
         "--phi", str(tier.phi_mv),
         "--beam-radius", str(beam_radius_cm),
         "--beam-spot", str(beam_spot_cm),
+        "--particle", particle,
+        "--ion-z", str(ion_z),
+        "--ion-a", str(ion_a),
         "--out", str(out),
     ]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -279,7 +289,9 @@ def _read_scalar_csv(path: Path) -> Optional[float]:
 def parse_results(run_dir: Path) -> dict:
     return {
         "dose_gy": _read_scalar_csv(run_dir / "phantom_dose.csv"),
+        "phantom_doseeq_sv": _read_scalar_csv(run_dir / "phantom_doseeq.csv"),
         "skin_dose_gy": _read_scalar_csv(run_dir / "skin_dose.csv"),
+        "skin_doseeq_sv": _read_scalar_csv(run_dir / "skin_doseeq.csv"),
         "fluence_inside": _read_scalar_csv(run_dir / "fluence_inside.csv"),
         "fluence_outside": _read_scalar_csv(run_dir / "fluence_outside.csv"),
     }
@@ -290,8 +302,11 @@ def parse_results(run_dir: Path) -> dict:
 # ----------------------------------------------------------------------
 def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                run_dir: Optional[Path] = None, threads: int = 0,
-               seed: int = 1, keep: bool = True) -> RunResult:
-    """Generate, run, and parse a single design end-to-end (blocking)."""
+               seed: int = 1, keep: bool = True,
+               particle: str = "proton", ion_z: int = 1, ion_a: int = 1) -> RunResult:
+    """Generate, run, and parse a single design end-to-end (blocking).
+
+    particle/ion_z/ion_a pick the GCR species (default protons)."""
     spec.validate()
     if run_dir is None:
         run_dir = Path(tempfile.mkdtemp(prefix=f"lunarsim_{spec.name}_"))
@@ -299,12 +314,13 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
 
     # env include must sit beside the run file (includeFile is CWD-relative)
     shutil.copy(ENV_INCLUDE, run_dir / "lunar_environment.txt")
-    generate_source(run_dir, tier)
+    generate_source(run_dir, tier, particle=particle, ion_z=ion_z, ion_a=ion_a)
 
     param_file = run_dir / "run.txt"
     param_file.write_text(build_parameter_file(
         spec, tier, source_include="gcr_source.txt",
-        env_include="lunar_environment.txt", threads=threads, seed=seed))
+        env_include="lunar_environment.txt", threads=threads, seed=seed,
+        ion_z=ion_z, ion_a=ion_a))
 
     env = dict(os.environ, TOPAS_G4_DATA_DIR=str(G4_DATA_DIR))
     t0 = time.time()

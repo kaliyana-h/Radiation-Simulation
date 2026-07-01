@@ -22,12 +22,13 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Callable, Optional
 
 from .spec import HabitatSpec
 from .bridge import RunTier, RunResult, QUICK_LOOK, run_design
+from .dosimetry import assess_composition, GCR_COMPOSITION
 
 
 # ----------------------------------------------------------------------
@@ -43,7 +44,9 @@ class ConvergedResult:
     total_primaries: int
     wall_seconds: float
     dose_gy: Optional[float] = None
+    phantom_doseeq_sv: Optional[float] = None   # central phantom, LET-weighted (ICRP-60 Q)
     skin_dose_gy: Optional[float] = None        # habitat-wide inner-wall lining
+    skin_doseeq_sv: Optional[float] = None      # same lining, LET-weighted (ICRP-60 Q)
     dose_rel_err: Optional[float] = None        # standard error / mean
     skin_dose_rel_err: Optional[float] = None   # standard error / mean (skin)
     fluence_inside: Optional[float] = None
@@ -66,7 +69,9 @@ class ConvergedResult:
 def _combine(spec: HabitatSpec, tier: RunTier,
              batches: list[RunResult]) -> ConvergedResult:
     doses = [b.dose_gy for b in batches if b.dose_gy is not None]
+    phaneq = [b.phantom_doseeq_sv for b in batches if b.phantom_doseeq_sv is not None]
     skin = [b.skin_dose_gy for b in batches if b.skin_dose_gy is not None]
+    skineq = [b.skin_doseeq_sv for b in batches if b.skin_doseeq_sv is not None]
     fin = [b.fluence_inside for b in batches if b.fluence_inside is not None]
     fout = [b.fluence_outside for b in batches if b.fluence_outside is not None]
     n = len(doses)
@@ -84,7 +89,9 @@ def _combine(spec: HabitatSpec, tier: RunTier,
         total_primaries=tier.total_primaries * len(batches),
         wall_seconds=sum(b.wall_seconds for b in batches),
         dose_gy=mean, dose_rel_err=rel,
+        phantom_doseeq_sv=statistics.fmean(phaneq) if phaneq else None,
         skin_dose_gy=skin_mean, skin_dose_rel_err=skin_rel,
+        skin_doseeq_sv=statistics.fmean(skineq) if skineq else None,
         fluence_inside=statistics.fmean(fin) if fin else None,
         fluence_outside=statistics.fmean(fout) if fout else None,
         per_batch_dose=doses,
@@ -97,31 +104,45 @@ def _combine(spec: HabitatSpec, tier: RunTier,
 # Converge-by-error driver (blocking; the runner calls this in a thread)
 # ----------------------------------------------------------------------
 def _rel_err_of(combined: ConvergedResult, converge_on: str) -> Optional[float]:
-    """Pick the relative error the convergence loop watches. The workshop score
-    is the habitat-wide skin dose, so converging on 'skin' tightens the quantity
-    we actually display -- the central phantom is a much noisier diagnostic and
-    converging on it wastes batches while leaving the headline imprecise."""
-    return (combined.skin_dose_rel_err if converge_on == "skin"
-            else combined.dose_rel_err)
+    """Pick the relative error the convergence loop watches.
+
+    "skin"    the habitat-wide inner-wall lining -- the workshop headline score.
+    "phantom" the central crew point dose -- a much noisier diagnostic.
+    "both"    require BOTH below target; the binding (larger) error drives the
+              loop, so neither the headline nor the phantom is reported converged
+              while it is still imprecise. Returns None until both have an error
+              estimate (>=2 batches), so the loop never stops on a half-measured
+              pair."""
+    if converge_on == "skin":
+        return combined.skin_dose_rel_err
+    if converge_on == "phantom":
+        return combined.dose_rel_err
+    s, p = combined.skin_dose_rel_err, combined.dose_rel_err
+    if s is None or p is None:
+        return None
+    return max(s, p)
 
 
 def run_converged(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                   target_rel_err: float = 0.10,
                   min_batches: int = 2, max_batches: int = 8,
                   converge_on: str = "phantom",
+                  particle: str = "proton", ion_z: int = 1, ion_a: int = 1,
                   progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
                   cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedResult:
     """Run independent-seed batches until the chosen dose relative error <= target.
 
     converge_on selects which quantity must converge: "phantom" (central crew
     point dose, default) or "skin" (habitat-wide inner-wall lining -- the
-    workshop score). progress_cb(done, cap, rel_err) reports that same quantity.
+    workshop score). particle/ion_z/ion_a select the GCR species (default
+    protons). progress_cb(done, cap, rel_err) reports that same quantity.
     cancel_cb() -> True stops cleanly between batches."""
     batches: list[RunResult] = []
     for i in range(max_batches):
         if cancel_cb and cancel_cb():
             break
-        res = run_design(spec, tier, seed=i + 1, keep=False)
+        res = run_design(spec, tier, seed=i + 1, keep=False,
+                         particle=particle, ion_z=ion_z, ion_a=ion_a)
         if not res.ok:
             # surface the failure immediately rather than averaging garbage
             cr = _combine(spec, tier, batches)
@@ -137,6 +158,138 @@ def run_converged(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                 and rel <= target_rel_err:
             break
     return _combine(spec, tier, batches)
+
+
+# ----------------------------------------------------------------------
+# Multi-species GCR composition (protons + heavy ions, summed)
+# ----------------------------------------------------------------------
+# Heavy ions (alpha + HZE) carry a large share of the GCR dose despite being a
+# small fraction by number, so a proton-only run underestimates the absolute
+# scale. We transport each species in its OWN converged run (so the wall's
+# species-dependent shielding/fragmentation is real) and sum the per-species
+# normalised dose rates in dosimetry.assess_composition.
+#
+# HISTORICAL: minor HZE species (C/Si/Fe) used to be capped at 2 batches
+# (_MINOR_MAX_BATCHES below) to save wall-time, on the grounds that they add
+# little to the SKIN dose-equivalent. That cap was lifted (run_composition now
+# gives every species max_batches): the SOLID central phantom catches rare heavy-
+# ion Bragg-peak stops, so its per-species dose has enormous variance and only
+# converges with a full batch budget. Capping it at 2 batches left the crew point
+# dose dominated by one or two stochastic stops and reported a misleadingly small
+# combined error. The constants are retained for reference / a future cheap tier.
+_DOMINANT_ABUNDANCE = 0.05      # (retired) abundance threshold for the full budget
+_MINOR_MAX_BATCHES = 2          # (retired) former cap for the rare HZE species
+
+# Per-primary TOPAS cost scales ~ with total beam energy = T_per_nuc * A, so a
+# heavy ion is ~A times costlier than a proton of the same per-nucleon energy.
+# Heavy species are also MINOR dose contributors (C ~6%, Si ~2%, Fe ~0.4%), so
+# their statistical noise barely moves the summed score (a 2% contributor at 20%
+# rel-err adds 0.4% to the combined error). We therefore scale each species'
+# histories by ~1/A (referenced to He, A=4, so the dominant H/He keep full
+# statistics), which equalises per-batch wall-time across species instead of
+# letting Si/Fe batches run ~A times longer. Floored so the rarest ions still
+# get a usable sample.
+_COST_REF_A = 4                 # reference mass (He) for equal-cost history scaling
+_MIN_HISTORIES = 8              # floor so heavy ions keep a usable sample
+
+
+def _species_tier(tier: RunTier, a: int) -> RunTier:
+    """Clone `tier` with histories scaled ~1/A so each species' batch costs about
+    the same wall-time. Ions up to He (A<=4) are unscaled."""
+    scale = min(1.0, _COST_REF_A / a)
+    hist = max(_MIN_HISTORIES, round(tier.histories * scale))
+    return replace(tier, histories=hist)
+
+
+@dataclass
+class ConvergedComposition:
+    """Batch-combined estimate over a GCR composition. Holds one ConvergedResult
+    per species and the combined statistics. Duck-types the attributes the GUI
+    reads off a ConvergedResult; the dose itself is produced by
+    dosimetry.assess_composition(self.species_results, ...)."""
+    spec: HabitatSpec
+    tier: RunTier
+    species_results: list           # list[(species_tuple, ConvergedResult)]
+    n_batches: int = 0
+    total_primaries: int = 0
+    wall_seconds: float = 0.0
+    dose_rel_err: Optional[float] = None        # combined (central phantom)
+    skin_dose_rel_err: Optional[float] = None   # combined (habitat-wide skin)
+    returncode: int = 0
+    log_tail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return (self.returncode == 0 and bool(self.species_results)
+                and all(r.ok for _, r in self.species_results))
+
+    @property
+    def transmission(self) -> Optional[float]:
+        # report the proton (first / dominant) species as representative
+        return self.species_results[0][1].transmission if self.species_results else None
+
+
+def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
+                    target_rel_err: float = 0.05,
+                    min_batches: int = 2, max_batches: int = 12,
+                    converge_on: str = "both",
+                    composition: list = GCR_COMPOSITION,
+                    progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
+                    cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedComposition:
+    """Run one converged simulation per GCR species and combine them.
+
+    Each species is transported with its own ion/spectrum and converged on
+    `converge_on` (default "both": the habitat-wide skin lining AND the central
+    crew phantom). Every species gets the full max_batches: the old HZE cap was
+    lifted because the solid central phantom only converges for heavy ions with a
+    full batch budget -- with the cap the phantom point dose was dominated by a
+    couple of under-sampled Bragg-peak stops and reported a misleadingly small
+    error (see _MINOR_MAX_BATCHES note). progress_cb reports cumulative batches
+    across all species against the total batch budget."""
+    caps = [max_batches for _sp in composition]
+    total_cap = sum(caps)
+    species_results: list = []
+    done_base = 0
+    for sp, cap in zip(composition, caps):
+        name, particle, z, a, abundance, group = sp
+        if cancel_cb and cancel_cb():
+            break
+
+        def species_cb(done: int, _cap: int, rel: Optional[float],
+                       _base=done_base) -> None:
+            if progress_cb:
+                progress_cb(_base + done, total_cap, rel)
+
+        sp_tier = _species_tier(tier, a)   # scale histories ~1/A to bound batch cost
+        cr = run_converged(spec, sp_tier, target_rel_err=target_rel_err,
+                           min_batches=min_batches, max_batches=cap,
+                           converge_on=converge_on,
+                           particle=particle, ion_z=z, ion_a=a,
+                           progress_cb=species_cb, cancel_cb=cancel_cb)
+        species_results.append((sp, cr))
+        done_base += cap
+        if not cr.ok:
+            # a species failed -- surface immediately rather than a partial sum
+            comp = ConvergedComposition(spec=spec, tier=tier,
+                                        species_results=species_results,
+                                        returncode=cr.returncode or 1,
+                                        log_tail=cr.log_tail)
+            return comp
+
+    comp = ConvergedComposition(
+        spec=spec, tier=tier, species_results=species_results,
+        n_batches=sum(r.n_batches for _, r in species_results),
+        total_primaries=sum(r.total_primaries for _, r in species_results),
+        wall_seconds=sum(r.wall_seconds for _, r in species_results),
+        returncode=0 if species_results and all(r.returncode == 0 for _, r in species_results) else 1,
+        log_tail=species_results[-1][1].log_tail if species_results else "",
+    )
+    # combined statistical error of the summed dose (flux-weighted, in quadrature)
+    a_skin = assess_composition(species_results, phi_MV=tier.phi_mv, skin=True)
+    a_phan = assess_composition(species_results, phi_MV=tier.phi_mv, skin=False)
+    comp.skin_dose_rel_err = a_skin.rel_err if a_skin else None
+    comp.dose_rel_err = a_phan.rel_err if a_phan else None
+    return comp
 
 
 # ----------------------------------------------------------------------
@@ -158,10 +311,12 @@ class Job:
     target_rel_err: float
     max_batches: int
     converge_on: str = "phantom"
+    composition: bool = False
     status: JobStatus = JobStatus.QUEUED
     batches_done: int = 0
+    progress_cap: Optional[int] = None      # progress denominator (composition: summed)
     rel_err: Optional[float] = None
-    result: Optional[ConvergedResult] = None
+    result: Optional[object] = None         # ConvergedResult or ConvergedComposition
     error: Optional[str] = None
     submitted_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
@@ -173,9 +328,10 @@ class Job:
         """0..1. Reaches 1 when finished; otherwise batches/cap."""
         if self.status in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED):
             return 1.0
-        if self.max_batches <= 0:
+        denom = self.progress_cap or self.max_batches
+        if denom <= 0:
             return 0.0
-        return min(self.batches_done / self.max_batches, 0.99)
+        return min(self.batches_done / denom, 0.99)
 
     @property
     def elapsed(self) -> float:
@@ -190,7 +346,7 @@ class JobRunner(ABC):
     @abstractmethod
     def submit(self, spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                target_rel_err: float = 0.10, max_batches: int = 8,
-               converge_on: str = "phantom") -> str: ...
+               converge_on: str = "phantom", composition: bool = False) -> str: ...
 
     @abstractmethod
     def get(self, job_id: str) -> Optional[Job]: ...
@@ -216,11 +372,11 @@ class LocalThreadRunner(JobRunner):
     # -- interface ----------------------------------------------------
     def submit(self, spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                target_rel_err: float = 0.10, max_batches: int = 8,
-               converge_on: str = "phantom") -> str:
+               converge_on: str = "phantom", composition: bool = False) -> str:
         spec.validate()
         job = Job(id=uuid.uuid4().hex[:8], spec=spec, tier=tier,
                   target_rel_err=target_rel_err, max_batches=max_batches,
-                  converge_on=converge_on)
+                  converge_on=converge_on, composition=composition)
         with self._lock:
             self._jobs[job.id] = job
         threading.Thread(target=self._worker, args=(job,), daemon=True).start()
@@ -255,17 +411,28 @@ class LocalThreadRunner(JobRunner):
             def progress_cb(done: int, cap: int, rel: Optional[float]) -> None:
                 with self._lock:
                     job.batches_done = done
+                    job.progress_cap = cap
                     job.rel_err = rel
 
             try:
-                result = run_converged(
-                    job.spec, job.tier,
-                    target_rel_err=job.target_rel_err,
-                    max_batches=job.max_batches,
-                    converge_on=job.converge_on,
-                    progress_cb=progress_cb,
-                    cancel_cb=lambda: job._cancel,
-                )
+                if job.composition:
+                    result = run_composition(
+                        job.spec, job.tier,
+                        target_rel_err=job.target_rel_err,
+                        max_batches=job.max_batches,
+                        converge_on=job.converge_on,
+                        progress_cb=progress_cb,
+                        cancel_cb=lambda: job._cancel,
+                    )
+                else:
+                    result = run_converged(
+                        job.spec, job.tier,
+                        target_rel_err=job.target_rel_err,
+                        max_batches=job.max_batches,
+                        converge_on=job.converge_on,
+                        progress_cb=progress_cb,
+                        cancel_cb=lambda: job._cancel,
+                    )
             except Exception as exc:            # pragma: no cover - defensive
                 with self._lock:
                     job.error = f"{type(exc).__name__}: {exc}"

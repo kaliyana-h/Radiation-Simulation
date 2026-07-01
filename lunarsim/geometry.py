@@ -219,27 +219,71 @@ def build_geometry(spec: HabitatSpec) -> str:
     return geom
 
 
-def build_scorers(spec: HabitatSpec) -> str:
-    """Fluence-in / fluence-out / phantom-dose scorers."""
+def build_scorers(spec: HabitatSpec, ion_z: int = 0, ion_a: int = 0) -> str:
+    """Fluence-in / fluence-out / phantom-dose scorers.
+
+    ion_z / ion_a (the primary's atomic number and mass) restrict the wall-fluence
+    scorers to the incident primary species. The bare Fluence quantity counts the
+    full scalar fluence including the wall's back-scattered delta-ray / fragment
+    shower, which for heavy ions scales ~Z^2 and exactly cancels the Z^2 skin-dose
+    enhancement in the per-species normalisation rate = D * Phi / F -- collapsing
+    the HZE dose. Filtering to the primary's exact Z and A makes F the true incident
+    species fluence, so the flux normalisation rescales primaries-to-primaries as
+    intended. We filter by Z/A rather than particle name because Geant4 GenericIons
+    are created dynamically and are NOT in the static particle table, so
+    OnlyIncludeParticlesNamed rejects ion names ("Fe56" -> unknown particle); the
+    atomic-number / atomic-mass filters work uniformly for protons, alphas and ions.
+    For a heavy primary every wall fragment is lighter (Z<Z_primary), so the Z filter
+    isolates the primary cleanly; the A filter additionally drops same-Z fragments of
+    a different isotope. ion_z<=0 leaves the scorers unfiltered (legacy / non-GCR)."""
+    if ion_z > 0:
+        lines = [f"i:Sc/{{name}}/OnlyIncludeParticlesOfAtomicNumber = {ion_z}"]
+        if ion_a > 0:
+            lines.append(f"i:Sc/{{name}}/OnlyIncludeParticlesOfAtomicMass = {ion_a}")
+        pfilter = "\n".join(lines) + "\n"
+    else:
+        pfilter = ""
     return """# --- Scorers ---
 s:Sc/OutsideWallFluence/Quantity   = "Fluence"
 s:Sc/OutsideWallFluence/Component  = "OuterShell"
 s:Sc/OutsideWallFluence/OutputFile = "fluence_outside"
 s:Sc/OutsideWallFluence/IfOutputFileAlreadyExists = "Overwrite"
-
+{outer_filter}
 s:Sc/InsideWallFluence/Quantity    = "Fluence"
 s:Sc/InsideWallFluence/Component   = "InnerShell"
 s:Sc/InsideWallFluence/OutputFile  = "fluence_inside"
 s:Sc/InsideWallFluence/IfOutputFileAlreadyExists = "Overwrite"
+{inner_filter}
+""".format(outer_filter=pfilter.format(name="OutsideWallFluence"),
+           inner_filter=pfilter.format(name="InsideWallFluence")) + """
 
 s:Sc/PhantomDose/Quantity   = "DoseToMedium"
 s:Sc/PhantomDose/Component  = "Phantom"
 s:Sc/PhantomDose/OutputFile = "phantom_dose"
 s:Sc/PhantomDose/IfOutputFileAlreadyExists = "Overwrite"
 
+# LET-weighted dose-equivalent (ICRP-60 Q(L)) on the central phantom, mirroring
+# the skin lining. The phantom is a SOLID sphere where heavy ions stop (Bragg
+# peak), so its field is far harder than the thin lining's; giving it its own
+# emergent Q (instead of a flat default) is what stops the crew point dose being
+# both over-weighted and physically wrong for HZE ions.
+s:Sc/PhantomDoseEq/Quantity   = "DoseEquivalent_ICRP"
+s:Sc/PhantomDoseEq/Component  = "Phantom"
+s:Sc/PhantomDoseEq/OutputFile = "phantom_doseeq"
+s:Sc/PhantomDoseEq/IfOutputFileAlreadyExists = "Overwrite"
+
 # holistic habitat-wide dose: tissue-equivalent skin lining the whole inner wall
 s:Sc/SkinDose/Quantity   = "DoseToMedium"
 s:Sc/SkinDose/Component  = "CrewSkin"
 s:Sc/SkinDose/OutputFile = "skin_dose"
 s:Sc/SkinDose/IfOutputFileAlreadyExists = "Overwrite"
+
+# LET-weighted dose-equivalent (ICRP-60 Q(L)) on the same skin lining: custom
+# scorer that applies the per-particle quality factor at the source, so HZE ions
+# are weighted correctly instead of by a single flat field Q. (DoseEquivalentICRP
+# extension; value is Sv, scored in "Gy" units since Q is dimensionless.)
+s:Sc/SkinDoseEq/Quantity   = "DoseEquivalent_ICRP"
+s:Sc/SkinDoseEq/Component  = "CrewSkin"
+s:Sc/SkinDoseEq/OutputFile = "skin_doseeq"
+s:Sc/SkinDoseEq/IfOutputFileAlreadyExists = "Overwrite"
 """
