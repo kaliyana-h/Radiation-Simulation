@@ -392,5 +392,57 @@ class TestCsvParsing(unittest.TestCase):
             self.assertIsNone(out["capa_dose_gy"])     # file absent
 
 
+class _FakeRun:
+    """Minimal RunResult stand-in: the kernel fold reads only `.spec`."""
+    def __init__(self, spec):
+        self.spec = spec
+
+
+class TestSpeKernelFold(unittest.TestCase):
+    """The acute SPE dose now comes from folding the event spectrum against the
+    shielded proton response kernel, not a rare-tail-starved direct MC. Pins the
+    wiring and the validated behind-shield numbers so a silent edit can't regress
+    them (physics validation of the kernel itself lives in the offline build)."""
+
+    # the exact shielded 7.5 m dome the kernel R(E) was calibrated on
+    def _cal_dome(self):
+        return HabitatSpec(name="d", shape="dome", inner_radius_cm=750.0,
+                           walls=[WallLayer("polyethylene", 10.0),
+                                  WallLayer("aluminium", 5.0),
+                                  WallLayer("regolith", 70.0)])
+
+    def test_worst_case_reproduces_validated_behind_shield_dose(self):
+        from lunarsim import dosimetry
+        from lunarsim.bridge import WORST_CASE_SPE
+        a = dosimetry.assess_spe(_FakeRun(self._cal_dome()), WORST_CASE_SPE,
+                                 skin=False)
+        self.assertEqual(a.method, "kernel-fold")
+        self.assertTrue(a.calibrated)
+        # feb1956 behind 147 g/cm^2: BFO ~4.5 mSv, skin ~8.2 mSv (offline fold)
+        self.assertAlmostEqual(a.event_msv, 4.5, delta=1.0)   # headline = BFO
+        self.assertAlmostEqual(a.skin_msv, 8.2, delta=1.5)
+        self.assertGreater(a.skin_msv, a.event_msv)           # skin > BFO (depth)
+        self.assertLess(a.fraction_of("nasa_30day"), 0.1)     # far under the limit
+
+    def test_hard_event_dominates_behind_shield(self):
+        # the shielding-dependent fork: the HARD event (feb1956) doses the crew far
+        # more behind thick regolith than the SOFT high-fluence one (aug1972),
+        # despite aug1972's ~5x larger total fluence -- soft protons are stopped.
+        from lunarsim import dosimetry
+        from lunarsim.bridge import WORST_CASE_SPE, SOFT_SPE
+        r = _FakeRun(self._cal_dome())
+        hard = dosimetry.assess_spe(r, WORST_CASE_SPE, skin=False)
+        soft = dosimetry.assess_spe(r, SOFT_SPE, skin=False)
+        self.assertGreater(hard.event_msv, 10 * soft.event_msv)
+
+    def test_off_calibration_wall_is_flagged(self):
+        from lunarsim import dosimetry
+        from lunarsim.bridge import WORST_CASE_SPE
+        thin = HabitatSpec(name="t", shape="dome", inner_radius_cm=750.0,
+                           walls=[WallLayer("aluminium", 5.0)])   # ~13.5 g/cm^2
+        a = dosimetry.assess_spe(_FakeRun(thin), WORST_CASE_SPE, skin=False)
+        self.assertFalse(a.calibrated)   # kernel not valid off its shielded regime
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

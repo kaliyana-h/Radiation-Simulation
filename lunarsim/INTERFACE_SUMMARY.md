@@ -217,9 +217,14 @@ error bar that cannot be believed.
 backstop rather than the usual path — it still fires on a cancelled run or one
 that caps out at `SCORING_MAX_BATCHES`.
 
-The acute-SPE phase stays pinned to `converge_on="skin"`: an SPE is scored
-against the 30-day BFO limit off the wall lining, and the phantom plays no part
-in that verdict.
+The acute-SPE gate no longer runs an MC of its own. In a combined
+("SPE+GCR") job only the GCR composition is transported; the SPE verdict is a
+response-kernel fold (`dosimetry.assess_spe` → `fold_spe`) that reads nothing
+but the design's `spec`. A direct SPE MC behind thick regolith is rare-tail-
+starved — only a few percent of even the hardest event penetrates the wall — so
+its deep-organ dose was unreliable and is discarded in favour of the fold. The
+practical effect: the SPE gate is now instant, and it can no longer veto a GCR
+result it never fed.
 
 **Cost:** ~2 rounds → ~4 rounds per scoring run, roughly +1–2 hours.
 
@@ -442,11 +447,22 @@ The result is scored as a **single-event dose against the 250 mSv 30-day BFO lim
 rather than as an annual rate.
 
 Because only a rare high-energy tail penetrates thick regolith, a direct phantom MC
-of an SPE is sampling-starved; the trustworthy behind-shield event dose comes from
-folding the event spectrum against the pre-built, variance-reduced proton response
-kernel R(E) (the same OLTARIS/HZETRN response-function method used for GCR). For a
-147 g/cm² dome that fold puts even the hardest historical SPE (Feb-1956) at ~8 mSv
-skin / ~4.5 mSv BFO — roughly 1–2 % of the acute NASA limits.
+of an SPE is sampling-starved (the penetrating flux piles into one under-sampled
+energy bin and the deep-organ dose fluctuates wildly). The tool therefore scores the
+acute SPE dose by **folding** the event spectrum against a pre-built, variance-reduced
+proton response kernel R(E) — the same OLTARIS/HZETRN response-function method used
+for GCR — rather than by a per-event MC. This lives in `dosimetry.assess_spe`
+(`fold_spe` + `data/spe_proton_kernel.json`, 17 dense just-penetrating nodes × 22
+seeds through the shielded wall); the per-depth, per-organ NASA/ICRP quality factors
+are baked into R(E), so no reruns are needed and the rare-tail starvation is gone.
+
+The headline is the **BFO (deep, ~5 cm) dose-equivalent vs the 250 mSv 30-day limit**
+— the binding acute constraint — with the skin (surface) dose reported alongside
+against its own 1500 mSv limit. For the 147 g/cm² dome the fold puts even the hardest
+historical SPE (Feb-1956) at **~4.5 mSv BFO / ~8 mSv skin** — roughly 1–2 % of the
+acute NASA limits. R(E) is measured on the shielded regime it was calibrated on, so a
+design whose areal density departs from ~147 g/cm² is flagged *off-calibration /
+indicative* rather than silently trusted.
 
 ### 6.4 Design characteristics worth highlighting
 

@@ -29,8 +29,10 @@ from __future__ import annotations
 
 import functools
 import importlib.util
+import json
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from .bridge import RunResult, MAKE_SOURCE, SPEScenario
@@ -442,6 +444,117 @@ def assess_composition(species_results: list,
 
 
 # ----------------------------------------------------------------------
+# SPE proton response-kernel fold  (variance-reduced behind-shield dose)
+# ----------------------------------------------------------------------
+# Behind ~147 g/cm^2 of regolith only a few percent of even the hardest historical
+# SPE penetrates (>~430 MeV), so a direct phantom MC is rare-tail-starved: the
+# handful of protons that reach the crew land in one under-sampled energy bin and
+# the deep-organ dose fluctuates wildly (a flukey node once read BFO=83 mSv). The
+# fix is the OLTARIS/HZETRN response-function method: precompute, once, a per-organ
+# proton fluence-to-dose response R(E) [Gy*cm^2] by dense monoenergetic transport
+# through the shielded wall, then FOLD any event's proton spectrum against it. No
+# per-event MC, no rare tail -- the response already integrates the transport. The
+# kernel lives in data/spe_proton_kernel.json (17 dense just-penetrating nodes,
+# 22 seeds); see memory [[thin-shield-bragg-limit]] and [[variance-reduction-kernel]].
+_SPE_KERNEL_PATH = Path(__file__).with_name("data") / "spe_proton_kernel.json"
+
+
+@functools.lru_cache(maxsize=1)
+def _load_make_source():
+    """Import make_source.py as a module (for SPE_EVENTS and spe_integral_fluence)."""
+    spec = importlib.util.spec_from_file_location("make_source", str(MAKE_SOURCE))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@functools.lru_cache(maxsize=1)
+def _load_spe_kernel() -> dict:
+    with open(_SPE_KERNEL_PATH) as fh:
+        return json.load(fh)
+
+
+def _spe_dNdE(E: float, r0: float, e0: Optional[float]) -> float:
+    """Differential proton spectrum dN/dE on the energy grid.
+
+    Default is King (1974) exp-in-RIGIDITY, dN/dR ~ exp(-R/R0); on the energy grid
+    dN/dE = dN/dR * dR/dE = exp(-R/R0) * (E+mp)/R with R = sqrt(E(E+2mp)). The
+    legacy exp-in-ENERGY form (dN/dE ~ exp(-E/E0)) is used only when e0 is given."""
+    if e0 is not None:
+        return math.exp(-E / e0)
+    R = math.sqrt(E * (E + 2.0 * E0_PROTON))
+    return math.exp(-R / r0) * (E + E0_PROTON) / R
+
+
+def _spe_bin_fluence(event: str, r0: float, e0: Optional[float],
+                     edges: list) -> list:
+    """Event proton fluence [/cm^2] integrated into each kernel energy bin.
+
+    The spectral SHAPE is normalised so its integral above 30 MeV equals the event's
+    measured phi(>30 MeV) anchor (make_source.spe_integral_fluence), then integrated
+    over the geometric-mean bin edges. This is the one-time event fluence per bin --
+    the quantity R(E) is folded against."""
+    ms = _load_make_source()
+    lo, hi, n = 30.0, 25000.0, 40000
+    grid = [lo * (hi / lo) ** (i / (n - 1)) for i in range(n)]
+    f = [_spe_dNdE(e, r0, e0) for e in grid]
+    tot30 = sum(0.5 * (f[i] + f[i + 1]) * (grid[i + 1] - grid[i]) for i in range(n - 1))
+    scale = ms.spe_integral_fluence(event) / tot30
+
+    def integ(a: float, b: float) -> float:
+        m = 600
+        g = [a * (b / a) ** (i / (m - 1)) for i in range(m)]
+        return scale * sum(
+            0.5 * (_spe_dNdE(g[i], r0, e0) + _spe_dNdE(g[i + 1], r0, e0))
+            * (g[i + 1] - g[i]) for i in range(m - 1))
+
+    return [integ(edges[j], edges[j + 1]) for j in range(len(edges) - 1)]
+
+
+def fold_spe(scenario: SPEScenario, spec) -> dict:
+    """Fold an SPE proton spectrum against the shielded response kernel.
+
+    Returns per-organ-shell {q: (dose_gy, sem_gy)} for q in D (absorbed),
+    I (ICRP-60 dose-equivalent) and N (NASA/Cucinotta dose-equivalent), plus the
+    penetrating fluence and the characteristic rigidity used. The kernel R(E) and
+    its per-node MC error S(E) carry the CAL and the design's 1/R^2 gauge correction,
+    exactly matching the GCR path's normalisation."""
+    K = _load_spe_kernel()
+    ms = _load_make_source()
+    H = K["H"]
+    N = H["nodes_mev"]
+    edges = ([N[0]] + [math.sqrt(N[j] * N[j + 1]) for j in range(len(N) - 1)]
+             + [N[-1]])
+    e0 = getattr(scenario, "e0_MeV", None)
+    r0 = getattr(scenario, "r0_MV", None) or ms.SPE_EVENTS[scenario.event][0]
+    pb = _spe_bin_fluence(scenario.event, r0, e0, edges)
+
+    cal = OUTER_GAUGE_ANCHOR_CAL * _gauge_corr(spec)
+    shells = {}
+    for shell, _wT in K["meta"]["organs"]:
+        R, S = H["R"][shell], H["Rsem"][shell]
+        res = {}
+        for q in ("D", "I", "N"):
+            val = sum(R[q][j] * pb[j] for j in range(len(N))) * cal
+            sem = math.sqrt(sum((S[q][j] * pb[j]) ** 2 for j in range(len(N)))) * cal
+            res[q] = (val, sem)
+        shells[shell] = res
+    return {"shells": shells, "penetrating_cm2": sum(pb), "r0_MV": r0,
+            "anchor_cm2": ms.spe_integral_fluence(scenario.event)}
+
+
+def _spe_kernel_calibrated(spec) -> bool:
+    """True when the design sits in the shielded regime the kernel was measured on.
+
+    R(E) bakes in the transport through the calibration wall (~147 g/cm^2 regolith),
+    so folding is faithful only for designs of comparable areal density. Off-
+    calibration walls (much thinner/thicker) still get a number, but flagged."""
+    K = _load_spe_kernel()
+    cal_ad = K["meta"]["cal_wall_areal_g_cm2"]
+    return abs(spec.areal_density_gcm2() - cal_ad) / cal_ad <= 0.25
+
+
+# ----------------------------------------------------------------------
 # Solar Particle Event assessment (acute, event-total)
 # ----------------------------------------------------------------------
 @dataclass
@@ -454,12 +567,19 @@ class SPEAssessment:
     rate. Same fluence normalisation as the GCR path -- dose scales linearly with
     incident fluence -- but the real scale is the event's integral fluence rather
     than a flux times mission time."""
-    event_dose_gy: float            # absorbed dose for the whole event
+    event_dose_gy: float            # absorbed dose for the whole event (headline shell)
     quality_factor: float
     event_fluence_cm2: float        # real total event proton fluence used to normalise
-    sim_fluence_cm2: float          # OuterShell scalar fluence (sim)
+    sim_fluence_cm2: float          # penetrating (>~430 MeV) fluence reaching the crew
     scenario_name: str = ""
     rel_err: Optional[float] = None
+    # --- kernel-fold extras (depth-resolved acute dose) ------------------
+    method: str = "kernel-fold"     # "kernel-fold" (folded R(E)) | "direct-mc" (legacy)
+    calibrated: bool = True         # design sits in the kernel's shielded regime
+    bfo_dose_gy: Optional[float] = None       # deep (~5 cm) blood-forming-organ dose
+    bfo_quality_factor: Optional[float] = None
+    skin_dose_gy: Optional[float] = None      # surface (~0.1 cm) shell dose
+    skin_quality_factor: Optional[float] = None
 
     @property
     def event_mgy(self) -> float:
@@ -468,6 +588,21 @@ class SPEAssessment:
     @property
     def event_msv(self) -> float:
         return self.event_dose_gy * self.quality_factor * 1.0e3
+
+    @property
+    def bfo_msv(self) -> Optional[float]:
+        """Blood-forming-organ dose-equivalent -- the binding acute constraint for a
+        shielded habitat (NASA 30-day BFO limit 250 mSv). None if not folded."""
+        if self.bfo_dose_gy is None or self.bfo_quality_factor is None:
+            return None
+        return self.bfo_dose_gy * self.bfo_quality_factor * 1.0e3
+
+    @property
+    def skin_msv(self) -> Optional[float]:
+        """Skin/surface dose-equivalent (NASA 30-day skin limit 1500 mSv)."""
+        if self.skin_dose_gy is None or self.skin_quality_factor is None:
+            return None
+        return self.skin_dose_gy * self.skin_quality_factor * 1.0e3
 
     def fraction_of(self, limit_key: str = "nasa_30day") -> float:
         return self.event_msv / DOSE_LIMITS_MSV[limit_key]
@@ -496,39 +631,50 @@ class SPEAssessment:
 def assess_spe(result: RunResult, scenario: SPEScenario,
                quality_factor: float = DEFAULT_SPE_QUALITY_FACTOR,
                skin: bool = True) -> Optional[SPEAssessment]:
-    """Convert a completed SPE RunResult into a total-event dose assessment.
+    """Convert an SPE scenario into a total-event dose assessment by kernel fold.
 
-    skin=True (default) uses the inner-wall lining -- the habitat-wide, better-
-    sampled dose that maps most directly to the skin/BFO acute exposure the 30-day
-    limit governs. The event dose is D_sim * F_event / F_sim, the same linear
-    fluence scaling as the GCR path, with F_event the scenario's real integral
-    fluence (protons/cm^2 over the 10-1000 MeV band the source samples). The
-    effective quality factor is the emergent ICRP-60 Q(L) from the matching LET-
-    weighted scorer when present, else the flat SPE default. Returns None if the
-    run lacks the dose / outer-fluence needed to normalise."""
-    dose_gy = result.skin_dose_gy if skin else result.dose_gy
-    if dose_gy is None or not result.fluence_outside:
+    Behind thick regolith a direct phantom MC of an SPE is rare-tail-starved (the
+    penetrating flux piles into one under-sampled energy bin), so the dose is taken
+    instead from folding the event's proton spectrum against the precomputed shielded
+    response kernel R(E) (see fold_spe / [[thin-shield-bragg-limit]]). The transport,
+    depth structure and per-organ NASA/ICRP quality factors are all baked into R(E),
+    so this needs no per-event reruns and is immune to the sampling starvation.
+
+    `result` supplies only the design geometry (result.spec) for the 1/R^2 gauge
+    correction; its (noisy) SPE dose is no longer used. skin=True (default, as the
+    GUI calls it) makes the headline the SKIN shell; the deep blood-forming-organ
+    dose -- the binding acute constraint -- is always populated (bfo_msv). Returns
+    None only if the geometry is missing."""
+    spec = getattr(result, "spec", None)
+    if spec is None:
         return None
 
-    sim_fluence_cm2 = result.fluence_outside * 100.0          # /mm^2 -> /cm^2
-    event_dose_gy = (dose_gy * scenario.fluence_cm2 / sim_fluence_cm2
-                     * OUTER_GAUGE_ANCHOR_CAL * _gauge_corr(result.spec))
+    fold = fold_spe(scenario, spec)
+    shells = fold["shells"]
+    sd, sd_sem = shells["skin"]["D"]
+    sn, _ = shells["skin"]["N"]         # NASA/Cucinotta dose-equivalent
+    dd, dd_sem = shells["deep"]["D"]
+    dn, _ = shells["deep"]["N"]
 
-    eff_q = quality_factor
-    doseeq_sv = (getattr(result, "skin_doseeq_sv", None) if skin
-                 else getattr(result, "phantom_doseeq_sv", None))
-    if doseeq_sv is not None and dose_gy:
-        eff_q = doseeq_sv / dose_gy
+    # headline shell follows the `skin` flag (backward compat); both shells are
+    # always populated so the caller can show skin and BFO side by side.
+    hd, hd_sem, hn = (sd, sd_sem, sn) if skin else (dd, dd_sem, dn)
+    eff_q = (hn / hd) if hd else quality_factor
+    rel_err = (hd_sem / hd) if hd else None
 
-    rel_err = (getattr(result, "skin_dose_rel_err", None) if skin
-               else getattr(result, "dose_rel_err", None))
     return SPEAssessment(
-        event_dose_gy=event_dose_gy,
+        event_dose_gy=hd,
         quality_factor=eff_q,
-        event_fluence_cm2=scenario.fluence_cm2,
-        sim_fluence_cm2=sim_fluence_cm2,
+        event_fluence_cm2=fold["anchor_cm2"],
+        sim_fluence_cm2=fold["penetrating_cm2"],
         scenario_name=scenario.name,
         rel_err=rel_err,
+        method="kernel-fold",
+        calibrated=_spe_kernel_calibrated(spec),
+        bfo_dose_gy=dd,
+        bfo_quality_factor=(dn / dd) if dd else None,
+        skin_dose_gy=sd,
+        skin_quality_factor=(sn / sd) if sd else None,
     )
 
 

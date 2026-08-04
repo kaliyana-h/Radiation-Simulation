@@ -1071,7 +1071,7 @@ def _poll(_n, jid):
     err = f" ±{job.rel_err:.0%}" if job.rel_err else ""
     cap = job.progress_cap or job.max_batches
     if job.combined:
-        kind = f"SPE+GCR ({job.phase or 'spe'})"
+        kind = f"SPE+GCR ({job.phase or 'gcr'})"
     else:
         kind = "SPE" if job.spe is not None else "GCR"
     status = (f"[{job.status.value}] {kind} · {job.spec.name} — batch "
@@ -1088,7 +1088,10 @@ def _poll(_n, jid):
 
     # --- combined branch: BOTH gates from one run, stacked, never summed ----
     if job.combined:
-        a_spe = assess_spe(job.spe_result, job.spe, skin=True)
+        # The SPE gate folds the event spectrum against the shielded response
+        # kernel; it reads only .spec, so the GCR composition result feeds it
+        # (there is no separate SPE MC in a combined job any more).
+        a_spe = assess_spe(job.result, job.spe, skin=False)  # headline = BFO (binding)
         a = _assess(job.result, skin=False)       # central phantom (noisy)
         a_skin = _assess(job.result, skin=True)   # habitat-wide lining, ICRP-60 Q (cross-check)
         a_skin_nasa = _assess(job.result, skin=True, qf="nasa")  # NASA Q lining (headline)
@@ -1106,9 +1109,8 @@ def _poll(_n, jid):
         analysis = [_gate_header("Gate 1 · Chronic GCR field (annual)"),
                     *_analysis_body(a, a_skin, s, job, a_skin_nasa=a_skin_nasa),
                     _gate_header("Gate 2 · Solar particle event (acute)"),
-                    *_spe_analysis_body(a_spe, job, result=job.spe_result)]
-        report = _report_text(job, gcr=(a, a_skin, a_skin_nasa), spe=a_spe,
-                              spe_result=job.spe_result)
+                    *_spe_analysis_body(a_spe, job)]
+        report = _report_text(job, gcr=(a, a_skin, a_skin_nasa), spe=a_spe)
         # Overlay the chronic GCR field: it is the annual number the geometry is
         # mainly judged on, and the two gates are never summed.
         return (bar, status, metrics, analysis, True, report,
@@ -1116,7 +1118,7 @@ def _poll(_n, jid):
 
     # --- acute SPE branch: a single event dose vs the 30-day limit ----------
     if job.spe is not None:
-        a_spe = assess_spe(job.result, job.spe, skin=True)
+        a_spe = assess_spe(job.result, job.spe, skin=False)  # headline = BFO (binding)
         if a_spe is None:
             msg = html.Div("Event run finished but produced no usable dose — the "
                            "wall-lining scorer recorded no signal. Try more batches.",
@@ -1124,7 +1126,8 @@ def _poll(_n, jid):
             return bar, status, no_update, [msg], True, no_update, no_update
         report = _report_text(job, spe=a_spe)
         # SPE scores the lining only; there is no phantom event dose to show.
-        spe_overlay = {"sig": _spec_sig(job.spec), "skin": a_spe.event_msv,
+        # the lining position shows the SKIN dose; the BFO headline is on the card
+        spe_overlay = {"sig": _spec_sig(job.spec), "skin": a_spe.skin_msv,
                        "phantom": None, "unit": "mSv/event",
                        "scenario": "worst-case SPE"}
         return (bar, status, _spe_metric_cards(a_spe, job),
@@ -1392,48 +1395,55 @@ def _spe_score_card(a):
         html.Div(f"{verdict} · {frac:.0f}% of the {DOSE_LIMITS_MSV['nasa_30day']:.0f} "
                  "mSv 30-day BFO limit", style={
             "color": colour, "fontSize": "12px", "fontWeight": 700, "marginTop": "10px"}),
+        html.Div(f"skin {a.skin_msv:.0f} mSv · {a.skin_msv / 1500 * 100:.0f}% of the "
+                 "1500 mSv 30-day skin limit"
+                 if a.skin_msv is not None else "",
+                 style={"color": MUTED, "fontSize": "11px", "marginTop": "4px"}),
     ])
 
 
 def _spe_metric_cards(a, job):
     return [
         _spe_score_card(a),
-        metric_card("Absorbed dose (event)", f"{a.event_mgy:.1f} mGy",
-                    "whole-event total behind the wall lining"),
-        metric_card("Quality factor (mean)", f"{a.quality_factor:.2f}",
-                    "emergent ICRP-60 Q(L) for the proton event"),
+        metric_card("Absorbed dose, BFO (event)", f"{a.event_mgy:.2f} mGy",
+                    "deep (~5 cm) organ total, folded behind the shield"),
+        metric_card("Quality factor, BFO", f"{a.quality_factor:.2f}",
+                    "NASA/Cucinotta Q for the penetrating proton field"),
         metric_card("30-day BFO limit",
                     f"{DOSE_LIMITS_MSV['nasa_30day']:.0f} mSv",
-                    f"event delivers {a.fraction_of('nasa_30day') * 100:.0f}% of it"),
+                    f"event delivers {a.fraction_of('nasa_30day') * 100:.1f}% of it"),
     ]
 
 
-def _spe_analysis_body(a, job, result=None):
-    # `result` is the ConvergedResult carrying the SPE run's own statistics.
-    # For a solo SPE run this is job.result; for a combined run job.result holds
-    # the GCR composition, so the caller passes job.spe_result explicitly.
-    result = result if result is not None else job.result
+def _spe_analysis_body(a, job):
+    # The acute dose comes entirely from the response-kernel fold (dosimetry.
+    # fold_spe); there is no SPE MC run to read statistics from.
     s = a.summary("nasa_30day")
     verdict = s["verdict"]
+    skin_line = (f"{a.skin_msv:.0f} mSv · {a.skin_msv / 1500 * 100:.1f}% of 1500 limit"
+                 if a.skin_msv is not None else "n/a")
+    calib_note = ("" if a.calibrated else
+                  "  ⚠ design is off the kernel's shielded calibration; treat as indicative")
     return [
-        _kv("◆ EVENT DOSE-EQUIVALENT", f"{a.event_msv:.0f} mSv"
+        _kv("◆ BFO EVENT DOSE-EQUIVALENT", f"{a.event_msv:.0f} mSv"
             f"{f' ± {a.rel_err:.0%}' if a.rel_err else ''}"),
         _kv("Verdict (30-day BFO limit)", verdict),
-        _kv("Absorbed dose (event)", f"{a.event_mgy:.1f} mGy"),
-        _kv("Quality factor (mean, LET-weighted)", f"{s['quality_factor']:.2f}"),
-        _kv("Fraction of 30-day limit", f"{s['fraction_of_limit'] * 100:.1f} %"),
-        _kv("Event proton fluence", f"{a.event_fluence_cm2:.1e} /cm²"),
-        _kv("Scenario", a.scenario_name),
-        _kv("Wall transmission", f"{result.transmission:.2f}"
-            if result.transmission else "n/a"),
-        _kv("Statistics", f"{result.n_batches} batches, "
-            f"{result.total_primaries:,} primaries, {result.wall_seconds:.0f}s"),
+        _kv("Skin dose-equivalent (event)", skin_line),
+        _kv("Absorbed dose, BFO (event)", f"{a.event_mgy:.1f} mGy"),
+        _kv("Quality factor, BFO (NASA/Cucinotta)", f"{a.quality_factor:.2f}"),
+        _kv("Fraction of 30-day BFO limit", f"{s['fraction_of_limit'] * 100:.1f} %"),
+        _kv("Event proton fluence (>30 MeV)", f"{a.event_fluence_cm2:.1e} /cm²"),
+        _kv("Penetrating fluence (reaches crew)", f"{a.sim_fluence_cm2:.1e} /cm²"),
+        _kv("Scenario", a.scenario_name + calib_note),
+        _kv("Method", "response-kernel fold (variance-reduced)"),
         html.Div("A single acute solar particle event delivers its whole proton "
-                 "fluence over hours, so the dose is a one-off total (D_sim scaled to "
-                 "the event's real integral fluence), judged against the 30-day blood-"
-                 "forming-organ limit rather than an annual rate. Equivalent dose is "
-                 "LET-weighted per step (ICRP-60 Q(L)); the mean Q is the emergent "
-                 "H/D ratio.",
+                 "fluence over hours, so the dose is a one-off total judged against the "
+                 "30-day blood-forming-organ limit, not an annual rate. Behind thick "
+                 "regolith only a few percent of even the hardest event penetrates, so a "
+                 "direct phantom MC is rare-tail-starved; the dose is instead folded from "
+                 "the event's proton spectrum against a precomputed shielded response "
+                 "kernel R(E) (per-depth, per-organ NASA/ICRP quality factors baked in). "
+                 "BFO is the deep (~5 cm) shell; skin is the surface shell.",
                  style={"color": MUTED, "fontSize": "10px",
                         "marginTop": "12px", "fontStyle": "italic"}),
     ]
@@ -1442,14 +1452,14 @@ def _spe_analysis_body(a, job, result=None):
 # ----------------------------------------------------------------------
 # Design save / load  +  results report  (#2)
 # ----------------------------------------------------------------------
-def _report_text(job, gcr=None, spe=None, spe_result=None) -> str:
+def _report_text(job, gcr=None, spe=None) -> str:
     """One-page markdown report of the completed run: design, verdict, breakdown.
     Built here (in the poll) while the assessments are in hand and stashed in the
     report-store, so the download button just serves the string.
 
     A combined run passes BOTH gcr and spe; the two hazards are reported as
-    separate gates (never summed). `spe_result` carries the SPE run's own
-    statistics (job.result holds the GCR composition in the combined case)."""
+    separate gates (never summed). The SPE gate is a fold (no MC of its own);
+    job.result holds the GCR composition and supplies all reported statistics."""
     spec = job.spec
     stack = " + ".join(f"{w.thickness_cm * 10:g} mm {w.material}" for w in spec.walls)
     stamp = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1508,19 +1518,23 @@ def _report_text(job, gcr=None, spe=None, spe_result=None) -> str:
 
     if spe is not None:
         s = spe.summary("nasa_30day")
-        spe_stat = spe_result if spe_result is not None else job.result
+        skin_txt = (f"{spe.skin_msv:.0f} mSv ({spe.skin_msv / 1500 * 100:.1f}% of 1500)"
+                    if spe.skin_msv is not None else "n/a")
         L += ["## Gate 2 — worst-case solar particle event (acute)" if combined
               else "## Scenario — worst-case solar particle event (acute)",
               f"- Event: {spe.scenario_name}",
-              f"- Event proton fluence: {spe.event_fluence_cm2:.1e} /cm²",
-              f"- **Event dose-equivalent: {spe.event_msv:.0f} mSv**",
-              f"- Absorbed dose: {spe.event_mgy:.1f} mGy",
-              f"- Mean quality factor: {s['quality_factor']:.2f}",
+              f"- Event proton fluence (>30 MeV): {spe.event_fluence_cm2:.1e} /cm²",
+              f"- Penetrating fluence (reaches crew): {spe.sim_fluence_cm2:.1e} /cm²",
+              f"- **BFO event dose-equivalent: {spe.event_msv:.0f} mSv**",
+              f"- Skin event dose-equivalent: {skin_txt}",
+              f"- Absorbed dose (BFO): {spe.event_mgy:.2f} mGy",
+              f"- Mean quality factor (BFO, NASA/Cucinotta): {s['quality_factor']:.2f}",
               f"- 30-day BFO limit: {s['limit_mSv']:.0f} mSv "
-              f"({s['fraction_of_limit'] * 100:.0f}% used)",
+              f"({s['fraction_of_limit'] * 100:.1f}% used)",
               f"- **Verdict: {s['verdict']}**",
-              f"- Statistics: {spe_stat.n_batches} batches, "
-              f"{spe_stat.total_primaries:,} primaries, {spe_stat.wall_seconds:.0f}s"]
+              f"- Method: response-kernel fold (variance-reduced)"
+              + ("" if spe.calibrated else
+                 "  ⚠ off shielded calibration — indicative only")]
 
     return "\n".join(L)
 

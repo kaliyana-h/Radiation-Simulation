@@ -396,14 +396,13 @@ class Job:
     min_batches: int = 2                    # floor before ANY convergence stop
     composition: bool = False
     spe: Optional[SPEScenario] = None       # set -> single-event SPE run (protons)
-    combined: bool = False                  # set -> run BOTH gates: SPE then GCR
+    combined: bool = False                  # set -> BOTH gates: GCR MC + instant SPE fold
     status: JobStatus = JobStatus.QUEUED
-    phase: str = ""                         # combined run: "spe" or "gcr" (for status)
+    phase: str = ""                         # combined run: "gcr" (the only MC phase)
     batches_done: int = 0
     progress_cap: Optional[int] = None      # progress denominator (composition: summed)
     rel_err: Optional[float] = None
     result: Optional[object] = None         # ConvergedResult or ConvergedComposition
-    spe_result: Optional[object] = None     # combined run: the acute-SPE ConvergedResult
     error: Optional[str] = None
     submitted_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
@@ -509,41 +508,18 @@ class LocalThreadRunner(JobRunner):
 
             try:
                 if job.combined:
-                    # BOTH gates in one job. Run the fast acute-SPE phase first so
-                    # a failure surfaces in minutes, not after the ~40-min GCR run;
-                    # stash its result, then fall through to the GCR composition
-                    # (whose ConvergedComposition becomes job.result below).
+                    # BOTH gates in one job, but only the GCR gate needs an MC.
+                    # The acute-SPE verdict now comes from dosimetry.assess_spe,
+                    # which FOLDS the event's proton spectrum against a precomputed
+                    # shielded response kernel (fold_spe) and reads nothing but
+                    # job.spec. A direct SPE MC behind thick regolith is rare-tail-
+                    # starved -- only a few percent of even the hardest event
+                    # penetrates the wall, so its deep-organ dose fluctuated wildly
+                    # and was discarded in favour of the fold. We therefore skip it
+                    # entirely: the ~40-min SPE phase is gone, the SPE gate is
+                    # instant, and it can no longer veto a GCR result it never fed.
                     with self._lock:
-                        job.phase = "spe"
-                    spe_res = run_converged(
-                        job.spec, job.tier,
-                        target_rel_err=job.target_rel_err,
-                        max_batches=job.max_batches,
-                        # NOT job.converge_on: an SPE is scored with assess_spe
-                        # against the acute 30-day BFO limit off the wall lining.
-                        # The central phantom plays no part in that verdict, so
-                        # gating this phase on it (job.converge_on is "both" for
-                        # the workshop default) would spend rounds converging a
-                        # quantity the SPE gate never reads.
-                        converge_on="skin",
-                        spe=job.spe,
-                        progress_cb=progress_cb,
-                        cancel_cb=lambda: job._cancel,
-                    )
-                    if job._cancel and not spe_res.ok:
-                        self._finish(job, JobStatus.CANCELLED)
-                        return
-                    if not spe_res.ok:
-                        with self._lock:
-                            job.error = spe_res.log_tail or "SPE run failed"
-                            job.result = spe_res
-                        self._finish(job, JobStatus.ERROR)
-                        return
-                    with self._lock:
-                        job.spe_result = spe_res
                         job.phase = "gcr"
-                        job.batches_done = 0        # reset the bar for phase 2
-                        job.progress_cap = None
                     result = run_composition(
                         job.spec, job.tier,
                         target_rel_err=job.target_rel_err,
