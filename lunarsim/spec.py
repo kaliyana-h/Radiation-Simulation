@@ -8,6 +8,7 @@ independently.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field, replace
 from typing import Optional
 
@@ -55,6 +56,10 @@ class HabitatSpec:
     height_cm: Optional[float] = None        # axial length (cylinder/quonset); None = use radius
     walls: list[WallLayer] = field(default_factory=lambda: [WallLayer()])
     phantom_radius_cm: float = 20.0          # tissue-equivalent crew proxy
+    # Height of the phantom CENTRE above the floor (z=0). A standing adult's
+    # trunk/BFO centre, which is what the dose limits are written against. Fixed,
+    # NOT scaled with the habitat: crew do not get taller in a bigger dome.
+    crew_height_cm: float = 100.0
 
     # ---- validation -------------------------------------------------
     def validate(self) -> None:
@@ -68,6 +73,24 @@ class HabitatSpec:
             w.validate()
         if self.phantom_radius_cm >= self.inner_radius_cm:
             raise ValueError("phantom must fit inside the habitat")
+        # The phantom sits OFF the origin, so "radius < inner_radius" is no longer
+        # sufficient -- check the lifted sphere actually clears floor and shell.
+        if self.crew_height_cm - self.phantom_radius_cm < 0:
+            raise ValueError("crew phantom would sink below the floor: "
+                             f"crew_height_cm ({self.crew_height_cm:g}) must be "
+                             f">= phantom_radius_cm ({self.phantom_radius_cm:g})")
+        if self.shape == "cylinder":
+            # flat roof: clear it vertically; the barrel wall is the radial limit
+            headroom = self.effective_height_cm
+        else:
+            # dome / quonset: circular section centred on the floor origin, so the
+            # binding constraint is the slant distance to the shell
+            headroom = self.inner_radius_cm
+        if self.crew_height_cm + self.phantom_radius_cm > headroom:
+            raise ValueError(
+                f"crew phantom does not fit: centre {self.crew_height_cm:g} cm + "
+                f"radius {self.phantom_radius_cm:g} cm exceeds the {headroom:g} cm "
+                "interior. Increase the habitat size or lower crew_height_cm.")
 
     # ---- derived geometry ------------------------------------------
     @property
@@ -125,6 +148,56 @@ class HabitatSpec:
 
     def copy(self, **changes) -> "HabitatSpec":
         return replace(self, **changes)
+
+    # ---- serialisation (design save / load) -------------------------
+    # A design is one plain dict so it round-trips through JSON with no custom
+    # decoder. The nested wall list is the only non-scalar, so it is spelled out
+    # by hand rather than via dataclasses.asdict (which would also drag in any
+    # future private fields). from_dict is tolerant of unknown keys so a file
+    # saved by a newer build still loads.
+    SCHEMA_VERSION = 1
+
+    def to_dict(self) -> dict:
+        return {
+            "schema": self.SCHEMA_VERSION,
+            "name": self.name,
+            "shape": self.shape,
+            "inner_radius_cm": self.inner_radius_cm,
+            "height_cm": self.height_cm,
+            "phantom_radius_cm": self.phantom_radius_cm,
+            "crew_height_cm": self.crew_height_cm,
+            "walls": [{"material": w.material, "thickness_cm": w.thickness_cm}
+                      for w in self.walls],
+        }
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "HabitatSpec":
+        if not isinstance(data, dict):
+            raise ValueError("design file must be a JSON object")
+        walls = [WallLayer(material=w.get("material", "aluminium"),
+                           thickness_cm=float(w.get("thickness_cm", 0.0)))
+                 for w in data.get("walls", [])]
+        if not walls:
+            raise ValueError("design file has no wall layers")
+        spec = cls(
+            name=str(data.get("name", "habitat")),
+            shape=str(data.get("shape", "dome")),
+            inner_radius_cm=float(data.get("inner_radius_cm", 400.0)),
+            height_cm=(None if data.get("height_cm") is None
+                       else float(data["height_cm"])),
+            walls=walls,
+            phantom_radius_cm=float(data.get("phantom_radius_cm", 20.0)),
+            crew_height_cm=float(data.get("crew_height_cm", 100.0)),
+        )
+        spec.validate()
+        return spec
+
+    @classmethod
+    def from_json(cls, text: str) -> "HabitatSpec":
+        return cls.from_dict(json.loads(text))
 
 
 def default_spec() -> HabitatSpec:

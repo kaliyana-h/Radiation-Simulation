@@ -27,7 +27,7 @@ from enum import Enum
 from typing import Callable, Optional
 
 from .spec import HabitatSpec
-from .bridge import RunTier, RunResult, QUICK_LOOK, run_design
+from .bridge import RunTier, RunResult, QUICK_LOOK, run_design, SPEScenario
 from .dosimetry import assess_composition, GCR_COMPOSITION
 
 
@@ -45,8 +45,10 @@ class ConvergedResult:
     wall_seconds: float
     dose_gy: Optional[float] = None
     phantom_doseeq_sv: Optional[float] = None   # central phantom, LET-weighted (ICRP-60 Q)
+    phantom_doseeq_nasa_sv: Optional[float] = None  # same phantom, NASA/Cucinotta Q twin
     skin_dose_gy: Optional[float] = None        # habitat-wide inner-wall lining
     skin_doseeq_sv: Optional[float] = None      # same lining, LET-weighted (ICRP-60 Q)
+    skin_doseeq_nasa_sv: Optional[float] = None  # same lining, NASA/Cucinotta Q twin
     dose_rel_err: Optional[float] = None        # standard error / mean
     skin_dose_rel_err: Optional[float] = None   # standard error / mean (skin)
     fluence_inside: Optional[float] = None
@@ -65,13 +67,22 @@ class ConvergedResult:
             return None
         return self.fluence_inside / self.fluence_outside
 
+    @property
+    def phantom_batches(self) -> int:
+        """How many batches dose_rel_err was actually estimated from. Callers
+        must not quote the error bar without checking this: a stdev from 2
+        samples is not an error estimate (see PHANTOM_MIN_BATCHES in gui.py)."""
+        return len(self.per_batch_dose)
+
 
 def _combine(spec: HabitatSpec, tier: RunTier,
              batches: list[RunResult]) -> ConvergedResult:
     doses = [b.dose_gy for b in batches if b.dose_gy is not None]
     phaneq = [b.phantom_doseeq_sv for b in batches if b.phantom_doseeq_sv is not None]
+    phaneq_n = [b.phantom_doseeq_nasa_sv for b in batches if b.phantom_doseeq_nasa_sv is not None]
     skin = [b.skin_dose_gy for b in batches if b.skin_dose_gy is not None]
     skineq = [b.skin_doseeq_sv for b in batches if b.skin_doseeq_sv is not None]
+    skineq_n = [b.skin_doseeq_nasa_sv for b in batches if b.skin_doseeq_nasa_sv is not None]
     fin = [b.fluence_inside for b in batches if b.fluence_inside is not None]
     fout = [b.fluence_outside for b in batches if b.fluence_outside is not None]
     n = len(doses)
@@ -90,8 +101,10 @@ def _combine(spec: HabitatSpec, tier: RunTier,
         wall_seconds=sum(b.wall_seconds for b in batches),
         dose_gy=mean, dose_rel_err=rel,
         phantom_doseeq_sv=statistics.fmean(phaneq) if phaneq else None,
+        phantom_doseeq_nasa_sv=statistics.fmean(phaneq_n) if phaneq_n else None,
         skin_dose_gy=skin_mean, skin_dose_rel_err=skin_rel,
         skin_doseeq_sv=statistics.fmean(skineq) if skineq else None,
+        skin_doseeq_nasa_sv=statistics.fmean(skineq_n) if skineq_n else None,
         fluence_inside=statistics.fmean(fin) if fin else None,
         fluence_outside=statistics.fmean(fout) if fout else None,
         per_batch_dose=doses,
@@ -103,46 +116,71 @@ def _combine(spec: HabitatSpec, tier: RunTier,
 # ----------------------------------------------------------------------
 # Converge-by-error driver (blocking; the runner calls this in a thread)
 # ----------------------------------------------------------------------
-def _rel_err_of(combined: ConvergedResult, converge_on: str) -> Optional[float]:
-    """Pick the relative error the convergence loop watches.
+def _pick_rel(skin: Optional[float], phantom: Optional[float],
+              converge_on: str, phantom_slack: float = 1.0) -> Optional[float]:
+    """Pick the relative error a convergence loop watches from a (skin, phantom)
+    pair.
 
     "skin"    the habitat-wide inner-wall lining -- the workshop headline score.
-    "phantom" the central crew point dose -- a much noisier diagnostic.
+    "phantom" the central crew point dose -- the crew-representative geometry,
+              but ~135x less scoring mass and correspondingly noisier.
     "both"    require BOTH below target; the binding (larger) error drives the
-              loop, so neither the headline nor the phantom is reported converged
-              while it is still imprecise. Returns None until both have an error
-              estimate (>=2 batches), so the loop never stops on a half-measured
-              pair."""
+              loop, so neither number is reported converged while it is still
+              imprecise. Returns None until both have an error estimate
+              (>=2 batches), so the loop never stops on a half-measured pair.
+
+    phantom_slack gives the phantom its OWN, looser target without needing a
+    second target argument threaded through every caller: its error is divided
+    by the slack before the comparison, so slack=2.0 holds the phantom to 2x
+    target_rel_err while the skin stays at target. This matters because the two
+    converge at wildly different rates -- the skin is done in ~2 rounds and never
+    improves, the phantom is a 1/sqrt(N) grind -- so a single shared target makes
+    the phantom set the entire run length (measured: 12 rounds / ~17 h to reach
+    4.9%, vs ~4 rounds to reach 10%).
+
+    NOTE: with slack != 1 the return value is a TARGET-NORMALISED error, not a
+    raw one -- it is only meaningful against target_rel_err. Never display it as
+    an error bar; the reported bars come from skin_dose_rel_err / dose_rel_err."""
     if converge_on == "skin":
-        return combined.skin_dose_rel_err
+        return skin
     if converge_on == "phantom":
-        return combined.dose_rel_err
-    s, p = combined.skin_dose_rel_err, combined.dose_rel_err
-    if s is None or p is None:
+        return None if phantom is None else phantom / phantom_slack
+    if skin is None or phantom is None:
         return None
-    return max(s, p)
+    return max(skin, phantom / phantom_slack)
+
+
+def _rel_err_of(combined: ConvergedResult, converge_on: str,
+                phantom_slack: float = 1.0) -> Optional[float]:
+    """_pick_rel for a single-species ConvergedResult."""
+    return _pick_rel(combined.skin_dose_rel_err, combined.dose_rel_err,
+                     converge_on, phantom_slack)
 
 
 def run_converged(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                   target_rel_err: float = 0.10,
                   min_batches: int = 2, max_batches: int = 8,
-                  converge_on: str = "phantom",
+                  converge_on: str = "phantom", phantom_slack: float = 1.0,
                   particle: str = "proton", ion_z: int = 1, ion_a: int = 1,
+                  spe: Optional[SPEScenario] = None,
                   progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
                   cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedResult:
     """Run independent-seed batches until the chosen dose relative error <= target.
 
     converge_on selects which quantity must converge: "phantom" (central crew
-    point dose, default) or "skin" (habitat-wide inner-wall lining -- the
-    workshop score). particle/ion_z/ion_a select the GCR species (default
-    protons). progress_cb(done, cap, rel_err) reports that same quantity.
-    cancel_cb() -> True stops cleanly between batches."""
+    point dose, default), "skin" (habitat-wide inner-wall lining) or "both";
+    phantom_slack lets the phantom run to a looser target than the skin (see
+    _pick_rel). particle/ion_z/ion_a select the GCR species (default
+    protons); passing `spe` instead runs the design under a solar-particle-event
+    cone source (protons) and the result is scored with dosimetry.assess_spe.
+    progress_cb(done, cap, rel_err) reports that same quantity. cancel_cb() ->
+    True stops cleanly between batches."""
     batches: list[RunResult] = []
     for i in range(max_batches):
         if cancel_cb and cancel_cb():
             break
         res = run_design(spec, tier, seed=i + 1, keep=False,
-                         particle=particle, ion_z=ion_z, ion_a=ion_a)
+                         particle=particle, ion_z=ion_z, ion_a=ion_a, spe=spe)
         if not res.ok:
             # surface the failure immediately rather than averaging garbage
             cr = _combine(spec, tier, batches)
@@ -151,7 +189,7 @@ def run_converged(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
             return cr
         batches.append(res)
         combined = _combine(spec, tier, batches)
-        rel = _rel_err_of(combined, converge_on)
+        rel = _rel_err_of(combined, converge_on, phantom_slack)
         if progress_cb:
             progress_cb(len(batches), max_batches, rel)
         if len(batches) >= min_batches and rel is not None \
@@ -170,13 +208,14 @@ def run_converged(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
 # normalised dose rates in dosimetry.assess_composition.
 #
 # HISTORICAL: minor HZE species (C/Si/Fe) used to be capped at 2 batches
-# (_MINOR_MAX_BATCHES below) to save wall-time, on the grounds that they add
-# little to the SKIN dose-equivalent. That cap was lifted (run_composition now
-# gives every species max_batches): the SOLID central phantom catches rare heavy-
-# ion Bragg-peak stops, so its per-species dose has enormous variance and only
-# converges with a full batch budget. Capping it at 2 batches left the crew point
-# dose dominated by one or two stochastic stops and reported a misleadingly small
-# combined error. The constants are retained for reference / a future cheap tier.
+# (_MINOR_MAX_BATCHES below) to save wall-time; the cap was then lifted so every
+# species got the full max_batches, because the SOLID central phantom catches
+# rare heavy-ion Bragg-peak stops and its PER-SPECIES dose only converges with a
+# full budget. Both schemes asked the wrong question: neither a fixed cap nor
+# per-species convergence tracks the error on the SUMMED dose, which is the only
+# number the student ever sees. run_composition now converges that sum directly
+# (see its docstring), which makes both constants moot. Retained for reference /
+# a future cheap tier.
 _DOMINANT_ABUNDANCE = 0.05      # (retired) abundance threshold for the full budget
 _MINOR_MAX_BATCHES = 2          # (retired) former cap for the rare HZE species
 
@@ -228,54 +267,96 @@ class ConvergedComposition:
         # report the proton (first / dominant) species as representative
         return self.species_results[0][1].transmission if self.species_results else None
 
+    @property
+    def phantom_batches(self) -> int:
+        """Batches behind the combined phantom error -- the MINIMUM over species,
+        not the total. The combined estimate is only as sound as its weakest
+        species, and n_batches (rounds x species) flatters it badly: 5 species x
+        2 rounds reads as 10 but is still a 2-sample stdev per species."""
+        if not self.species_results:
+            return 0
+        return min(r.phantom_batches for _, r in self.species_results)
+
 
 def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                     target_rel_err: float = 0.05,
                     min_batches: int = 2, max_batches: int = 12,
-                    converge_on: str = "both",
+                    converge_on: str = "both", phantom_slack: float = 1.0,
                     composition: list = GCR_COMPOSITION,
                     progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
                     cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedComposition:
-    """Run one converged simulation per GCR species and combine them.
+    """Run every GCR species round-robin and converge on the COMBINED dose.
 
-    Each species is transported with its own ion/spectrum and converged on
+    Each species is transported with its own ion/spectrum. One batch of every
+    species is run per round; after each round the flux-weighted combined error
+    (dosimetry.assess_composition) is tested against target_rel_err on
     `converge_on` (default "both": the habitat-wide skin lining AND the central
-    crew phantom). Every species gets the full max_batches: the old HZE cap was
-    lifted because the solid central phantom only converges for heavy ions with a
-    full batch budget -- with the cap the phantom point dose was dominated by a
-    couple of under-sampled Bragg-peak stops and reported a misleadingly small
-    error (see _MINOR_MAX_BATCHES note). progress_cb reports cumulative batches
-    across all species against the total batch budget."""
-    caps = [max_batches for _sp in composition]
-    total_cap = sum(caps)
-    species_results: list = []
-    done_base = 0
-    for sp, cap in zip(composition, caps):
-        name, particle, z, a, abundance, group = sp
-        if cancel_cb and cancel_cb():
+    crew phantom), with the phantom allowed phantom_slack x target (see
+    _pick_rel -- the two quantities converge at very different rates).
+
+    Converging the SUM rather than each species separately is what makes this
+    affordable. The minor HZE species enter the sum weighted by their small real
+    abundance (C ~6%, Si ~2%, Fe ~0.4%), so their own statistical noise barely
+    propagates into it -- a 2% contributor at 20% rel-err adds 0.4% to the
+    combined error. Converging each species to +-5% in its own right therefore
+    buys precision the flux weighting immediately discards. Measured on a 3 m
+    dome (5 cm Al + 30 cm regolith), the old per-species scheme ran 4 h 21 min
+    and C/Si/Fe still never reached +-5% individually (0.097/0.175/0.140, all
+    three capped out) -- while the combined skin error was already 0.007, seven
+    times better than the target it was being held to.
+
+    progress_cb(rounds_done, max_batches, rel) reports completed rounds; a round
+    is one batch of every species, so the denominator is the round budget, not
+    the summed batch count."""
+    sp_tiers = [(sp, _species_tier(tier, sp[3])) for sp in composition]
+    batches: dict[str, list] = {sp[0]: [] for sp in composition}
+
+    def snapshot() -> list:
+        """Per-species ConvergedResults from the batches banked so far. Species
+        with no batches yet are omitted, so this is only a valid summand after a
+        complete round."""
+        out = []
+        for sp, sp_tier in sp_tiers:
+            if batches[sp[0]]:
+                out.append((sp, _combine(spec, sp_tier, batches[sp[0]])))
+        return out
+
+    rounds = 0
+    cancelled = False
+    for rnd in range(max_batches):
+        for sp, sp_tier in sp_tiers:
+            name, particle, z, a, abundance, group = sp
+            if cancel_cb and cancel_cb():
+                cancelled = True
+                break
+            res = run_design(spec, sp_tier, seed=rnd + 1, keep=False,
+                             particle=particle, ion_z=z, ion_a=a)
+            if not res.ok:
+                # a species failed -- surface immediately rather than a partial sum
+                return ConvergedComposition(spec=spec, tier=tier,
+                                            species_results=snapshot(),
+                                            returncode=res.returncode or 1,
+                                            log_tail=res.log_tail)
+            batches[name].append(res)
+        if cancelled:
+            # drop the half-finished round so the sum stays balanced across species
+            for bl in batches.values():
+                del bl[rounds:]
+            break
+        rounds = rnd + 1
+
+        species_results = snapshot()
+        a_skin = assess_composition(species_results, phi_MV=tier.phi_mv, skin=True)
+        a_phan = assess_composition(species_results, phi_MV=tier.phi_mv, skin=False)
+        rel = _pick_rel(a_skin.rel_err if a_skin else None,
+                        a_phan.rel_err if a_phan else None,
+                        converge_on, phantom_slack)
+        if progress_cb:
+            progress_cb(rounds, max_batches, rel)
+        if rounds >= min_batches and rel is not None and rel <= target_rel_err:
             break
 
-        def species_cb(done: int, _cap: int, rel: Optional[float],
-                       _base=done_base) -> None:
-            if progress_cb:
-                progress_cb(_base + done, total_cap, rel)
-
-        sp_tier = _species_tier(tier, a)   # scale histories ~1/A to bound batch cost
-        cr = run_converged(spec, sp_tier, target_rel_err=target_rel_err,
-                           min_batches=min_batches, max_batches=cap,
-                           converge_on=converge_on,
-                           particle=particle, ion_z=z, ion_a=a,
-                           progress_cb=species_cb, cancel_cb=cancel_cb)
-        species_results.append((sp, cr))
-        done_base += cap
-        if not cr.ok:
-            # a species failed -- surface immediately rather than a partial sum
-            comp = ConvergedComposition(spec=spec, tier=tier,
-                                        species_results=species_results,
-                                        returncode=cr.returncode or 1,
-                                        log_tail=cr.log_tail)
-            return comp
-
+    species_results = snapshot()
     comp = ConvergedComposition(
         spec=spec, tier=tier, species_results=species_results,
         n_batches=sum(r.n_batches for _, r in species_results),
@@ -285,8 +366,8 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
         log_tail=species_results[-1][1].log_tail if species_results else "",
     )
     # combined statistical error of the summed dose (flux-weighted, in quadrature)
-    a_skin = assess_composition(species_results, phi_MV=tier.phi_mv, skin=True)
-    a_phan = assess_composition(species_results, phi_MV=tier.phi_mv, skin=False)
+    a_skin = assess_composition(species_results, phi_MV=tier.phi_mv, skin=True) if species_results else None
+    a_phan = assess_composition(species_results, phi_MV=tier.phi_mv, skin=False) if species_results else None
     comp.skin_dose_rel_err = a_skin.rel_err if a_skin else None
     comp.dose_rel_err = a_phan.rel_err if a_phan else None
     return comp
@@ -311,12 +392,18 @@ class Job:
     target_rel_err: float
     max_batches: int
     converge_on: str = "phantom"
+    phantom_slack: float = 1.0              # phantom target = slack x target_rel_err
+    min_batches: int = 2                    # floor before ANY convergence stop
     composition: bool = False
+    spe: Optional[SPEScenario] = None       # set -> single-event SPE run (protons)
+    combined: bool = False                  # set -> run BOTH gates: SPE then GCR
     status: JobStatus = JobStatus.QUEUED
+    phase: str = ""                         # combined run: "spe" or "gcr" (for status)
     batches_done: int = 0
     progress_cap: Optional[int] = None      # progress denominator (composition: summed)
     rel_err: Optional[float] = None
     result: Optional[object] = None         # ConvergedResult or ConvergedComposition
+    spe_result: Optional[object] = None     # combined run: the acute-SPE ConvergedResult
     error: Optional[str] = None
     submitted_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
@@ -346,7 +433,9 @@ class JobRunner(ABC):
     @abstractmethod
     def submit(self, spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                target_rel_err: float = 0.10, max_batches: int = 8,
-               converge_on: str = "phantom", composition: bool = False) -> str: ...
+               converge_on: str = "phantom", phantom_slack: float = 1.0,
+               min_batches: int = 2, composition: bool = False,
+               spe: Optional[SPEScenario] = None, combined: bool = False) -> str: ...
 
     @abstractmethod
     def get(self, job_id: str) -> Optional[Job]: ...
@@ -372,11 +461,15 @@ class LocalThreadRunner(JobRunner):
     # -- interface ----------------------------------------------------
     def submit(self, spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                target_rel_err: float = 0.10, max_batches: int = 8,
-               converge_on: str = "phantom", composition: bool = False) -> str:
+               converge_on: str = "phantom", phantom_slack: float = 1.0,
+               min_batches: int = 2, composition: bool = False,
+               spe: Optional[SPEScenario] = None, combined: bool = False) -> str:
         spec.validate()
         job = Job(id=uuid.uuid4().hex[:8], spec=spec, tier=tier,
                   target_rel_err=target_rel_err, max_batches=max_batches,
-                  converge_on=converge_on, composition=composition)
+                  converge_on=converge_on, phantom_slack=phantom_slack,
+                  min_batches=min_batches, composition=composition, spe=spe,
+                  combined=combined)
         with self._lock:
             self._jobs[job.id] = job
         threading.Thread(target=self._worker, args=(job,), daemon=True).start()
@@ -415,12 +508,72 @@ class LocalThreadRunner(JobRunner):
                     job.rel_err = rel
 
             try:
-                if job.composition:
+                if job.combined:
+                    # BOTH gates in one job. Run the fast acute-SPE phase first so
+                    # a failure surfaces in minutes, not after the ~40-min GCR run;
+                    # stash its result, then fall through to the GCR composition
+                    # (whose ConvergedComposition becomes job.result below).
+                    with self._lock:
+                        job.phase = "spe"
+                    spe_res = run_converged(
+                        job.spec, job.tier,
+                        target_rel_err=job.target_rel_err,
+                        max_batches=job.max_batches,
+                        # NOT job.converge_on: an SPE is scored with assess_spe
+                        # against the acute 30-day BFO limit off the wall lining.
+                        # The central phantom plays no part in that verdict, so
+                        # gating this phase on it (job.converge_on is "both" for
+                        # the workshop default) would spend rounds converging a
+                        # quantity the SPE gate never reads.
+                        converge_on="skin",
+                        spe=job.spe,
+                        progress_cb=progress_cb,
+                        cancel_cb=lambda: job._cancel,
+                    )
+                    if job._cancel and not spe_res.ok:
+                        self._finish(job, JobStatus.CANCELLED)
+                        return
+                    if not spe_res.ok:
+                        with self._lock:
+                            job.error = spe_res.log_tail or "SPE run failed"
+                            job.result = spe_res
+                        self._finish(job, JobStatus.ERROR)
+                        return
+                    with self._lock:
+                        job.spe_result = spe_res
+                        job.phase = "gcr"
+                        job.batches_done = 0        # reset the bar for phase 2
+                        job.progress_cap = None
                     result = run_composition(
                         job.spec, job.tier,
                         target_rel_err=job.target_rel_err,
                         max_batches=job.max_batches,
                         converge_on=job.converge_on,
+                        phantom_slack=job.phantom_slack,
+                        min_batches=job.min_batches,
+                        progress_cb=progress_cb,
+                        cancel_cb=lambda: job._cancel,
+                    )
+                elif job.spe is not None:
+                    # a single acute event: one converged proton run under the
+                    # SPE cone source (no GCR composition sum)
+                    result = run_converged(
+                        job.spec, job.tier,
+                        target_rel_err=job.target_rel_err,
+                        max_batches=job.max_batches,
+                        converge_on=job.converge_on,
+                        spe=job.spe,
+                        progress_cb=progress_cb,
+                        cancel_cb=lambda: job._cancel,
+                    )
+                elif job.composition:
+                    result = run_composition(
+                        job.spec, job.tier,
+                        target_rel_err=job.target_rel_err,
+                        max_batches=job.max_batches,
+                        converge_on=job.converge_on,
+                        phantom_slack=job.phantom_slack,
+                        min_batches=job.min_batches,
                         progress_cb=progress_cb,
                         cancel_cb=lambda: job._cancel,
                     )
@@ -430,6 +583,8 @@ class LocalThreadRunner(JobRunner):
                         target_rel_err=job.target_rel_err,
                         max_batches=job.max_batches,
                         converge_on=job.converge_on,
+                        phantom_slack=job.phantom_slack,
+                        min_batches=job.min_batches,
                         progress_cb=progress_cb,
                         cancel_cb=lambda: job._cancel,
                     )

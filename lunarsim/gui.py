@@ -24,10 +24,14 @@ import math
 from dash import Dash, html, dcc, Input, Output, State, ALL, ctx, no_update
 import plotly.graph_objects as go
 
+import base64
+import datetime as _dt
+import json
+
 from .spec import HabitatSpec, WallLayer, MATERIALS, SHAPES
-from .bridge import FULL_RUN
-from .dosimetry import (assess, assess_composition, gcr_scalar_fluence_rate,
-                        DOSE_LIMITS_MSV)
+from .bridge import FULL_RUN, WORST_CASE_SPE
+from .dosimetry import (assess, assess_composition, assess_spe,
+                        gcr_scalar_fluence_rate, DOSE_LIMITS_MSV)
 from .jobs import default_runner, JobStatus, ConvergedComposition
 from .trajviz import run_cascade, build_figure
 
@@ -56,15 +60,46 @@ VERDICT_COLOUR = {"SAFE": "#3fb950", "MARGINAL": "#d29922", "EXCEEDS LIMIT": ACC
 # annual effective dose; converge it tightly since it is the official score.
 SCORING_TIER = FULL_RUN
 SCORING_MISSION_DAYS = 365
-# Converge on BOTH the SKIN (wall-lining) dose -- the official score -- and the
-# central crew phantom, to a tight 5% so genuinely different designs separate
-# beyond the statistical band instead of overlapping inside it. The phantom is the
-# binding constraint for heavy ions (solid sphere, rare Bragg-peak stops), so this
-# keeps the diagnostic point dose honest instead of reporting a small error off a
-# couple of under-sampled stops -- at the cost of more HZE batches.
+# Converge on BOTH the skin (wall-lining) dose -- the official score,
+# _metric_cards reads a_skin.annual_msv -- and the central crew phantom, but to
+# DIFFERENT targets: skin 5%, phantom 10% (SCORING_PHANTOM_SLACK = 2x).
+#
+# Why both: the phantom is the crew-representative geometry, not a curiosity. A
+# human torso has a ~20 cm mean chord and the phantom ~27 cm, so both are thick
+# enough to stop the degraded 50-200 MeV protons a thick shield produces; the
+# 2 cm lining (~4 cm mean chord) is thick enough for none of them and is a
+# SHIELDING figure of merit, not a person. It reads ~1.5x lower for that reason
+# (see INTERFACE_SUMMARY.md 4.1), so leaving the phantom un-converged left the
+# more crew-like number as the untrustworthy one. It now converges too.
+#
+# Why a looser target for it: the two converge at wildly different rates, and a
+# shared target lets the phantom set the whole run length. Measured on a 3 m dome
+# (5 cm Al + 30 cm regolith), by round:
+#     round  2:  skin 0.0071   phantom 0.0765
+#     round 12:  skin 0.0064   phantom 0.0490
+# The skin is done at round 2 and never improves; the phantom is a 1/sqrt(N)
+# grind that needed ten further rounds (~17 h) to crawl to 4.9% -- and BARELY
+# inside 5%, so a slightly noisier design just hits SCORING_MAX_BATCHES and stops
+# un-converged anyway. 10% is reached in ~4 rounds, which is ~1-2 extra hours,
+# clears PHANTOM_MIN_BATCHES so a real error bar is shown instead of a batch
+# count, and is honest about a quantity with 135x less scoring mass than the
+# skin. Tighten the slack toward 1.0 if wall-time ever stops being the binding
+# constraint.
+# A floor on rounds, and the reason the above is not enough on its own. The
+# phantom's rel_err at n=2 is a standard error off a TWO-sample stdev, which has
+# ~76% relative uncertainty and is skewed LOW -- so it frequently reports a
+# SMALLER error than the truth and satisfies the target spuriously. Measured 3 m
+# dome: round 2 phantom reads 0.0765, which passes a 10% target outright, yet the
+# same design still read 0.0490 at round 12; on the SHARC dome the n=2 estimate
+# was 3% against a 5-round value of 7%. Converging on "both" without a floor
+# therefore changes nothing -- the loop stops at round 2 exactly as before, on an
+# error bar that cannot be believed. The floor makes the phantom take enough
+# samples for its error to mean anything before any stop is allowed.
 SCORING_TARGET_REL_ERR = 0.05
 SCORING_MAX_BATCHES = 12
+SCORING_MIN_BATCHES = 4         # must be >= 3 for a usable stdev; see above
 SCORING_CONVERGE_ON = "both"
+SCORING_PHANTOM_SLACK = 2.0     # phantom target = SLACK x SCORING_TARGET_REL_ERR
 
 CARD = {"background": CARD_BG, "border": f"1px solid {BORDER}",
         "borderRadius": "10px", "padding": "16px", "marginBottom": "14px"}
@@ -312,6 +347,18 @@ def _semi_annulus(ri, ro, colour, name):
                       name=name, hoverinfo="name")
 
 
+def _semi_disc(r, colour):
+    """Filled HALF-disc sitting on the floor (y=0). A dome's cavity is a
+    hemisphere -- drawing it as a full circle put half the interior underground
+    and made the crew phantom look like it was floating."""
+    th = [i * math.pi / 60 for i in range(61)]
+    return go.Scatter(x=[r * math.cos(t) for t in th],
+                      y=[r * math.sin(t) for t in th],
+                      fill="toself", mode="lines",
+                      line=dict(color=colour, width=0.5), fillcolor=colour,
+                      hoverinfo="skip", showlegend=False)
+
+
 def _rect_trace(x0, x1, y0, y1, colour, name, legend=True):
     return go.Scatter(x=[x0, x1, x1, x0, x0], y=[y0, y0, y1, y1, y0],
                       fill="toself", mode="lines",
@@ -319,24 +366,20 @@ def _rect_trace(x0, x1, y0, y1, colour, name, legend=True):
                       name=name, hoverinfo="name", showlegend=legend)
 
 
-def _cross_arch(spec: HabitatSpec) -> go.Figure:
+def _cross_arch(spec: HabitatSpec, dose=None) -> go.Figure:
     """Radial slice: a half-arch (dome and quonset share this cross-section)."""
     fig = go.Figure()
     outer = spec.outer_radius_cm
     span = outer * 1.25
     fig.add_shape(type="rect", x0=-span, x1=span, y0=-span * 0.35, y1=0,
                   fillcolor=MATERIALS["regolith"]["colour"], line_width=0, layer="below")
-    fig.add_shape(type="circle", x0=-spec.inner_radius_cm, x1=spec.inner_radius_cm,
-                  y0=-spec.inner_radius_cm, y1=spec.inner_radius_cm,
-                  fillcolor="#0b1d2e", line_width=0)
+    fig.add_trace(_semi_disc(spec.inner_radius_cm, "#0b1d2e"))
     for i, ((ri, ro), w) in enumerate(zip(spec.layer_radii_cm(), spec.walls)):
         fig.add_trace(_semi_annulus(ri, ro, MATERIALS[w.material]["colour"],
                                     f"L{i}: {w.material} {w.thickness_cm:g} cm"))
-    cz, pr = spec.inner_radius_cm / 2.0, spec.phantom_radius_cm
-    fig.add_shape(type="circle", x0=-pr, x1=pr, y0=cz - pr, y1=cz + pr,
-                  fillcolor="#6fb3ff", line=dict(color="#cfe8ff", width=1))
-    fig.add_annotation(x=0, y=cz, text="crew", showarrow=False,
-                       font=dict(color=BG, size=10))
+    cz, pr = spec.crew_height_cm, spec.phantom_radius_cm   # matches geometry.py
+    _add_scorers(fig, spec, dose, cz, pr, lining_r=spec.inner_radius_cm,
+                 label_x=spec.inner_radius_cm * 0.62)
     fig.update_layout(
         template="plotly_dark", paper_bgcolor=BG, plot_bgcolor=BG,
         margin=dict(l=10, r=10, t=10, b=10), height=470,
@@ -346,7 +389,59 @@ def _cross_arch(spec: HabitatSpec) -> go.Figure:
     return fig
 
 
-def _cross_cylinder(spec: HabitatSpec) -> go.Figure:
+def _add_scorers(fig, spec, dose, cz, pr, lining_r, label_x, lining_y=None):
+    """Draw the two things the simulation ACTUALLY scores -- the inner-wall lining
+    and the central crew phantom -- and label them with real dose when a finished
+    run matches this geometry.
+
+    There is no spatially-resolved dose field to paint: TOPAS scores exactly these
+    two locations (skin_doseeq_sv, phantom_doseeq_sv), so the figure shows where
+    dose is measured and what was measured, rather than a fabricated gradient.
+    """
+    unit = (dose or {}).get("unit", "")
+    skin_v = (dose or {}).get("skin")
+    phan_v = (dose or {}).get("phantom")
+
+    # --- crew phantom: label OUTSIDE the circle on a leader line so it stays
+    # readable no matter how small the phantom is drawn ----------------------
+    fig.add_shape(type="circle", x0=-pr, x1=pr, y0=cz - pr, y1=cz + pr,
+                  fillcolor="#6fb3ff", line=dict(color="#cfe8ff", width=1))
+    ptxt = "crew phantom"
+    if phan_v is not None:
+        ptxt += f"<br><b>{phan_v:,.0f}</b> {unit}"
+    fig.add_annotation(x=pr * 0.7, y=cz + pr * 0.7, text=ptxt,
+                       showarrow=True, arrowhead=0, arrowsize=1, arrowwidth=1,
+                       arrowcolor="#cfe8ff", ax=48, ay=-34,
+                       xanchor="left", align="left",
+                       font=dict(color="#cfe8ff", size=10),
+                       bgcolor="rgba(11,29,46,0.85)", borderpad=3)
+
+    # --- inner-wall lining: the headline scorer, a thin ring on the whole
+    # inner surface ---------------------------------------------------------
+    ly = lining_r if lining_y is None else lining_y
+    stxt = "inner-wall lining (skin)"
+    if skin_v is not None:
+        stxt += f"<br><b>{skin_v:,.0f}</b> {unit}"
+    fig.add_annotation(x=label_x, y=ly * 0.78 if lining_y is None else ly,
+                       text=stxt, showarrow=True, arrowhead=0, arrowwidth=1,
+                       arrowcolor="#ffd479", ax=30, ay=-26,
+                       xanchor="left", align="left",
+                       font=dict(color="#ffd479", size=10),
+                       bgcolor="rgba(11,29,46,0.85)", borderpad=3)
+
+    if dose is None:
+        fig.add_annotation(
+            x=0, y=-0.06, xref="paper", yref="paper", showarrow=False,
+            text="No dose overlaid — press Evaluate to score this design",
+            font=dict(color=MUTED, size=10), xanchor="left")
+    else:
+        fig.add_annotation(
+            x=0, y=-0.06, xref="paper", yref="paper", showarrow=False,
+            text=f"Dose at the two scored locations · {dose.get('scenario','')}",
+            font=dict(color=MUTED, size=10), xanchor="left")
+
+
+def _cross_cylinder(spec: HabitatSpec, dose=None) -> go.Figure:
     """Axial slice through a vertical cylinder: rectangular interior, side walls,
     and a flat layered roof."""
     fig = go.Figure()
@@ -365,11 +460,9 @@ def _cross_cylinder(spec: HabitatSpec) -> go.Figure:
         below = ri - inner
         fig.add_trace(_rect_trace(-outer, outer, H + below, H + below + w.thickness_cm,
                                   c, lab, legend=False))                  # roof cap
-    cz, pr = H / 2.0, spec.phantom_radius_cm
-    fig.add_shape(type="circle", x0=-pr, x1=pr, y0=cz - pr, y1=cz + pr,
-                  fillcolor="#6fb3ff", line=dict(color="#cfe8ff", width=1))
-    fig.add_annotation(x=0, y=cz, text="crew", showarrow=False,
-                       font=dict(color=BG, size=10))
+    cz, pr = spec.crew_height_cm, spec.phantom_radius_cm   # matches geometry.py
+    _add_scorers(fig, spec, dose, cz, pr, lining_r=inner,
+                 label_x=inner * 0.55, lining_y=H * 0.80)
     fig.update_layout(
         template="plotly_dark", paper_bgcolor=BG, plot_bgcolor=BG,
         margin=dict(l=10, r=10, t=10, b=10), height=470,
@@ -379,10 +472,18 @@ def _cross_cylinder(spec: HabitatSpec) -> go.Figure:
     return fig
 
 
-def cross_section(spec: HabitatSpec) -> go.Figure:
+def _spec_sig(spec: HabitatSpec) -> str:
+    """Identity of a design. A dose overlay is only drawn when its signature still
+    matches the design on screen, so editing the wall can never leave last run's
+    numbers sitting on a geometry they were not scored against."""
+    return (f"{spec.shape}|{spec.inner_radius_cm:.3f}|"
+            + ";".join(f"{w.material}:{w.thickness_cm:.4f}" for w in spec.walls))
+
+
+def cross_section(spec: HabitatSpec, dose=None) -> go.Figure:
     if spec.shape == "cylinder":
-        return _cross_cylinder(spec)
-    return _cross_arch(spec)        # dome + quonset share the half-arch slice
+        return _cross_cylinder(spec, dose)
+    return _cross_arch(spec, dose)  # dome + quonset share the half-arch slice
 
 
 # ----------------------------------------------------------------------
@@ -467,8 +568,8 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
                  options=[{"label": SHAPE_LABELS[s], "value": s} for s in SHAPES],
                  style={"marginBottom": "16px"}),
     slider_field("Inner radius (m)", "inner-r-val",
-                 dcc.Slider(id="inner-r", min=1.5, max=6.0, step=0.05, value=2.5,
-                            marks=_marks([2, 3, 4, 5, 6]), tooltip=None)),
+                 dcc.Slider(id="inner-r", min=1.5, max=8.0, step=0.05, value=2.5,
+                            marks=_marks([2, 3, 4, 5, 6, 7, 8]), tooltip=None)),
 
     html.Div("Wall Layers", style=SECTION),
     html.Div("Innermost first. Add the structural shell, insulation and regolith "
@@ -487,15 +588,22 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
         "width": "100%", "marginTop": "2px"}),
     dcc.Store(id="active-rows", data=list(range(len(DEFAULT_LAYERS)))),
 
+    html.Div("Exposure Scenario", style=SECTION),
+    dcc.RadioItems(id="scenario", value="both",
+                   options=[
+                       {"label": " GCR + SPE", "value": "both"},
+                       {"label": " GCR only", "value": "gcr"},
+                       {"label": " Solar Particle Event only", "value": "spe"}],
+                   style={"color": INK, "fontSize": "13px"},
+                   labelStyle={"display": "flex", "alignItems": "center",
+                               "marginBottom": "6px", "color": INK},
+                   inputStyle={"marginRight": "8px", "accentColor": ACCENT}),
+    html.Div(id="scenario-note",
+             style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
+                    "margin": "4px 0 0"}),
+
     html.Div("Scoring Conditions", style=SECTION),
-    html.Div(style={**CARD, "padding": "12px"}, children=[
-        html.Div("Fixed for every team so the scores are directly comparable.",
-                 style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
-                        "marginBottom": "6px"}),
-        _kv("🔒 GCR field", "φ=400 MV (solar min)"),
-        _kv("🔒 Mission", f"{SCORING_MISSION_DAYS} days"),
-        _kv("🔒 Statistics", "converged full run"),
-    ]),
+    html.Div(id="scoring-conditions", style={**CARD, "padding": "12px"}),
 
     html.Button("▶  Evaluate protection", id="run", n_clicks=0, style={
         "background": ACCENT, "color": "#fff", "border": "none", "borderRadius": "8px",
@@ -505,6 +613,28 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
         "background": "transparent", "color": MUTED, "border": f"1px solid {BORDER}",
         "borderRadius": "8px", "padding": "8px", "cursor": "pointer", "fontSize": "12px",
         "width": "100%", "marginTop": "8px"}),
+
+    html.Div("Design File", style=SECTION),
+    html.Div(style={"display": "flex", "gap": "8px"}, children=[
+        html.Button("⭳ Save", id="save-design", n_clicks=0, style={
+            "flex": "1", "background": "transparent", "color": INK,
+            "border": f"1px solid {BORDER}", "borderRadius": "8px",
+            "padding": "8px", "cursor": "pointer", "fontSize": "12px"}),
+        dcc.Upload(id="load-design", style={"flex": "1"}, children=html.Div(
+            "⭱ Load", style={"background": "transparent", "color": INK,
+                             "border": f"1px dashed {BORDER}", "borderRadius": "8px",
+                             "padding": "8px", "cursor": "pointer", "fontSize": "12px",
+                             "textAlign": "center"})),
+    ]),
+    html.Button("📄 Download results report", id="save-report", n_clicks=0, style={
+        "background": "transparent", "color": INK, "border": f"1px solid {BORDER}",
+        "borderRadius": "8px", "padding": "8px", "cursor": "pointer", "fontSize": "12px",
+        "width": "100%", "marginTop": "8px"}),
+    html.Div(id="design-file-note",
+             style={"color": MUTED, "fontSize": "11px", "marginTop": "6px",
+                    "minHeight": "14px"}),
+    dcc.Download(id="download-design"),
+    dcc.Download(id="download-report"),
 ])
 
 
@@ -520,7 +650,7 @@ TAB_SELECTED = {"backgroundColor": "transparent", "border": "none",
 
 overview_panel = html.Div(id="panel-overview", children=[
     dcc.RadioItems(id="view-mode", value="wire", inline=True,
-                   options=[{"label": " Dose cross-section", "value": "cross"},
+                   options=[{"label": " Shielding cross-section", "value": "cross"},
                             {"label": " 3-D wireframe", "value": "wire"}],
                    style={"color": INK, "fontSize": "13px"},
                    labelStyle={"marginRight": "20px", "color": INK,
@@ -628,6 +758,8 @@ right = html.Div(style={"width": "320px", "minWidth": "320px", "padding": "26px 
 app.layout = html.Div(style={"display": "flex", "background": BG}, children=[
     sidebar, centre, right,
     dcc.Store(id="job-store", data=None),
+    dcc.Store(id="report-store", data=None),
+    dcc.Store(id="dose-overlay", data=None),
     dcc.Interval(id="poll", interval=1500, disabled=True),
 ])
 
@@ -644,6 +776,46 @@ def _switch_tab(tab):
     return (show if tab == "overview" else hide,
             show if tab == "gcr" else hide,
             show if tab == "dose" else hide)
+
+
+# ----------------------------------------------------------------------
+# Callbacks: exposure-scenario copy (GCR chronic vs acute SPE)
+# ----------------------------------------------------------------------
+# The scenario radio only changes WHICH job runs and how the result is judged;
+# both use the same fixed statistics preset so the two verdicts stay comparable.
+@app.callback(
+    Output("scoring-conditions", "children"), Output("scenario-note", "children"),
+    Input("scenario", "value"))
+def _scenario_conditions(scenario):
+    if scenario == "spe":
+        note = ("A single worst-case solar proton event — the acute test. Scored as "
+                "the TOTAL event dose against the 30-day blood-forming-organ limit, "
+                "not a per-year rate.")
+        rows = [
+            _kv("🔒 Event", WORST_CASE_SPE.name),
+            _kv("🔒 Fluence", f"{WORST_CASE_SPE.fluence_cm2:.0e} p/cm²"),
+            _kv("🔒 Limit", f"{DOSE_LIMITS_MSV['nasa_30day']:.0f} mSv (30-day BFO)"),
+        ]
+    elif scenario == "both":
+        note = ("One run, both hazards: the chronic GCR field AND a worst-case solar "
+                "event, judged as two SEPARATE pass/fail gates (annual/career limit vs "
+                "the 30-day limit). The two doses are never summed — they reward "
+                "different shielding, so a design must clear both.")
+        rows = [
+            _kv("🔒 GCR field", "φ=400 MV (solar min)"),
+            _kv("🔒 SPE event", WORST_CASE_SPE.name),
+            _kv("🔒 Gates", "career limit  +  30-day BFO limit"),
+            _kv("🔒 Statistics", "converged full run"),
+        ]
+    else:
+        note = ("The chronic galactic-cosmic-ray field at solar minimum, integrated "
+                "over the whole mission and judged against the annual / career limits.")
+        rows = [
+            _kv("🔒 GCR field", "φ=400 MV (solar min)"),
+            _kv("🔒 Mission", f"{SCORING_MISSION_DAYS} days"),
+            _kv("🔒 Statistics", "converged full run"),
+        ]
+    return rows, note
 
 
 # ----------------------------------------------------------------------
@@ -706,9 +878,10 @@ def _render_layers(active):
     Input({"type": "layer-mat", "index": ALL}, "value"),
     Input({"type": "layer-thk", "index": ALL}, "value"),
     Input("view-mode", "value"),
+    Input("dose-overlay", "data"),
     State({"type": "layer-mat", "index": ALL}, "id"),
     State("active-rows", "data"))
-def _live(shape, inner_r, mats, thks, view_mode, ids, active):
+def _live(shape, inner_r, mats, thks, view_mode, overlay, ids, active):
     r_label = f"{float(inner_r or 2.5):.2f}"
     layers = _layers_from_components(mats, ids, thks, active)
     if not any(L["t"] > 0 for L in layers):
@@ -723,9 +896,16 @@ def _live(shape, inner_r, mats, thks, view_mode, ids, active):
     except Exception:
         return (no_update, no_update, no_update, no_update, r_label)
 
-    fig = wireframe_3d(spec) if view_mode == "wire" else cross_section(spec)
-    title = (f"3-D Habitat Model — {SHAPE_LABELS[spec.shape]}" if view_mode == "wire"
-             else f"Dose Cross-section — {SHAPE_LABELS[spec.shape]}")
+    # Only overlay dose that was actually scored against THIS geometry.
+    dose = overlay if (overlay and overlay.get("sig") == _spec_sig(spec)) else None
+    fig = wireframe_3d(spec) if view_mode == "wire" else cross_section(spec, dose)
+    if view_mode == "wire":
+        title = f"3-D Habitat Model — {SHAPE_LABELS[spec.shape]}"
+    elif dose:
+        title = (f"Dose Cross-section — {SHAPE_LABELS[spec.shape]} "
+                 f"· {dose.get('scenario', '')}")
+    else:
+        title = f"Shielding Cross-section — {SHAPE_LABELS[spec.shape]}"
 
     stack = " + ".join(f"{w.thickness_cm * 10:g} mm {w.material}" for w in spec.walls)
     subtitle = (f"Radiation protection score · {SHAPE_LABELS[spec.shape]} "
@@ -765,7 +945,8 @@ def _cascade(n, colour_by, shape, inner_r, mats, ids, thks, active, cascade_dir)
         # cheap re-render of the existing run in the new colour scheme
         if not cascade_dir:
             return no_update, no_update, no_update
-        fig = build_figure(cascade_dir, spec=spec, colour_by=colour_by)
+        fig = build_figure(cascade_dir, spec=spec, colour_by=colour_by,
+                           title=CASCADE_TITLE)
         return _style_cascade(fig), cascade_dir, no_update
 
     # button: run a fresh headless cascade for this design
@@ -775,7 +956,8 @@ def _cascade(n, colour_by, shape, inner_r, mats, ids, thks, active, cascade_dir)
         return no_update, no_update, html.Span(
             f"cascade failed: {str(exc)[-200:]}", style={"color": ACCENT})
     run_dir = str(html_path.parent)
-    fig = build_figure(run_dir, spec=spec, colour_by=colour_by)
+    fig = build_figure(run_dir, spec=spec, colour_by=colour_by,
+                       title=CASCADE_TITLE)
     n_tracks = len(fig.data) and sum(
         1 for tr in fig.data if getattr(tr, "mode", "") == "lines")
     status = (f"cascade for '{spec.name}' ({spec.areal_density_gcm2():.0f} g/cm² "
@@ -783,16 +965,32 @@ def _cascade(n, colour_by, shape, inner_r, mats, ids, thks, active, cascade_dir)
     return _style_cascade(fig), run_dir, status
 
 
+# Short on purpose: a left-aligned title runs rightward into the modebar icons,
+# and the status line under the plot already names the design and its g/cm2.
+# trajviz keeps its own longer default for the standalone HTML export.
+CASCADE_TITLE = "Habitat radiation cascade"
+
+
 def _style_cascade(fig):
     """Match the cascade figure to the app theme and frame, and pull the camera
     back so the whole hemisphere fits (default 3-D camera clips the bounding box)."""
+    # The legend gets its own RIGHT-HAND COLUMN, never the top margin. A
+    # horizontal legend up top wraps to as many rows as there are entries and
+    # grows UPWARD through the title -- and the entry count is data-dependent
+    # (colour_by="family" emits one per particle family, several more than
+    # "origin"), so no fixed top margin can be deep enough. Stacked vertically on
+    # the right it grows downward into 560px of free height instead, and the
+    # title owns the top band alone.
     fig.update_layout(
         paper_bgcolor=BG, height=560,
-        margin=dict(l=0, r=0, t=30, b=0),
+        margin=dict(l=0, r=190, t=44, b=0),
+        title=dict(x=0, xanchor="left", y=1, yanchor="top",
+                   font=dict(size=14), pad=dict(t=12, l=6)),
         scene=dict(bgcolor=BG, aspectmode="data",
                    camera=dict(eye=dict(x=1.7, y=1.7, z=1.1))),
-        legend=dict(orientation="h", x=0, y=1.06, font=dict(size=11),
-                    bgcolor="rgba(0,0,0,0)"))
+        legend=dict(orientation="v", x=1.0, xanchor="left", y=1, yanchor="top",
+                    font=dict(size=11), bgcolor="rgba(0,0,0,0)",
+                    itemsizing="constant"))
     return fig
 
 
@@ -807,20 +1005,42 @@ def _style_cascade(fig):
     State({"type": "layer-mat", "index": ALL}, "value"),
     State({"type": "layer-mat", "index": ALL}, "id"),
     State({"type": "layer-thk", "index": ALL}, "value"),
-    State("active-rows", "data"),
+    State("active-rows", "data"), State("scenario", "value"),
     prevent_initial_call=True)
-def _evaluate(n, shape, inner_r, mats, ids, thks, active):
+def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario):
     layers = _layers_from_components(mats, ids, thks, active)
     if not any(L["t"] > 0 for L in layers):
         # No layer has a thickness -- refuse rather than score a fabricated wall.
         return no_update, True, "⚠ Enter a wall thickness (mm) for at least one layer before evaluating."
     spec = spec_from_inputs("habitat", shape, inner_r, layers)
-    # Always the fixed scoring preset -- identical conditions for every team.
-    jid = default_runner.submit(spec, tier=SCORING_TIER,
-                                target_rel_err=SCORING_TARGET_REL_ERR,
-                                max_batches=SCORING_MAX_BATCHES,
-                                converge_on=SCORING_CONVERGE_ON,
-                                composition=True)   # protons + heavy ions, summed
+    if scenario == "spe":
+        # One acute event: a single proton cone at the fixed event fluence.
+        # Converge on the wall lining (the skin/BFO surface); no ion composition.
+        jid = default_runner.submit(spec, tier=SCORING_TIER,
+                                    target_rel_err=SCORING_TARGET_REL_ERR,
+                                    max_batches=SCORING_MAX_BATCHES,
+                                    converge_on="skin", composition=False,
+                                    spe=WORST_CASE_SPE)
+    elif scenario == "gcr":
+        # Chronic GCR: fixed scoring preset -- identical conditions for every team.
+        jid = default_runner.submit(spec, tier=SCORING_TIER,
+                                    target_rel_err=SCORING_TARGET_REL_ERR,
+                                    max_batches=SCORING_MAX_BATCHES,
+                                    converge_on=SCORING_CONVERGE_ON,
+                                    phantom_slack=SCORING_PHANTOM_SLACK,
+                                    min_batches=SCORING_MIN_BATCHES,
+                                    composition=True)   # protons + heavy ions, summed
+    else:
+        # Workshop default: BOTH gates in one run -- acute SPE then chronic GCR,
+        # reported as two separate verdicts (never summed).
+        jid = default_runner.submit(spec, tier=SCORING_TIER,
+                                    target_rel_err=SCORING_TARGET_REL_ERR,
+                                    max_batches=SCORING_MAX_BATCHES,
+                                    converge_on=SCORING_CONVERGE_ON,
+                                    phantom_slack=SCORING_PHANTOM_SLACK,
+                                    min_batches=SCORING_MIN_BATCHES,
+                                    composition=True, spe=WORST_CASE_SPE,
+                                    combined=True)
     return jid, False, no_update
 
 
@@ -836,59 +1056,139 @@ def _cancel(n, jid):
     Output("progress-bar", "style"), Output("status-line", "children"),
     Output("dose-metrics-body", "children"), Output("dose-analysis-body", "children"),
     Output("poll", "disabled", allow_duplicate=True),
+    Output("report-store", "data"),
+    Output("dose-overlay", "data"),
     Input("poll", "n_intervals"),
     State("job-store", "data"),
     prevent_initial_call=True)
 def _poll(_n, jid):
     job = default_runner.get(jid) if jid else None
     if job is None:
-        return no_update, no_update, no_update, no_update, True
+        return no_update, no_update, no_update, no_update, True, no_update, no_update
 
     bar = {"background": ACCENT, "height": "100%", "transition": "width .3s",
            "width": f"{job.progress * 100:.0f}%"}
     err = f" ±{job.rel_err:.0%}" if job.rel_err else ""
     cap = job.progress_cap or job.max_batches
-    status = (f"[{job.status.value}] {job.spec.name} — batch "
+    if job.combined:
+        kind = f"SPE+GCR ({job.phase or 'spe'})"
+    else:
+        kind = "SPE" if job.spe is not None else "GCR"
+    status = (f"[{job.status.value}] {kind} · {job.spec.name} — batch "
               f"{job.batches_done}/{cap}{err} — {job.elapsed:.0f}s")
 
     terminal = job.status in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED)
     if not terminal:
-        return bar, status, no_update, no_update, False
+        return bar, status, no_update, no_update, False, no_update, no_update
 
     if job.status != JobStatus.DONE or not (job.result and job.result.ok):
         msg = html.Div(f"Run {job.status.value}: {(job.error or '')[-300:]}",
                        style={"color": ACCENT, "fontSize": "13px"})
-        return bar, status, no_update, [msg], True
+        return bar, status, no_update, [msg], True, no_update, no_update
 
+    # --- combined branch: BOTH gates from one run, stacked, never summed ----
+    if job.combined:
+        a_spe = assess_spe(job.spe_result, job.spe, skin=True)
+        a = _assess(job.result, skin=False)       # central phantom (noisy)
+        a_skin = _assess(job.result, skin=True)   # habitat-wide lining, ICRP-60 Q (cross-check)
+        a_skin_nasa = _assess(job.result, skin=True, qf="nasa")  # NASA Q lining (headline)
+        primary = a_skin_nasa or a_skin or a
+        if a_spe is None or primary is None:
+            msg = html.Div("Combined run finished but a gate produced no usable "
+                           "dose — a wall-lining scorer recorded no signal. Try "
+                           "more batches.", style={"color": ACCENT, "fontSize": "13px"})
+            return bar, status, no_update, [msg], True, no_update, no_update
+        s = primary.summary("career")
+        metrics = [_gate_header("Gate 1 · Chronic GCR field (annual)"),
+                   *_metric_cards(a, a_skin, s, job, a_skin_nasa=a_skin_nasa),
+                   _gate_header("Gate 2 · Solar particle event (acute)"),
+                   *_spe_metric_cards(a_spe, job)]
+        analysis = [_gate_header("Gate 1 · Chronic GCR field (annual)"),
+                    *_analysis_body(a, a_skin, s, job, a_skin_nasa=a_skin_nasa),
+                    _gate_header("Gate 2 · Solar particle event (acute)"),
+                    *_spe_analysis_body(a_spe, job, result=job.spe_result)]
+        report = _report_text(job, gcr=(a, a_skin, a_skin_nasa), spe=a_spe,
+                              spe_result=job.spe_result)
+        # Overlay the chronic GCR field: it is the annual number the geometry is
+        # mainly judged on, and the two gates are never summed.
+        return (bar, status, metrics, analysis, True, report,
+                _overlay(job.spec, primary, a, "mSv/yr", "GCR annual"))
+
+    # --- acute SPE branch: a single event dose vs the 30-day limit ----------
+    if job.spe is not None:
+        a_spe = assess_spe(job.result, job.spe, skin=True)
+        if a_spe is None:
+            msg = html.Div("Event run finished but produced no usable dose — the "
+                           "wall-lining scorer recorded no signal. Try more batches.",
+                           style={"color": ACCENT, "fontSize": "13px"})
+            return bar, status, no_update, [msg], True, no_update, no_update
+        report = _report_text(job, spe=a_spe)
+        # SPE scores the lining only; there is no phantom event dose to show.
+        spe_overlay = {"sig": _spec_sig(job.spec), "skin": a_spe.event_msv,
+                       "phantom": None, "unit": "mSv/event",
+                       "scenario": "worst-case SPE"}
+        return (bar, status, _spe_metric_cards(a_spe, job),
+                _spe_analysis_body(a_spe, job), True, report, spe_overlay)
+
+    # --- chronic GCR branch -------------------------------------------------
     a = _assess(job.result, skin=False)       # central phantom (noisy point dose)
-    a_skin = _assess(job.result, skin=True)   # habitat-wide lining (the headline)
-    primary = a_skin or a                     # whichever assessment we actually have
+    a_skin = _assess(job.result, skin=True)   # habitat-wide lining, ICRP-60 Q (cross-check)
+    a_skin_nasa = _assess(job.result, skin=True, qf="nasa")  # NASA Q lining (headline)
+    primary = a_skin_nasa or a_skin or a      # whichever assessment we actually have
     if primary is None:
         msg = html.Div("Run finished but produced no usable dose — no scorer "
                        "recorded any signal. Try more batches or a thinner design.",
                        style={"color": ACCENT, "fontSize": "13px"})
-        return bar, status, no_update, [msg], True
+        return bar, status, no_update, [msg], True, no_update, no_update
     s = primary.summary("career")
-    return bar, status, _metric_cards(a, a_skin, s, job), _analysis_body(a, a_skin, s, job), True
+    report = _report_text(job, gcr=(a, a_skin, a_skin_nasa))
+    return (bar, status, _metric_cards(a, a_skin, s, job, a_skin_nasa=a_skin_nasa),
+            _analysis_body(a, a_skin, s, job, a_skin_nasa=a_skin_nasa), True, report,
+            _overlay(job.spec, primary, a, "mSv/yr", "GCR annual"))
 
 
-def _assess(result, skin):
+def _overlay(spec, a_skin, a_phantom, unit, scenario):
+    """Package the two scored doses for the cross-section, tagged with the design
+    they were scored against."""
+    return {"sig": _spec_sig(spec),
+            "skin": a_skin.annual_msv if a_skin else None,
+            "phantom": a_phantom.annual_msv if a_phantom else None,
+            "unit": unit, "scenario": scenario}
+
+
+def _gate_header(text):
+    """A stacked-section banner separating the two gates in a combined run."""
+    return html.Div(text, style={
+        "color": ACCENT, "fontSize": "12px", "letterSpacing": "0.6px",
+        "fontWeight": 800, "textTransform": "uppercase",
+        "margin": "18px 0 6px", "paddingBottom": "4px",
+        "borderBottom": f"1px solid {MUTED}"})
+
+
+def _assess(result, skin, qf="icrp"):
     """Dispatch to the per-species composition assessment (protons + heavy ions
-    summed) or the single-species path, depending on the result type."""
+    summed) or the single-species path, depending on the result type. qf selects
+    the quality-factor model behind the dose-equivalent: "icrp" (ICRP-60 Q(L)) or
+    "nasa" (NASA/Cucinotta Q) -- both scored on the same transport, so the switch
+    only re-reads a different Sv column."""
     if isinstance(result, ConvergedComposition):
         return assess_composition(result.species_results,
                                   mission_days=SCORING_MISSION_DAYS,
-                                  phi_MV=SCORING_TIER.phi_mv, skin=skin)
-    return assess(result, mission_days=SCORING_MISSION_DAYS, skin=skin)
+                                  phi_MV=SCORING_TIER.phi_mv, skin=skin, qf=qf)
+    return assess(result, mission_days=SCORING_MISSION_DAYS, skin=skin, qf=qf)
 
 
-def _score_card(score, rel_txt, verdict, frac):
-    """The headline the student records: habitat-wide annual effective dose."""
+def _score_card(score, rel_txt, verdict, frac, qf_label=None, cmp_line=None):
+    """The headline the student records: habitat-wide annual effective dose.
+
+    qf_label names the quality-factor model behind `score` (the headline runs on
+    NASA/Cucinotta Q so the verdict is consistent with the NASA career limit it is
+    judged against); cmp_line carries the ICRP-60 Q(L) cross-check as a band."""
     colour = VERDICT_COLOUR.get(verdict, METRIC)
     style = dict(CARD)
     style.update({"borderLeft": f"4px solid {colour}", "background": "#161d27",
                   "padding": "18px"})
-    return html.Div(style=style, children=[
+    children = [
         html.Div("RADIATION PROTECTION SCORE", style={
             "color": MUTED, "fontSize": "11px", "letterSpacing": "0.8px",
             "fontWeight": 700, "marginBottom": "8px"}),
@@ -897,70 +1197,141 @@ def _score_card(score, rel_txt, verdict, frac):
             html.Span(f"{score:.1f}", style={"color": colour, "fontSize": "42px",
                                              "fontWeight": 900, "lineHeight": "1"}),
             html.Span(f"mSv/yr{rel_txt}", style={"color": INK, "fontSize": "14px"})]),
-        html.Div(f"{verdict} · {frac:.0f}% of NASA career limit", style={
+        html.Div(f"{verdict} · {frac:.0f}% of NASA career limit"
+                 + (f" · {qf_label}" if qf_label else ""), style={
             "color": colour, "fontSize": "12px", "fontWeight": 700, "marginTop": "10px"}),
-    ])
+    ]
+    if cmp_line:
+        children.append(html.Div(cmp_line, style={
+            "color": MUTED, "fontSize": "11px", "marginTop": "6px"}))
+    return html.Div(style=style, children=children)
 
 
-def _metric_cards(a, a_skin, s, job):
-    # Dose-equivalent figures come from the same habitat-wide skin scorer as the
-    # headline (its LET-weighted Q(L)); absorbed dose stays on the phantom card.
-    aeq = a_skin if a_skin is not None else a
-    # Absorbed-dose source: prefer the phantom; fall back to the lining if the
-    # noisy central phantom recorded nothing (else the card would crash on None).
-    ab = a if a is not None else a_skin
+# Below this many batches the phantom's error bar is NOT REPORTED at all.
+# SCORING_CONVERGE_ON = "both" should now keep the phantom above this floor on
+# its own (10% takes ~4 rounds), so this is a backstop rather than the usual
+# path -- it still fires when a run is CANCELLED early or caps out at
+# SCORING_MAX_BATCHES on a design too noisy to reach target. It matters because
+# an n=2 dose_rel_err is a standard error built from a TWO-SAMPLE standard
+# deviation. Measured on the SHARC 6 m dome (147.5 g/cm2), same design,
+# 2 rounds vs 5 -- i.e. what the old skin-only convergence used to report:
+#     2 rounds:  phantom 511.4 mSv/yr, quoted +-3%     skin 292.1 +-1%
+#     5 rounds:  phantom 418.2 mSv/yr, quoted +-7%     skin 285.8 +-0.7%
+# The phantom moved 18% -- six times its own quoted bar -- while the skin moved
+# 2%. An n=2 stdev has ~76% relative uncertainty and is skewed LOW, so two
+# batches landing near each other mint a confident-looking bar around a wrong
+# number. Widening via Student-t does not rescue it (n=2 gives only ~1.8x, 3% ->
+# 5.5%, still far short of 18%): two samples cannot error-bar a quantity this
+# heavy-tailed, so we state the batch count instead of inventing a precision.
+# The point dose itself is still shown -- a useful diagnostic, just not one
+# measured to 3%.
+#
+# Bound to SCORING_MIN_BATCHES on purpose: the display gate and the convergence
+# floor answer the same question ("are there enough samples to believe this?"),
+# so they must not drift apart. Raising the floor must never leave the card
+# hiding a bar the run actually earned, and lowering it must never let the card
+# show one it did not.
+PHANTOM_MIN_BATCHES = SCORING_MIN_BATCHES
+
+
+def _phantom_err_text(result) -> str:
+    """' ±N%' only when enough batches back it; otherwise a batch count."""
+    rel = getattr(result, "dose_rel_err", None)
+    n = getattr(result, "phantom_batches", 0)
+    if rel and n >= PHANTOM_MIN_BATCHES:
+        return f" ±{rel:.0%}"
+    if n:
+        return f" ({n} batch{'es' if n != 1 else ''} — not converged, no error bar)"
+    return " (not converged)"
+
+
+def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
+    # Absorbed-dose source: use the habitat-wide skin lining so this card and the
+    # Dose-equivalent card below describe the SAME location -- their ratio is then
+    # the real emergent skin Q. (Sourcing absorbed from the high-variance central
+    # phantom while dose-eq comes from the skin invites a nonsense apparent-Q.)
+    # Absorbed dose is quality-factor-independent, so both Q models share it.
+    # Fall back to the phantom only if the lining scorer is unavailable.
+    ab = a_skin if a_skin is not None else a
+    # The headline dose-equivalent runs on the NASA/Cucinotta Q twin of the
+    # habitat-wide skin scorer: the verdict is judged against the NASA career
+    # limit, so the dose feeding it must use the matching (NASA) quality model.
+    # ICRP-60 Q(L) is retained as the labelled cross-check. Everything degrades to
+    # ICRP-only for older runs that have no NASA dose-eq CSV.
+    head = a_skin_nasa if a_skin_nasa is not None else a_skin
+    cmp_icrp = a_skin if a_skin_nasa is not None else None      # ICRP band, only if NASA present
+    aeq = head if head is not None else a
     ratio = aeq.equiv_rate_msv_day / 0.70 if aeq.equiv_rate_msv_day else 0.0
     # The graded score uses the habitat-wide (wall-lining) scorer: it samples the
     # whole inner surface, so it is far lower-variance than the central crew
     # phantom and gives a number two teams can be compared on. Fall back to the
     # phantom only if the lining scorer is unavailable.
-    if a_skin is not None:
-        score = a_skin.annual_msv
-        s_skin = a_skin.summary("career")
-        verdict = s_skin["verdict"]
-        frac = s_skin["fraction_of_limit"] * 100
+    if head is not None:
+        score = head.annual_msv
+        s_head = head.summary("career")
+        verdict = s_head["verdict"]
+        frac = s_head["fraction_of_limit"] * 100
         skin_rel = getattr(job.result, "skin_dose_rel_err", None)
         rel_txt = f" ± {skin_rel:.0%}" if skin_rel else ""
+        qf_label = "NASA/Cucinotta Q" if a_skin_nasa is not None else "ICRP-60 Q(L)"
+        cmp_line = (f"ICRP-60 Q(L) cross-check: {cmp_icrp.annual_msv:.1f} mSv/yr"
+                    if cmp_icrp is not None else None)
     else:
         score, verdict = ab.annual_msv, s["verdict"]
-        frac, rel_txt = s["fraction_of_limit"] * 100, ""
-    phantom_rel = f" ±{job.result.dose_rel_err:.0%}" if job.result.dose_rel_err else ""
+        frac, rel_txt, qf_label, cmp_line = s["fraction_of_limit"] * 100, "", None, None
+    eq_sub = (f"ISS baseline = 0.70 mSv/day | ratio: {ratio:.2f}×"
+              + (f" | ICRP: {cmp_icrp.equiv_rate_msv_day:.3f}" if cmp_icrp is not None else ""))
     phantom_pt = (f"{a.annual_msv:.1f} mSv/year" if a is not None else "n/a")
+    phantom_rel = _phantom_err_text(job.result)
+    phantom_note = ("central self-shielded point — noisier diagnostic, not the score"
+                    if not phantom_rel else
+                    f"central self-shielded point{phantom_rel} — noisier diagnostic, "
+                    "not the score")
     return [
-        _score_card(score, rel_txt, verdict, frac),
+        _score_card(score, rel_txt, verdict, frac, qf_label=qf_label, cmp_line=cmp_line),
         metric_card("Absorbed dose",
                     f"{ab.dose_rate_ugy_day / 1000:.3f} mGy/day",
                     f"= {ab.annual_mgy:.1f} mGy/year"),
         metric_card("Dose equivalent",
-                    f"{aeq.equiv_rate_msv_day:.3f} mSv/day",
-                    f"ISS baseline = 0.70 mSv/day | ratio: {ratio:.2f}×"),
-        metric_card("Crew-phantom point dose",
-                    phantom_pt,
-                    f"central self-shielded point{phantom_rel} — noisier diagnostic, "
-                    "not the score"),
+                    f"{aeq.equiv_rate_msv_day:.3f} mSv/day", eq_sub),
+        metric_card("Crew-phantom point dose", phantom_pt, phantom_note),
     ]
 
 
-def _analysis_body(a, a_skin, s, job):
+def _analysis_body(a, a_skin, s, job, a_skin_nasa=None):
     skin_err = getattr(job.result, "skin_dose_rel_err", None)
-    skin_txt = (f"{a_skin.annual_msv:.1f} mSv/year"
-                f"{f' ± {skin_err:.0%}' if skin_err else ''}"
-                if a_skin is not None else "n/a")
-    # Dose-equivalent rows reflect the habitat-wide skin scorer (LET-weighted Q(L)),
-    # matching the headline; absorbed-dose rows stay on the phantom assessment.
-    aeq = a_skin if a_skin is not None else a
+    # Headline dose-equivalent runs on the NASA/Cucinotta Q twin (matches the
+    # verdict's NASA career limit); ICRP-60 Q(L) is the labelled cross-check.
+    # Absorbed-dose rows are quality-factor-independent and stay on the phantom.
+    head = a_skin_nasa if a_skin_nasa is not None else a_skin
+    cmp_icrp = a_skin if a_skin_nasa is not None else None
+    aeq = head if head is not None else a
     ab = a if a is not None else a_skin       # absorbed-dose / flux fallback source
     seq = aeq.summary("career")
+    head_qf = "NASA Q" if a_skin_nasa is not None else "ICRP-60 Q(L)"
+    head_txt = (f"{head.annual_msv:.1f} mSv/year"
+                f"{f' ± {skin_err:.0%}' if skin_err else ''}"
+                if head is not None else "n/a")
     phantom_pt = f"{a.annual_msv:.1f} mSv/year" if a is not None else "n/a"
-    return [
-        _kv("◆ PROTECTION SCORE (habitat-wide)", skin_txt),
+    # mean quality factor: emergent H/D for each model present
+    if cmp_icrp is not None:
+        qf_txt = (f"{seq['quality_factor']:.2f} (NASA) · "
+                  f"{cmp_icrp.summary('career')['quality_factor']:.2f} (ICRP-60)")
+    else:
+        qf_txt = f"{seq['quality_factor']:.2f}"
+    rows = [
+        _kv(f"◆ PROTECTION SCORE (habitat-wide, {head_qf})", head_txt)]
+    if cmp_icrp is not None:
+        rows.append(_kv("   ICRP-60 Q(L) cross-check",
+                        f"{cmp_icrp.annual_msv:.1f} mSv/year"))
+    rows += [
         _kv("Crew-phantom dose (point, diagnostic)", phantom_pt),
         _kv("Absorbed dose rate", f"{s['dose_rate_uGy_per_day']:.3f} µGy/day"),
         _kv("Equivalent dose rate", f"{aeq.equiv_rate_msv_day * 1000:.2f} µSv/day"),
         _kv("Effective dose (mission)", f"{seq['mission_mSv']:.1f} mSv "
             f"over {int(seq['mission_days'])} days"),
         _kv("Fraction of career limit", f"{seq['fraction_of_limit'] * 100:.1f} %"),
-        _kv("Quality factor (mean, LET-weighted)", f"{seq['quality_factor']:.2f}"),
+        _kv("Quality factor (mean, LET-weighted)", qf_txt),
         _kv("Wall transmission", f"{job.result.transmission:.2f}"
             if job.result.transmission else "n/a"),
         _kv("GCR flux used", f"{ab.real_flux_cm2_s:.2f} /cm²/s"),
@@ -969,12 +1340,15 @@ def _analysis_body(a, a_skin, s, job):
         *_species_breakdown(a_skin),
         html.Div("Dose is summed over the GCR ion composition (H, He, C, Si, Fe "
                  "groups), each transported separately and normalised to its real "
-                 "flux. Equivalent dose is LET-weighted per step (ICRP-60 Q(L)) by "
-                 "a custom scorer, so high-LET ions and secondaries carry their own "
-                 "quality factor; the mean Q shown above is the emergent H/D ratio.",
+                 "flux. Equivalent dose is LET-weighted per step by a custom scorer "
+                 "(the headline uses NASA/Cucinotta Q, matching the NASA career "
+                 "limit; ICRP-60 Q(L) is shown alongside as a cross-check), so "
+                 "high-LET ions and secondaries carry their own quality factor and "
+                 "the mean Q shown above is the emergent H/D ratio.",
                  style={"color": MUTED, "fontSize": "10px",
                         "marginTop": "12px", "fontStyle": "italic"}),
     ]
+    return rows
 
 
 def _species_breakdown(a_skin):
@@ -992,6 +1366,225 @@ def _species_breakdown(a_skin):
     return [html.Div("Dose share by GCR ion", style={
         "color": MUTED, "fontSize": "11px", "fontWeight": 700,
         "marginTop": "12px", "marginBottom": "4px"}), *rows]
+
+
+# ----------------------------------------------------------------------
+# SPE result rendering (acute single-event dose vs the 30-day limit)
+# ----------------------------------------------------------------------
+def _spe_score_card(a):
+    """The acute headline: total event dose-equivalent vs the 30-day BFO limit."""
+    verdict = a.verdict("nasa_30day")
+    colour = VERDICT_COLOUR.get(verdict, METRIC)
+    frac = a.fraction_of("nasa_30day") * 100
+    rel = f" ± {a.rel_err:.0%}" if a.rel_err else ""
+    style = dict(CARD)
+    style.update({"borderLeft": f"4px solid {colour}", "background": "#161d27",
+                  "padding": "18px"})
+    return html.Div(style=style, children=[
+        html.Div("SOLAR EVENT DOSE (ACUTE)", style={
+            "color": MUTED, "fontSize": "11px", "letterSpacing": "0.8px",
+            "fontWeight": 700, "marginBottom": "8px"}),
+        html.Div(style={"display": "flex", "alignItems": "baseline", "gap": "8px"},
+                 children=[
+            html.Span(f"{a.event_msv:.0f}", style={"color": colour, "fontSize": "42px",
+                                                   "fontWeight": 900, "lineHeight": "1"}),
+            html.Span(f"mSv / event{rel}", style={"color": INK, "fontSize": "14px"})]),
+        html.Div(f"{verdict} · {frac:.0f}% of the {DOSE_LIMITS_MSV['nasa_30day']:.0f} "
+                 "mSv 30-day BFO limit", style={
+            "color": colour, "fontSize": "12px", "fontWeight": 700, "marginTop": "10px"}),
+    ])
+
+
+def _spe_metric_cards(a, job):
+    return [
+        _spe_score_card(a),
+        metric_card("Absorbed dose (event)", f"{a.event_mgy:.1f} mGy",
+                    "whole-event total behind the wall lining"),
+        metric_card("Quality factor (mean)", f"{a.quality_factor:.2f}",
+                    "emergent ICRP-60 Q(L) for the proton event"),
+        metric_card("30-day BFO limit",
+                    f"{DOSE_LIMITS_MSV['nasa_30day']:.0f} mSv",
+                    f"event delivers {a.fraction_of('nasa_30day') * 100:.0f}% of it"),
+    ]
+
+
+def _spe_analysis_body(a, job, result=None):
+    # `result` is the ConvergedResult carrying the SPE run's own statistics.
+    # For a solo SPE run this is job.result; for a combined run job.result holds
+    # the GCR composition, so the caller passes job.spe_result explicitly.
+    result = result if result is not None else job.result
+    s = a.summary("nasa_30day")
+    verdict = s["verdict"]
+    return [
+        _kv("◆ EVENT DOSE-EQUIVALENT", f"{a.event_msv:.0f} mSv"
+            f"{f' ± {a.rel_err:.0%}' if a.rel_err else ''}"),
+        _kv("Verdict (30-day BFO limit)", verdict),
+        _kv("Absorbed dose (event)", f"{a.event_mgy:.1f} mGy"),
+        _kv("Quality factor (mean, LET-weighted)", f"{s['quality_factor']:.2f}"),
+        _kv("Fraction of 30-day limit", f"{s['fraction_of_limit'] * 100:.1f} %"),
+        _kv("Event proton fluence", f"{a.event_fluence_cm2:.1e} /cm²"),
+        _kv("Scenario", a.scenario_name),
+        _kv("Wall transmission", f"{result.transmission:.2f}"
+            if result.transmission else "n/a"),
+        _kv("Statistics", f"{result.n_batches} batches, "
+            f"{result.total_primaries:,} primaries, {result.wall_seconds:.0f}s"),
+        html.Div("A single acute solar particle event delivers its whole proton "
+                 "fluence over hours, so the dose is a one-off total (D_sim scaled to "
+                 "the event's real integral fluence), judged against the 30-day blood-"
+                 "forming-organ limit rather than an annual rate. Equivalent dose is "
+                 "LET-weighted per step (ICRP-60 Q(L)); the mean Q is the emergent "
+                 "H/D ratio.",
+                 style={"color": MUTED, "fontSize": "10px",
+                        "marginTop": "12px", "fontStyle": "italic"}),
+    ]
+
+
+# ----------------------------------------------------------------------
+# Design save / load  +  results report  (#2)
+# ----------------------------------------------------------------------
+def _report_text(job, gcr=None, spe=None, spe_result=None) -> str:
+    """One-page markdown report of the completed run: design, verdict, breakdown.
+    Built here (in the poll) while the assessments are in hand and stashed in the
+    report-store, so the download button just serves the string.
+
+    A combined run passes BOTH gcr and spe; the two hazards are reported as
+    separate gates (never summed). `spe_result` carries the SPE run's own
+    statistics (job.result holds the GCR composition in the combined case)."""
+    spec = job.spec
+    stack = " + ".join(f"{w.thickness_cm * 10:g} mm {w.material}" for w in spec.walls)
+    stamp = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    L = [f"# Lunar habitat radiation report — {spec.name}",
+         f"_Generated {stamp}_", "",
+         "## Design",
+         f"- Shape: {SHAPE_LABELS.get(spec.shape, spec.shape)}",
+         f"- Inner radius: {spec.inner_radius_cm / 100:.2f} m",
+         f"- Wall stack (innermost first): {stack}",
+         f"- Areal density: {spec.areal_density_gcm2():.1f} g/cm²",
+         f"- Shell mass: {spec.shell_mass_kg() / 1000:.1f} t", ""]
+
+    if gcr is not None and spe is not None:
+        L += ["> Two independent gates — the acute solar event and the chronic GCR "
+              "field have different dose limits and clocks, so they are judged "
+              "separately and never summed.", ""]
+
+    combined = gcr is not None and spe is not None
+
+    if gcr is not None:
+        a, a_skin, *rest = gcr
+        a_skin_nasa = rest[0] if rest else None
+        # Headline runs on the NASA/Cucinotta Q twin (consistent with the NASA
+        # career limit); ICRP-60 Q(L) is the labelled cross-check.
+        head = a_skin_nasa if a_skin_nasa is not None else (a_skin if a_skin is not None else a)
+        cmp_icrp = a_skin if a_skin_nasa is not None else None
+        head_qf = "NASA Q" if a_skin_nasa is not None else "ICRP-60 Q(L)"
+        s = head.summary("career")
+        L += ["## Gate 1 — chronic GCR field (annual)" if combined
+              else "## Scenario — chronic GCR field (annual)",
+              f"- Solar modulation: φ=400 MV (solar minimum)",
+              f"- Mission: {SCORING_MISSION_DAYS} days",
+              f"- **Protection score (habitat-wide, {head_qf}): {head.annual_msv:.1f} mSv/yr**"]
+        if cmp_icrp is not None:
+            L.append(f"- ICRP-60 Q(L) cross-check: {cmp_icrp.annual_msv:.1f} mSv/yr")
+        if a is not None:
+            L.append(f"- Crew-phantom point dose: {a.annual_msv:.1f} mSv/yr")
+        qf_line = f"- Mean quality factor: {s['quality_factor']:.2f} ({head_qf})"
+        if cmp_icrp is not None:
+            qf_line += f" · {cmp_icrp.summary('career')['quality_factor']:.2f} (ICRP-60)"
+        L += [f"- Absorbed dose: {head.annual_mgy:.1f} mGy/yr",
+              qf_line,
+              f"- Career limit: {s['limit_mSv']:.0f} mSv "
+              f"({s['fraction_of_limit'] * 100:.0f}% used)",
+              f"- **Verdict: {s['verdict']}**"]
+        contrib = getattr(a_skin, "contributions", None) if a_skin else None
+        if contrib:
+            L += ["", "### Dose share by GCR ion"]
+            for c in contrib:
+                q = c.get("quality_factor")
+                qtxt = f", Q={q:.1f}" if q else ""
+                L.append(f"- {c['species']} ({c['group']}): "
+                         f"{c['dose_fraction'] * 100:.0f}% of dose{qtxt}")
+        L += [f"- Statistics: {job.result.n_batches} batches, "
+              f"{job.result.total_primaries:,} primaries, {job.result.wall_seconds:.0f}s", ""]
+
+    if spe is not None:
+        s = spe.summary("nasa_30day")
+        spe_stat = spe_result if spe_result is not None else job.result
+        L += ["## Gate 2 — worst-case solar particle event (acute)" if combined
+              else "## Scenario — worst-case solar particle event (acute)",
+              f"- Event: {spe.scenario_name}",
+              f"- Event proton fluence: {spe.event_fluence_cm2:.1e} /cm²",
+              f"- **Event dose-equivalent: {spe.event_msv:.0f} mSv**",
+              f"- Absorbed dose: {spe.event_mgy:.1f} mGy",
+              f"- Mean quality factor: {s['quality_factor']:.2f}",
+              f"- 30-day BFO limit: {s['limit_mSv']:.0f} mSv "
+              f"({s['fraction_of_limit'] * 100:.0f}% used)",
+              f"- **Verdict: {s['verdict']}**",
+              f"- Statistics: {spe_stat.n_batches} batches, "
+              f"{spe_stat.total_primaries:,} primaries, {spe_stat.wall_seconds:.0f}s"]
+
+    return "\n".join(L)
+
+
+@app.callback(
+    Output("download-design", "data"),
+    Input("save-design", "n_clicks"),
+    State("shape", "value"), State("inner-r", "value"),
+    State({"type": "layer-mat", "index": ALL}, "value"),
+    State({"type": "layer-mat", "index": ALL}, "id"),
+    State({"type": "layer-thk", "index": ALL}, "value"),
+    State("active-rows", "data"),
+    prevent_initial_call=True)
+def _save_design(n, shape, inner_r, mats, ids, thks, active):
+    spec = spec_from_inputs("habitat", shape, inner_r,
+                            _layers_from_components(mats, ids, thks, active))
+    return dict(content=spec.to_json(), filename=f"{spec.name}.json")
+
+
+@app.callback(
+    Output("download-report", "data"),
+    Output("design-file-note", "children", allow_duplicate=True),
+    Input("save-report", "n_clicks"),
+    State("report-store", "data"),
+    prevent_initial_call=True)
+def _save_report(n, report):
+    if not report:
+        return no_update, "Evaluate a design first — no results to report yet."
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M")
+    return dict(content=report, filename=f"radiation-report-{stamp}.md"), ""
+
+
+# Import is a ONE-SHOT bulk set triggered by a file upload (never by a keystroke),
+# so writing the layer widgets' values here is safe under the controlled-input
+# rule that forbids fighting live typing. We fill the fixed pool innermost-first
+# and set active-rows to match; unused slots keep a placeholder value but stay
+# hidden. shape/inner-r are plain single outputs.
+@app.callback(
+    Output("shape", "value"), Output("inner-r", "value"),
+    Output("active-rows", "data", allow_duplicate=True),
+    Output({"type": "layer-mat", "index": ALL}, "value"),
+    Output({"type": "layer-thk", "index": ALL}, "value"),
+    Output("design-file-note", "children"),
+    Input("load-design", "contents"),
+    prevent_initial_call=True)
+def _load_design(contents):
+    if not contents:
+        return (no_update,) * 6
+    try:
+        _, b64 = contents.split(",", 1)
+        text = base64.b64decode(b64).decode("utf-8")
+        spec = HabitatSpec.from_json(text)
+    except Exception as exc:
+        return (no_update, no_update, no_update, no_update, no_update,
+                html.Span(f"Load failed: {str(exc)[-120:]}", style={"color": ACCENT}))
+
+    walls = spec.walls[:MAX_LAYERS]
+    mats = [(walls[i].material if i < len(walls) else "aluminium")
+            for i in range(MAX_LAYERS)]
+    thks = [(f"{walls[i].thickness_cm * 10:g}" if i < len(walls) else "0")
+            for i in range(MAX_LAYERS)]
+    active = list(range(len(walls)))
+    note = html.Span(f"Loaded '{spec.name}'.", style={"color": "#3fb950"})
+    return spec.shape, spec.inner_radius_cm / 100.0, active, mats, thks, note
 
 
 def main_entry():

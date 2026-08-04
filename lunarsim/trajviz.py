@@ -154,8 +154,8 @@ def build_figure(run_dir, spec=None, max_tracks: int = 4000,
     if spec is not None:
         for (ri, ro), layer in zip(spec.layer_radii_cm(), spec.walls):
             _add_hemisphere(fig, go, ro, layer.material)
-        # phantom marker at crew height
-        cz = spec.inner_radius_cm / 2.0
+        # phantom marker at crew height (matches geometry.py)
+        cz = spec.crew_height_cm
         fig.add_trace(go.Scatter3d(
             x=[0], y=[0], z=[cz], mode="markers",
             marker=dict(size=6, color="#6ea9da", symbol="circle"),
@@ -288,7 +288,7 @@ def _tracking_radii(spec) -> list[float]:
     """Concentric sampling radii: a few inside, a few outside, skipping the
     phantom band so a tracking shell never overlaps the crew sphere."""
     inner, outer = spec.inner_radius_cm, spec.outer_radius_cm
-    pz, pr = inner / 2.0, spec.phantom_radius_cm + 15.0
+    pz, pr = spec.crew_height_cm, spec.phantom_radius_cm + 15.0
     radii: list[float] = []
     for frac in (0.30, 0.55, 0.80):
         r = frac * inner

@@ -33,7 +33,25 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
-from .bridge import RunResult, MAKE_SOURCE
+from .bridge import RunResult, MAKE_SOURCE, SPEScenario
+from .geometry import _outer_gauge_radius, _OUTER_GAUGE_FIXED_CM
+
+
+def _gauge_corr(spec) -> float:
+    """1/R^2 correction that restores fluence_outside to the fixed-gauge reference.
+
+    OUTER_GAUGE_ANCHOR_CAL is pinned to the 3 m dome, whose OuterShell sits at
+    exactly _OUTER_GAUGE_FIXED_CM. An oversized design grows the gauge
+    (geometry._outer_gauge_radius) so it clears the walls instead of overlapping
+    them; scalar fluence ~ N/area ~ 1/R^2, so fluence_outside then reads low by
+    (rg/800)^2 and the normalised dose (dose ~ 1/fluence_outside) is inflated by
+    the same factor. Multiplying by (800/rg)^2 undoes it, putting every design on
+    the one source gauge the calibration assumes. It is exactly 1.0 whenever the
+    gauge stays at the fixed radius (every design up to the workshop envelope,
+    including the 3 m anchor) so CAL is untouched; it only bites the oversized
+    designs whose gauge had to grow (e.g. tall cylinders). See memory
+    [[outer-fluence-gauge-fix]]."""
+    return (_OUTER_GAUGE_FIXED_CM / _outer_gauge_radius(spec)) ** 2
 
 E0_PROTON = 938.272            # MeV, proton rest energy
 SECONDS_PER_DAY = 86_400.0
@@ -53,11 +71,49 @@ DAYS_PER_YEAR = 365.0
 GCR_PROTON_FLUX_REF_2PI = 2.0   # protons/cm^2/s, solar-min lunar surface, phi=400 MV
 GCR_CALIB_PHI_MV = 400.0        # reference modulation the calibration is pinned to
 
+# --- Outer-gauge re-anchor -----------------------------------------------
+# fluence_outside is scored on the OuterShell hemisphere gauge OUTSIDE all walls.
+# Every launched primary crosses that shell once heading in (before it reaches the
+# habitat), so the crossing count is fixed = primaries launched, and the scalar
+# fluence tracklength/volume ~ N/area ~ 1/R^2. The gauge is therefore a pure
+# property of the SOURCE, not the habitat -- but only if its radius is the same in
+# every run. Sizing it per-design (to hug each shape) made bigger habitats read a
+# lower fluence and thus an INFLATED normalised dose: a 1/R^2 artifact that broke
+# cross-shape comparison (dome vs cyl vs quonset diverged -47%/-66%). geometry.py
+# now pins the gauge to one fixed radius (_OUTER_GAUGE_FIXED_CM), which reads
+# shape-invariant to +-3% (dome/cyl/quonset), i.e. a clean normalization constant.
+#
+# Changing the gauge radius rescales the ABSOLUTE fluence_outside, so the dose
+# normalisation (dose ~ 1/fluence_outside) shifts by the same factor. This single
+# constant re-anchors it so the 3 m dome reproduces its Chang'E-4-preserving
+# absorbed dose (13.2 uGy/h at 22 g/cm^2). Multiplying the absorbed-dose RATE by it
+# makes every shape normalise by the same reference incident fluence -> fair
+# comparison. Because it scales absorbed dose and dose-eq identically, effective Q
+# (a ratio) is untouched.
+#
+# Derivation (two stages, both 3 m dome, which is fully illuminated at every
+# BeamSpot so its physical field is invariant -- only the source tiling changes):
+#   Stage 1 (fixed-800 gauge, BeamSpot=500): CAL = 2.8554e-5 / 1.11454e-4 = 0.25620
+#     = (fixed R=800 dome fo) / (old per-design-gauge dome fo).
+#   Stage 2 (BeamSpot 500 -> 900, 2026-07-27): widening every design's beam disc to
+#     a fixed 900 cm so large habitats are fully lit rescales the source density.
+#     The 3 m dome's normalised dose (skin/fo) must stay identical, so CAL scales by
+#     N_500/N_900 = 1.7933e-7 / 3.9997e-8 = 4.4836.  CAL = 0.25620 * 4.4836 = 1.14867.
+# See memory [[outer-fluence-gauge-fix]] and [[gcr-source-module]].
+OUTER_GAUGE_ANCHOR_CAL = 0.25620 * (1.7933e-7 / 3.9997e-8)   # = 1.14867
+
 # Mean field quality factor for a GCR-dominated field behind modest shielding.
 # Literature mean Q for the deep-space/surface GCR field is ~2-6 (rises as
 # shielding hardens the secondary neutron component). 3.5 is a defensible
 # mid-range default; override per design once the particle split exists.
 DEFAULT_QUALITY_FACTOR = 3.5
+
+# An SPE field is protons (plus their secondaries), so its mean quality factor is
+# much lower than the HZE-laden GCR field -- close to 1 for the bare beam, a
+# little above once the wall breeds secondary neutrons. Used only as a fallback:
+# when the LET-weighted ICRP-60 Q(L) scorer is present the effective Q emerges
+# from it (H/D), exactly as for GCR.
+DEFAULT_SPE_QUALITY_FACTOR = 1.5
 
 # ----------------------------------------------------------------------
 # GCR elemental composition (the heavy-ion field, not just protons)
@@ -240,11 +296,24 @@ class DoseAssessment:
         }
 
 
+def _doseeq_attr(skin: bool, qf: str) -> str:
+    """Name of the RunResult/ConvergedResult dose-equivalent attribute for the
+    chosen scorer target (skin lining vs central phantom) and quality-factor model.
+    qf="icrp" -> ICRP-60 Q(L) scorer; qf="nasa" -> NASA/Cucinotta Q twin. Both are
+    scored on the SAME transport, so switching qf only re-reads a different Sv
+    column -- the emergent Q is computed per design, never scaled."""
+    if qf not in ("icrp", "nasa"):
+        raise ValueError(f"qf must be 'icrp' or 'nasa', got {qf!r}")
+    suffix = "_nasa_sv" if qf == "nasa" else "_sv"
+    return ("skin_doseeq" if skin else "phantom_doseeq") + suffix
+
+
 def assess(result: RunResult,
            mission_days: float = 365.0,
            quality_factor: float = DEFAULT_QUALITY_FACTOR,
            phi_MV: Optional[float] = None,
-           skin: bool = False) -> Optional[DoseAssessment]:
+           skin: bool = False,
+           qf: str = "icrp") -> Optional[DoseAssessment]:
     """Convert a completed RunResult into a physical DoseAssessment.
 
     skin=False (default) normalises the central crew phantom point dose; skin=True
@@ -263,15 +332,15 @@ def assess(result: RunResult,
 
     real_flux = gcr_scalar_fluence_rate(phi_MV)
     sim_fluence_cm2 = result.fluence_outside * 100.0          # /mm^2 -> /cm^2
-    dose_rate_gy_s = dose_gy * real_flux / sim_fluence_cm2
+    gc = _gauge_corr(result.spec)
+    dose_rate_gy_s = dose_gy * real_flux / sim_fluence_cm2 * OUTER_GAUGE_ANCHOR_CAL * gc
 
     # Prefer the emergent ICRP-60 Q(L) from the matching LET-weighted scorer (H/D)
     # over the flat default. Both targets now carry their own dose-eq scorer, so
     # the central phantom's (harder, HZE-stopping) field gets its own Q instead of
     # the flat field value.
     eff_q = quality_factor
-    doseeq_sv = (getattr(result, "skin_doseeq_sv", None) if skin
-                 else getattr(result, "phantom_doseeq_sv", None))
+    doseeq_sv = getattr(result, _doseeq_attr(skin, qf), None)
     if doseeq_sv is not None and dose_gy:
         eff_q = doseeq_sv / dose_gy
 
@@ -288,7 +357,8 @@ def assess_composition(species_results: list,
                        mission_days: float = 365.0,
                        quality_factor: float = DEFAULT_QUALITY_FACTOR,
                        phi_MV: float = 400.0,
-                       skin: bool = False) -> Optional[DoseAssessment]:
+                       skin: bool = False,
+                       qf: str = "icrp") -> Optional[DoseAssessment]:
     """Sum the per-species crew dose over a GCR composition.
 
     species_results is a list of (species_tuple, result) pairs, where
@@ -309,6 +379,7 @@ def assess_composition(species_results: list,
     total_flux = 0.0
     var = 0.0                # sum of (rate_i * relerr_i)^2  for combined error
     have_doseeq = True       # both targets carry a dose-eq scorer; cleared if any species lacks it
+    have_relerr = True       # every species has >=2 batches; cleared if any lacks an error
     contributions = []
     sim_fluence_used = 0.0
     for sp, result in species_results:
@@ -318,19 +389,24 @@ def assess_composition(species_results: list,
             continue
         flux_i = gcr_species_fluence_rate(z, a, abundance, phi_MV)
         sim_fluence_cm2 = result.fluence_outside * 100.0      # /mm^2 -> /cm^2
-        rate_i = dose_gy * flux_i / sim_fluence_cm2
-        relerr_i = (result.skin_dose_rel_err if skin
-                    else result.dose_rel_err) or 0.0
+        gc = _gauge_corr(result.spec)
+        rate_i = dose_gy * flux_i / sim_fluence_cm2 * OUTER_GAUGE_ANCHOR_CAL * gc
+        relerr_raw = (result.skin_dose_rel_err if skin else result.dose_rel_err)
+        # A species with <2 batches has no error estimate. That is UNKNOWN, not
+        # zero: folding it in as 0.0 would let it pose as a perfectly-converged
+        # zero-variance term and understate the combined error (see rel_err below).
+        have_relerr = have_relerr and relerr_raw is not None
+        relerr_i = relerr_raw or 0.0
         total_rate += rate_i
         total_flux += flux_i
         var += (rate_i * relerr_i) ** 2
         sim_fluence_used = sim_fluence_cm2                    # representative (protons)
-        # LET-weighted dose-equivalent rate from the matching ICRP-60 Q(L) scorer.
-        doseeq_sv = (getattr(result, "skin_doseeq_sv", None) if skin
-                     else getattr(result, "phantom_doseeq_sv", None))
+        # LET-weighted dose-equivalent rate from the matching scorer (ICRP-60 Q(L)
+        # or the NASA/Cucinotta Q twin, per `qf`).
+        doseeq_sv = getattr(result, _doseeq_attr(skin, qf), None)
         eqrate_i = q_i = None
         if doseeq_sv is not None:
-            eqrate_i = doseeq_sv * flux_i / sim_fluence_cm2
+            eqrate_i = doseeq_sv * flux_i / sim_fluence_cm2 * OUTER_GAUGE_ANCHOR_CAL * gc
             total_eqrate += eqrate_i
             q_i = eqrate_i / rate_i if rate_i else None
         else:
@@ -346,7 +422,10 @@ def assess_composition(species_results: list,
     # fraction of the absorbed dose carried by each species (for display)
     for c in contributions:
         c["dose_fraction"] = c["dose_rate_gy_s"] / total_rate if total_rate else 0.0
-    rel_err = (var ** 0.5 / total_rate) if total_rate else None
+    # None -- not 0.0 -- while any species still lacks an error estimate, so a
+    # convergence loop watching this value reads "unknown" and keeps going rather
+    # than stopping on an apparently perfect result built from no statistics.
+    rel_err = (var ** 0.5 / total_rate) if (have_relerr and total_rate) else None
     # Effective field Q emerges from the LET-weighted scorer (sum H / sum D);
     # fall back to the flat default when the dose-eq data is unavailable.
     eff_q = (total_eqrate / total_rate
@@ -359,6 +438,97 @@ def assess_composition(species_results: list,
         mission_days=mission_days,
         rel_err=rel_err,
         contributions=contributions,
+    )
+
+
+# ----------------------------------------------------------------------
+# Solar Particle Event assessment (acute, event-total)
+# ----------------------------------------------------------------------
+@dataclass
+class SPEAssessment:
+    """Total dose delivered by a single solar particle event.
+
+    Unlike DoseAssessment (a chronic dose RATE integrated over a mission), this is
+    a one-off event total: the whole event's proton fluence deposits its dose over
+    hours, so the verdict is against the acute 30-day BFO limit, not an annual
+    rate. Same fluence normalisation as the GCR path -- dose scales linearly with
+    incident fluence -- but the real scale is the event's integral fluence rather
+    than a flux times mission time."""
+    event_dose_gy: float            # absorbed dose for the whole event
+    quality_factor: float
+    event_fluence_cm2: float        # real total event proton fluence used to normalise
+    sim_fluence_cm2: float          # OuterShell scalar fluence (sim)
+    scenario_name: str = ""
+    rel_err: Optional[float] = None
+
+    @property
+    def event_mgy(self) -> float:
+        return self.event_dose_gy * 1.0e3
+
+    @property
+    def event_msv(self) -> float:
+        return self.event_dose_gy * self.quality_factor * 1.0e3
+
+    def fraction_of(self, limit_key: str = "nasa_30day") -> float:
+        return self.event_msv / DOSE_LIMITS_MSV[limit_key]
+
+    def verdict(self, limit_key: str = "nasa_30day") -> str:
+        f = self.fraction_of(limit_key)
+        if f < 0.5:
+            return "SAFE"
+        if f < 1.0:
+            return "MARGINAL"
+        return "EXCEEDS LIMIT"
+
+    def summary(self, limit_key: str = "nasa_30day") -> dict:
+        return {
+            "scenario": self.scenario_name,
+            "event_mGy": round(self.event_mgy, 2),
+            "event_mSv": round(self.event_msv, 1),
+            "quality_factor": round(self.quality_factor, 2),
+            "event_fluence_cm2": self.event_fluence_cm2,
+            "limit_mSv": DOSE_LIMITS_MSV[limit_key],
+            "fraction_of_limit": round(self.fraction_of(limit_key), 3),
+            "verdict": self.verdict(limit_key),
+        }
+
+
+def assess_spe(result: RunResult, scenario: SPEScenario,
+               quality_factor: float = DEFAULT_SPE_QUALITY_FACTOR,
+               skin: bool = True) -> Optional[SPEAssessment]:
+    """Convert a completed SPE RunResult into a total-event dose assessment.
+
+    skin=True (default) uses the inner-wall lining -- the habitat-wide, better-
+    sampled dose that maps most directly to the skin/BFO acute exposure the 30-day
+    limit governs. The event dose is D_sim * F_event / F_sim, the same linear
+    fluence scaling as the GCR path, with F_event the scenario's real integral
+    fluence (protons/cm^2 over the 10-1000 MeV band the source samples). The
+    effective quality factor is the emergent ICRP-60 Q(L) from the matching LET-
+    weighted scorer when present, else the flat SPE default. Returns None if the
+    run lacks the dose / outer-fluence needed to normalise."""
+    dose_gy = result.skin_dose_gy if skin else result.dose_gy
+    if dose_gy is None or not result.fluence_outside:
+        return None
+
+    sim_fluence_cm2 = result.fluence_outside * 100.0          # /mm^2 -> /cm^2
+    event_dose_gy = (dose_gy * scenario.fluence_cm2 / sim_fluence_cm2
+                     * OUTER_GAUGE_ANCHOR_CAL * _gauge_corr(result.spec))
+
+    eff_q = quality_factor
+    doseeq_sv = (getattr(result, "skin_doseeq_sv", None) if skin
+                 else getattr(result, "phantom_doseeq_sv", None))
+    if doseeq_sv is not None and dose_gy:
+        eff_q = doseeq_sv / dose_gy
+
+    rel_err = (getattr(result, "skin_dose_rel_err", None) if skin
+               else getattr(result, "dose_rel_err", None))
+    return SPEAssessment(
+        event_dose_gy=event_dose_gy,
+        quality_factor=eff_q,
+        event_fluence_cm2=scenario.fluence_cm2,
+        sim_fluence_cm2=sim_fluence_cm2,
+        scenario_name=scenario.name,
+        rel_err=rel_err,
     )
 
 

@@ -10,7 +10,62 @@ vs out; a 20 cm water sphere at crew height scores DoseToMedium.
 """
 from __future__ import annotations
 
+import math
+
 from .spec import HabitatSpec, MATERIALS
+
+
+# Standoff (cm) between an oversized habitat's enclosing radius and the outer gauge.
+_GAUGE_STANDOFF_CM = 20.0
+
+# Fixed outer-gauge radius (cm), IDENTICAL for every design. Chosen to clear the
+# core workshop envelope (inner_radius up to ~3.5 m, all three shapes) while staying
+# a safe margin inside the 900 cm sky-dome source. Designs larger than this grow the
+# gauge to enclose them (see _outer_gauge_radius) and lose strict cross-shape
+# comparability -- but those approach the source limit anyway.
+_OUTER_GAUGE_FIXED_CM = 800.0
+
+
+def _outer_gauge_radius(spec: HabitatSpec) -> float:
+    """Inner radius (cm) of the standardised outer-fluence gauge: a hemispherical air
+    shell that measures the INCIDENT source field, IDENTICAL (same fixed radius) for
+    every design.
+
+    Why a *fixed* radius, not one sized per design. The outer gauge normalises
+    absorbed dose to real units (dosimetry.assess divides by fluence_outside).
+    fluence_outside is meant to be a pure SOURCE property: OuterShell sits outside all
+    walls, so every primary crosses it heading in, BEFORE the habitat scatters
+    anything -- its reading must therefore not depend on the habitat at all. Two
+    earlier schemes got this wrong:
+      * shape-MATCHED (hemisphere-for-dome, uncapped-barrel-for-cylinder): different
+        shapes sample the anisotropic GCR field differently -> ~40% cross-shape bias.
+      * per-design hemisphere sized to enclose each habitat: scalar fluence in a thin
+        shell is track-length/volume ~ N_crossing / R^2, and N_crossing is fixed (all
+        launched primaries cross once), so a bigger habitat -> bigger gauge -> LOWER
+        fluence_outside -> INFLATED dose. Measured -47%/-66% across shapes: worse.
+    A single fixed radius removes both: identical shape AND identical R for all
+    designs, so fluence_outside is one honest constant that sees only the source
+    (validated shape-invariant to ~+/-4%). The arbitrary absolute value it sets is
+    re-anchored to the externally-validated dome by a global factor in dosimetry.
+
+    Enclosing radius (farthest solid corner) is still computed so an OVERSIZED design
+    -- one that would poke through the fixed gauge -- grows the gauge to enclose it
+    instead of overlapping it (a fatal TOPAS abort). The cap term matters: on a
+    cylinder/quonset the flat roof/end caps stack OUTWARD past the barrel by the full
+    wall thickness (corner at H + wall_total, not the bare barrel rim).
+    """
+    outer = spec.outer_radius_cm
+    wall_total = outer - spec.inner_radius_cm          # summed layer thickness
+    if spec.shape == "dome":
+        enc = outer
+    elif spec.shape == "cylinder":
+        # farthest = outer top corner of the roof caps: (r=outer, z=H+wall_total)
+        enc = math.hypot(outer, spec.effective_height_cm + wall_total)
+    else:  # quonset: arch of radius `outer`, half-length HL; end caps at Y=HL+wall
+        enc = math.hypot(outer, spec.effective_height_cm / 2.0 + wall_total)
+    # Fixed radius for every normal design; only grow if the habitat is too big to
+    # fit inside it (graceful degradation, flagged by exceeding the fixed value).
+    return max(_OUTER_GAUGE_FIXED_CM, enc + _GAUGE_STANDOFF_CM)
 
 
 def _sphere_shell(name: str, parent: str, material: str,
@@ -32,9 +87,12 @@ s:Ge/{name}/DrawingStyle = "{style}"
 def _cyl_block(name: str, parent: str, material: str,
                rmin: float, rmax: float, hl: float, transz: float,
                colour: str, dphi: float = 360.0,
-               rotx: float | None = None, style: str = "Solid") -> str:
+               rotx: float | None = None, style: str = "Solid",
+               transy: float = 0.0) -> str:
     """Emit a TsCylinder block. dphi=180 + rotx=-90 gives a quonset half-arch
-    (axis rotated from Z onto Y, flat diametral face on the z=0 ground plane)."""
+    (axis rotated from Z onto Y, flat diametral face on the z=0 ground plane).
+    transy shifts along the world Y axis -- which, after rotx=-90, is the quonset's
+    length axis -- so the same helper places the arch's flat end-cap bulkheads."""
     lines = [
         f's:Ge/{name}/Type         = "TsCylinder"',
         f's:Ge/{name}/Parent       = "{parent}"',
@@ -47,6 +105,8 @@ def _cyl_block(name: str, parent: str, material: str,
     ]
     if rotx is not None:
         lines.append(f'd:Ge/{name}/RotX         = {rotx:.1f} deg')
+    if transy:
+        lines.append(f'd:Ge/{name}/TransY       = {transy:.3f} cm')
     lines.append(f'd:Ge/{name}/TransZ       = {transz:.3f} cm')
     # NB: no Color line -- MATERIALS colours are hex ("#rrggbb") and TOPAS treats
     # '#' as a comment, truncating the value. The hex colours drive the GUI
@@ -91,8 +151,12 @@ def _dome(spec: HabitatSpec) -> tuple[str, list[str]]:
     lines.append("# fluence scorer shells (air)")
     lines.append(_sphere_shell("InnerShell", "World", "G4_AIR",
                                inner - 5.0, inner - 3.0, "grey", style="Wireframe"))
+    # standardised outer fluence gauge: hemispherical shell enclosing the habitat,
+    # identical in shape across all designs so fluence_outside is shape-invariant
+    # (see _outer_gauge_radius). For a dome the enclosing radius is just the wall.
+    _rg = _outer_gauge_radius(spec)
     lines.append(_sphere_shell("OuterShell", "World", "G4_AIR",
-                               outer + 1.0, outer + 3.0, "grey", style="Wireframe"))
+                               _rg, _rg + 2.0, "grey", style="Wireframe"))
 
     # holistic crew-dose shell: a thin tissue-equivalent skin lining the whole
     # inner wall surface. Unlike the single central phantom it catches *every*
@@ -104,9 +168,9 @@ def _dome(spec: HabitatSpec) -> tuple[str, list[str]]:
     lines.append(_sphere_shell("CrewSkin", "World", "G4_WATER",
                                inner - 2.0, inner, "blue", style="Wireframe"))
 
-    # crew phantom at mid-dome height
+    # crew phantom at standing trunk height (fixed, not scaled with the dome)
     lines.append("# tissue-equivalent crew phantom")
-    lines.append(_phantom(spec, inner / 2.0))
+    lines.append(_phantom(spec, spec.crew_height_cm))
     return "\n".join(lines), wall_names
 
 
@@ -144,9 +208,12 @@ def _cylinder(spec: HabitatSpec) -> tuple[str, list[str]]:
     lines.append(_cyl_block("InnerShell", "World", "G4_AIR",
                             inner - 5.0, inner - 3.0, H / 2.0, H / 2.0,
                             "grey", style="Wireframe"))
-    lines.append(_cyl_block("OuterShell", "World", "G4_AIR",
-                            outer + 1.0, outer + 3.0, H / 2.0, H / 2.0,
-                            "grey", style="Wireframe"))
+    # standardised outer fluence gauge: a HEMISPHERE enclosing the cylinder (not a
+    # barrel), so it samples the anisotropic GCR field identically to every other
+    # shape and fluence_outside is shape-invariant (see _outer_gauge_radius).
+    _rg = _outer_gauge_radius(spec)
+    lines.append(_sphere_shell("OuterShell", "World", "G4_AIR",
+                               _rg, _rg + 2.0, "grey", style="Wireframe"))
 
     # holistic crew-dose shell: tissue lining the barrel side wall (see _dome)
     lines.append("# holistic crew-dose shell (tissue-equivalent inner-wall lining)")
@@ -154,8 +221,22 @@ def _cylinder(spec: HabitatSpec) -> tuple[str, list[str]]:
                             inner - 2.0, inner, H / 2.0, H / 2.0,
                             "blue", style="Wireframe"))
 
-    lines.append("# tissue-equivalent crew phantom (mid-height)")
-    lines.append(_phantom(spec, H / 2.0))
+    # roof-underside disc: the barrel lining above covers only the vertical side
+    # wall, leaving the flat roof's inner face unscored. This 2 cm water disc lines
+    # that face (z=[H-2, H], flush under the innermost roof cap). Its outer radius
+    # stops at inner-6 -- inside the InnerShell air fluence gauge (r=[inner-5,
+    # inner-3]) which runs the full barrel height up to the roof -- so the disc
+    # clears it instead of clipping it; the thin r=[inner-6, inner] annulus this
+    # leaves unlined is a negligible fraction of the roof area. Its RoofDose is
+    # mass-weighted into the reported skin dose in run_design (using the same
+    # inner-6 radius, see _crewskin_volumes_cm3), giving a true whole-envelope crew
+    # skin average rather than a side-wall-only one.
+    lines.append(_cyl_block("CrewRoof", "World", "G4_WATER",
+                            0.0, inner - 6.0, 1.0, H - 1.0,
+                            "blue", style="Wireframe"))
+
+    lines.append("# tissue-equivalent crew phantom (standing trunk height)")
+    lines.append(_phantom(spec, spec.crew_height_cm))
     return "\n".join(lines), wall_names
 
 
@@ -172,21 +253,42 @@ def _quonset(spec: HabitatSpec) -> tuple[str, list[str]]:
     for i, ((ri, ro), layer) in enumerate(zip(spec.layer_radii_cm(), spec.walls)):
         topas_mat = MATERIALS[layer.material]["topas"]
         colour = MATERIALS[layer.material]["colour"]
-        lines.append(f"# layer {i}: {layer.material} {layer.thickness_cm:.1f} cm "
+        t = layer.thickness_cm
+        lines.append(f"# layer {i}: {layer.material} {t:.1f} cm "
                      f"({ri:.1f}->{ro:.1f} cm)")
         name = f"Wall{i}"
         wall_names.append(name)
         lines.append(_cyl_block(name, "World", topas_mat, ri, ro, HL, 0.0,
                                 colour, dphi=180.0, rotx=-90.0))
 
+        # Flat end bulkheads sealing the two open ends of the tunnel. Without
+        # these the arch shields only the curved wall and GCR streams in axially
+        # through the bare semicircular openings, inflating the dose relative to a
+        # closed dome. Each layer becomes a half-disc slab (radius 0->outer, upper
+        # half, on the ground plane) of thickness t, stacked outward along the
+        # length axis (world Y after rotx=-90) so the full stack -- and full areal
+        # density -- caps each end. Offset mirrors the roof caps in _cylinder:
+        # innermost flush at the arch end (Y=HL), each outer layer pushed out by
+        # the cumulative thickness below it.
+        cap_y = HL + (ri - inner) + t / 2.0
+        for sign, tag in ((+1.0, "Pos"), (-1.0, "Neg")):
+            cname = f"Cap{tag}{i}"
+            wall_names.append(cname)
+            lines.append(_cyl_block(cname, "World", topas_mat, 0.0, outer,
+                                    t / 2.0, 0.0, colour, dphi=180.0,
+                                    rotx=-90.0, transy=sign * cap_y))
+
     # fluence scorer shells (thin air half-cylinders inside / outside the arch)
     lines.append("# fluence scorer shells (air, half-cylinder)")
     lines.append(_cyl_block("InnerShell", "World", "G4_AIR",
                             inner - 5.0, inner - 3.0, HL, 0.0, "grey",
                             dphi=180.0, rotx=-90.0, style="Wireframe"))
-    lines.append(_cyl_block("OuterShell", "World", "G4_AIR",
-                            outer + 1.0, outer + 3.0, HL, 0.0, "grey",
-                            dphi=180.0, rotx=-90.0, style="Wireframe"))
+    # standardised outer fluence gauge: a full HEMISPHERE enclosing the arch (not a
+    # half-cylinder), so it samples the anisotropic GCR field identically to every
+    # other shape and fluence_outside is shape-invariant (see _outer_gauge_radius).
+    _rg = _outer_gauge_radius(spec)
+    lines.append(_sphere_shell("OuterShell", "World", "G4_AIR",
+                               _rg, _rg + 2.0, "grey", style="Wireframe"))
 
     # holistic crew-dose shell: tissue lining the inner arch surface (see _dome)
     lines.append("# holistic crew-dose shell (tissue-equivalent inner-wall lining)")
@@ -194,8 +296,22 @@ def _quonset(spec: HabitatSpec) -> tuple[str, list[str]]:
                             inner - 2.0, inner, HL, 0.0, "blue",
                             dphi=180.0, rotx=-90.0, style="Wireframe"))
 
-    lines.append("# tissue-equivalent crew phantom (mid-arch height)")
-    lines.append(_phantom(spec, inner / 2.0))
+    # end-cap linings: the arch CrewSkin above covers only the curved wall, leaving
+    # the inner faces of the two flat bulkheads (CapPos/CapNeg) unscored. Each end
+    # gets a 2 cm water half-disc flush against its bulkhead (Y=+/-HL inner face).
+    # Outer radius stops at inner-6 to clear the InnerShell air gauge (r=[inner-5,
+    # inner-3]) and the arch lining (r=[inner-2, inner]); the thin unlined rim is a
+    # negligible fraction of the end area. Both ends are lined and scored separately
+    # (not one end doubled) because a directional SPE can hit the two ends
+    # unequally; run_design mass-weights CrewCapA/B into the reported skin dose.
+    for tag, sign in (("A", +1.0), ("B", -1.0)):
+        lines.append(_cyl_block(f"CrewCap{tag}", "World", "G4_WATER",
+                                0.0, inner - 6.0, 1.0, 0.0, "blue",
+                                dphi=180.0, rotx=-90.0,
+                                transy=sign * (HL - 1.0), style="Wireframe"))
+
+    lines.append("# tissue-equivalent crew phantom (standing trunk height)")
+    lines.append(_phantom(spec, spec.crew_height_cm))
     return "\n".join(lines), wall_names
 
 
@@ -243,7 +359,7 @@ def build_scorers(spec: HabitatSpec, ion_z: int = 0, ion_a: int = 0) -> str:
         pfilter = "\n".join(lines) + "\n"
     else:
         pfilter = ""
-    return """# --- Scorers ---
+    scorers = """# --- Scorers ---
 s:Sc/OutsideWallFluence/Quantity   = "Fluence"
 s:Sc/OutsideWallFluence/Component  = "OuterShell"
 s:Sc/OutsideWallFluence/OutputFile = "fluence_outside"
@@ -272,6 +388,14 @@ s:Sc/PhantomDoseEq/Component  = "Phantom"
 s:Sc/PhantomDoseEq/OutputFile = "phantom_doseeq"
 s:Sc/PhantomDoseEq/IfOutputFileAlreadyExists = "Overwrite"
 
+# NASA/Cucinotta Q twin of the phantom dose-equivalent: same transport, same
+# per-step LET, only the quality-factor mapping differs (harder GCR Q than
+# ICRP-60). Scored alongside so its emergent Q is COMPUTED per design, not scaled.
+s:Sc/PhantomDoseEqNasa/Quantity   = "DoseEquivalent_NASA"
+s:Sc/PhantomDoseEqNasa/Component  = "Phantom"
+s:Sc/PhantomDoseEqNasa/OutputFile = "phantom_doseeq_nasa"
+s:Sc/PhantomDoseEqNasa/IfOutputFileAlreadyExists = "Overwrite"
+
 # holistic habitat-wide dose: tissue-equivalent skin lining the whole inner wall
 s:Sc/SkinDose/Quantity   = "DoseToMedium"
 s:Sc/SkinDose/Component  = "CrewSkin"
@@ -286,4 +410,70 @@ s:Sc/SkinDoseEq/Quantity   = "DoseEquivalent_ICRP"
 s:Sc/SkinDoseEq/Component  = "CrewSkin"
 s:Sc/SkinDoseEq/OutputFile = "skin_doseeq"
 s:Sc/SkinDoseEq/IfOutputFileAlreadyExists = "Overwrite"
+
+# NASA/Cucinotta Q twin of the skin-lining dose-equivalent (headline scorer).
+s:Sc/SkinDoseEqNasa/Quantity   = "DoseEquivalent_NASA"
+s:Sc/SkinDoseEqNasa/Component  = "CrewSkin"
+s:Sc/SkinDoseEqNasa/OutputFile = "skin_doseeq_nasa"
+s:Sc/SkinDoseEqNasa/IfOutputFileAlreadyExists = "Overwrite"
 """
+
+    # Shape-specific secondary linings, folded into the reported skin dose by
+    # run_design. The dome hemisphere already envelops its crew with one shell, so
+    # it defines no extra component; emitting these scorers for it would reference
+    # an undefined volume and abort the run.
+    #   cylinder -> CrewRoof   (flat roof underside; the barrel lining is side-only)
+    #   quonset  -> CrewCapA/B (the two flat end bulkheads; the arch lining is
+    #               curved-wall-only)
+    if spec.shape == "cylinder":
+        scorers += """
+# roof-underside disc lining (cylinder only)
+s:Sc/RoofDose/Quantity   = "DoseToMedium"
+s:Sc/RoofDose/Component  = "CrewRoof"
+s:Sc/RoofDose/OutputFile = "roof_dose"
+s:Sc/RoofDose/IfOutputFileAlreadyExists = "Overwrite"
+
+s:Sc/RoofDoseEq/Quantity   = "DoseEquivalent_ICRP"
+s:Sc/RoofDoseEq/Component  = "CrewRoof"
+s:Sc/RoofDoseEq/OutputFile = "roof_doseeq"
+s:Sc/RoofDoseEq/IfOutputFileAlreadyExists = "Overwrite"
+
+s:Sc/RoofDoseEqNasa/Quantity   = "DoseEquivalent_NASA"
+s:Sc/RoofDoseEqNasa/Component  = "CrewRoof"
+s:Sc/RoofDoseEqNasa/OutputFile = "roof_doseeq_nasa"
+s:Sc/RoofDoseEqNasa/IfOutputFileAlreadyExists = "Overwrite"
+"""
+    elif spec.shape == "quonset":
+        scorers += """
+# end-cap bulkhead linings (quonset only); A = +Y end, B = -Y end
+s:Sc/CapADose/Quantity   = "DoseToMedium"
+s:Sc/CapADose/Component  = "CrewCapA"
+s:Sc/CapADose/OutputFile = "capa_dose"
+s:Sc/CapADose/IfOutputFileAlreadyExists = "Overwrite"
+
+s:Sc/CapADoseEq/Quantity   = "DoseEquivalent_ICRP"
+s:Sc/CapADoseEq/Component  = "CrewCapA"
+s:Sc/CapADoseEq/OutputFile = "capa_doseeq"
+s:Sc/CapADoseEq/IfOutputFileAlreadyExists = "Overwrite"
+
+s:Sc/CapADoseEqNasa/Quantity   = "DoseEquivalent_NASA"
+s:Sc/CapADoseEqNasa/Component  = "CrewCapA"
+s:Sc/CapADoseEqNasa/OutputFile = "capa_doseeq_nasa"
+s:Sc/CapADoseEqNasa/IfOutputFileAlreadyExists = "Overwrite"
+
+s:Sc/CapBDose/Quantity   = "DoseToMedium"
+s:Sc/CapBDose/Component  = "CrewCapB"
+s:Sc/CapBDose/OutputFile = "capb_dose"
+s:Sc/CapBDose/IfOutputFileAlreadyExists = "Overwrite"
+
+s:Sc/CapBDoseEq/Quantity   = "DoseEquivalent_ICRP"
+s:Sc/CapBDoseEq/Component  = "CrewCapB"
+s:Sc/CapBDoseEq/OutputFile = "capb_doseeq"
+s:Sc/CapBDoseEq/IfOutputFileAlreadyExists = "Overwrite"
+
+s:Sc/CapBDoseEqNasa/Quantity   = "DoseEquivalent_NASA"
+s:Sc/CapBDoseEqNasa/Component  = "CrewCapB"
+s:Sc/CapBDoseEqNasa/OutputFile = "capb_doseeq_nasa"
+s:Sc/CapBDoseEqNasa/IfOutputFileAlreadyExists = "Overwrite"
+"""
+    return scorers
