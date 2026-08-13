@@ -231,6 +231,7 @@ class RunResult:
     skin_dose_gy: Optional[float] = None         # inner-wall lining (habitat-wide dose)
     skin_doseeq_sv: Optional[float] = None       # inner-wall lining, LET-weighted (ICRP-60 Q)
     skin_doseeq_nasa_sv: Optional[float] = None  # same lining, NASA/Cucinotta Q twin
+    neutron_doseeq_fraction: Optional[float] = None  # H_neutron / H_total on the skin lining
     fluence_inside: Optional[float] = None
     fluence_outside: Optional[float] = None
     log_tail: str = ""
@@ -403,6 +404,9 @@ def parse_results(run_dir: Path) -> dict:
         "skin_dose_gy": _read_scalar_csv(run_dir / "skin_dose.csv"),
         "skin_doseeq_sv": _read_scalar_csv(run_dir / "skin_doseeq.csv"),
         "skin_doseeq_nasa_sv": _read_scalar_csv(run_dir / "skin_doseeq_nasa.csv"),
+        # neutron-lineage twin of skin_doseeq (same CrewSkin lining); consumed into
+        # neutron_doseeq_fraction below and popped before RunResult construction.
+        "skin_doseeq_neutron_sv": _read_scalar_csv(run_dir / "skin_doseeq_neutron.csv"),
         "fluence_inside": _read_scalar_csv(run_dir / "fluence_inside.csv"),
         "fluence_outside": _read_scalar_csv(run_dir / "fluence_outside.csv"),
         # Shape-specific secondary linings, folded into skin_* below and popped
@@ -552,6 +556,16 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     wall = time.time() - t0
 
     results = parse_results(run_dir)
+    # Secondary-neutron dose fraction on the PRIMARY CrewSkin lining, taken before
+    # secondaries fold in so numerator and denominator share the one basis. It is a
+    # ratio of two dose-equivalents from the same run, so flux/gauge normalisation
+    # cancels -- a pure diagnostic, no calibration. Exact for the dome (single
+    # shell, no secondary lining); representative for cylinder/quonset, whose
+    # secondary linings fold into the reported skin dose but not this ratio.
+    _neu = results.pop("skin_doseeq_neutron_sv", None)
+    _base_eq = results.get("skin_doseeq_sv")
+    results["neutron_doseeq_fraction"] = (
+        _neu / _base_eq if (_neu is not None and _base_eq) else None)
     _fold_secondary_into_skin(spec, results)
     log_tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-25:])
     result = RunResult(spec=spec, tier=tier, run_dir=run_dir,

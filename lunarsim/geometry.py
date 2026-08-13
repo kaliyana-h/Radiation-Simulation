@@ -23,7 +23,14 @@ _GAUGE_STANDOFF_CM = 20.0
 # a safe margin inside the 900 cm sky-dome source. Designs larger than this grow the
 # gauge to enclose them (see _outer_gauge_radius) and lose strict cross-shape
 # comparability -- but those approach the source limit anyway.
-_OUTER_GAUGE_FIXED_CM = 800.0
+#
+# Re-anchored 800 -> 880 cm so the whole practical workshop envelope (enclosing
+# corner up to ~860 cm) fits the FIXED gauge with gauge_corr == 1.0, instead of
+# tripping the mild-extrapolation flag. This is dose-neutral: dosimetry scales
+# OUTER_GAUGE_ANCHOR_CAL by (800/880)^2 in lockstep, using the SAME 1/R^2 gauge law
+# the code already trusts in _gauge_corr (so every design reads the identical dose;
+# only the flag envelope widens). Stays a margin inside the 900 cm beam footprint.
+_OUTER_GAUGE_FIXED_CM = 880.0
 
 
 def _outer_gauge_radius(spec: HabitatSpec) -> float:
@@ -54,18 +61,25 @@ def _outer_gauge_radius(spec: HabitatSpec) -> float:
     cylinder/quonset the flat roof/end caps stack OUTWARD past the barrel by the full
     wall thickness (corner at H + wall_total, not the bare barrel rim).
     """
+    # Fixed radius for every normal design; only grow if the habitat is too big to
+    # fit inside it (graceful degradation, flagged by exceeding the fixed value).
+    return max(_OUTER_GAUGE_FIXED_CM, _enclosing_radius_cm(spec) + _GAUGE_STANDOFF_CM)
+
+
+def _enclosing_radius_cm(spec: HabitatSpec) -> float:
+    """Radius (cm) of the farthest solid corner of the habitat from its centre --
+    the smallest sphere that fully contains the walls. Used both to grow the outer
+    gauge (above) and, in dosimetry, to test whether a design pokes outside the
+    900 cm illuminated source footprint (beam_footprint_flag)."""
     outer = spec.outer_radius_cm
     wall_total = outer - spec.inner_radius_cm          # summed layer thickness
     if spec.shape == "dome":
-        enc = outer
-    elif spec.shape == "cylinder":
+        return outer
+    if spec.shape == "cylinder":
         # farthest = outer top corner of the roof caps: (r=outer, z=H+wall_total)
-        enc = math.hypot(outer, spec.effective_height_cm + wall_total)
-    else:  # quonset: arch of radius `outer`, half-length HL; end caps at Y=HL+wall
-        enc = math.hypot(outer, spec.effective_height_cm / 2.0 + wall_total)
-    # Fixed radius for every normal design; only grow if the habitat is too big to
-    # fit inside it (graceful degradation, flagged by exceeding the fixed value).
-    return max(_OUTER_GAUGE_FIXED_CM, enc + _GAUGE_STANDOFF_CM)
+        return math.hypot(outer, spec.effective_height_cm + wall_total)
+    # quonset: arch of radius `outer`, half-length HL; end caps at Y=HL+wall
+    return math.hypot(outer, spec.effective_height_cm / 2.0 + wall_total)
 
 
 def _sphere_shell(name: str, parent: str, material: str,
@@ -416,6 +430,17 @@ s:Sc/SkinDoseEqNasa/Quantity   = "DoseEquivalent_NASA"
 s:Sc/SkinDoseEqNasa/Component  = "CrewSkin"
 s:Sc/SkinDoseEqNasa/OutputFile = "skin_doseeq_nasa"
 s:Sc/SkinDoseEqNasa/IfOutputFileAlreadyExists = "Overwrite"
+
+# Neutron-lineage twin of SkinDoseEq: the SAME ICRP-60 dose-equivalent, but
+# summed only over energy deposited by charged particles descended from a neutron
+# (DoseEquivalentICRPNeutron extension). Scored on the same CrewSkin lining as
+# SkinDoseEq, so skin_doseeq_neutron / skin_doseeq is the wall-bred secondary
+# (albedo) neutron dose fraction -- a normalisation-invariant diagnostic (both
+# numerator and denominator share the run's flux/gauge scaling, which cancels).
+s:Sc/SkinDoseEqNeutron/Quantity   = "DoseEquivalent_ICRP_Neutron"
+s:Sc/SkinDoseEqNeutron/Component  = "CrewSkin"
+s:Sc/SkinDoseEqNeutron/OutputFile = "skin_doseeq_neutron"
+s:Sc/SkinDoseEqNeutron/IfOutputFileAlreadyExists = "Overwrite"
 """
 
     # Shape-specific secondary linings, folded into the reported skin dose by

@@ -19,6 +19,7 @@ import math
 import re
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -28,7 +29,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from lunarsim.spec import HabitatSpec, WallLayer, MATERIALS
-from lunarsim import geometry, bridge
+from lunarsim import geometry, bridge, dosimetry
 
 
 # --------------------------------------------------------------------------
@@ -84,6 +85,71 @@ class TestSpec(unittest.TestCase):
             self.assertAlmostEqual(a_hi, b_lo, places=9)  # no gap / overlap
         self.assertAlmostEqual(radii[-1][1], spec.outer_radius_cm, places=9)
 
+    def test_effective_height_defaults_by_shape(self):
+        # the contract the GUI length control relies on: leave height_cm unset and
+        # each shape resolves its own axial-length default.
+        self.assertEqual(_cyl_spec(inner=300.0).effective_height_cm, 300.0)   # = radius
+        self.assertEqual(_quon_spec(inner=300.0).effective_height_cm, 900.0)  # = 3*radius
+        self.assertEqual(_dome_spec(inner=300.0).effective_height_cm, 300.0)  # = radius
+
+    def test_quonset_length_default_is_capped(self):
+        # a very wide tunnel must not run its ends outside the ~9 m GCR source dome
+        self.assertEqual(_quon_spec(inner=600.0).effective_height_cm, 1200.0)  # min(3*600, 1200)
+
+    def test_explicit_height_overrides_default(self):
+        spec = HabitatSpec(name="c", shape="cylinder", inner_radius_cm=300.0,
+                           height_cm=800.0,
+                           walls=[WallLayer("aluminium", 5.0)])
+        self.assertEqual(spec.effective_height_cm, 800.0)   # honoured verbatim
+
+
+# --------------------------------------------------------------------------
+# size-envelope guard: oversized designs self-flag their gauge extrapolation
+# --------------------------------------------------------------------------
+class TestGaugeSizeFlag(unittest.TestCase):
+    def test_in_envelope_design_is_ok(self):
+        # a 3 m habitat fits inside the fixed 880 cm gauge -> gauge_corr == 1.0
+        for spec in (_dome_spec(300.0), _cyl_spec(300.0), _quon_spec(300.0)):
+            self.assertAlmostEqual(dosimetry._gauge_corr(spec), 1.0, places=9)
+            self.assertEqual(dosimetry.gauge_size_flag(spec), "ok")
+
+    def test_oversized_cylinder_flags_strong(self):
+        # an 8.5 m x 6 m drum: enclosing corner ~1160 cm forces the gauge to grow
+        # well past the fixed 880 cm reference (gauge_corr ~ 0.56) -> strong.
+        spec = HabitatSpec(name="big", shape="cylinder", inner_radius_cm=850.0,
+                           height_cm=600.0,
+                           walls=[WallLayer("polyethylene", 10.0),
+                                  WallLayer("aluminium", 5.0),
+                                  WallLayer("regolith", 70.0)])
+        self.assertLess(dosimetry._gauge_corr(spec), dosimetry.GAUGE_CORR_STRONG)
+        self.assertEqual(dosimetry.gauge_size_flag(spec), "strong")
+
+    def test_footprint_flag_grades_illumination(self):
+        # under-illumination guard: keys off the enclosing radius vs the 900 cm
+        # illuminated source footprint, independent of the gauge normalisation.
+        from lunarsim.bridge import DEFAULT_BEAM_SPOT_CM
+        # a 3 m habitat sits well inside the lit disc -> fully sampled.
+        self.assertEqual(dosimetry.beam_footprint_flag(_dome_spec(300.0)), "ok")
+        # a dome whose outer radius is a hair inside 900 cm -> marginal.
+        near = HabitatSpec(name="near", shape="dome", inner_radius_cm=880.0,
+                           walls=[WallLayer("aluminium", 1.0)])
+        self.assertLessEqual(geometry._enclosing_radius_cm(near), DEFAULT_BEAM_SPOT_CM)
+        self.assertEqual(dosimetry.beam_footprint_flag(near), "marginal")
+        # a 9.5 m dome pokes past the footprint -> under-sampled ('over').
+        big = HabitatSpec(name="big", shape="dome", inner_radius_cm=950.0,
+                          walls=[WallLayer("aluminium", 5.0)])
+        self.assertGreater(geometry._enclosing_radius_cm(big), DEFAULT_BEAM_SPOT_CM)
+        self.assertEqual(dosimetry.beam_footprint_flag(big), "over")
+
+    def test_thresholds_are_monotone(self):
+        # ordering the display relies on: ok >= MILD > mild band >= STRONG > strong
+        self.assertGreater(dosimetry.GAUGE_CORR_MILD, dosimetry.GAUGE_CORR_STRONG)
+        boundary = HabitatSpec(name="edge", shape="cylinder",
+                               inner_radius_cm=300.0, height_cm=300.0,
+                               walls=[WallLayer("regolith", 70.0)])
+        # a mid-size design lands in exactly one of the three buckets
+        self.assertIn(dosimetry.gauge_size_flag(boundary), ("ok", "mild", "strong"))
+
 
 # --------------------------------------------------------------------------
 # scorer emission is shape-specific
@@ -95,6 +161,16 @@ class TestScorerEmission(unittest.TestCase):
             for tok in ("SkinDose", "SkinDoseEq", "PhantomDose", "PhantomDoseEq",
                         "InsideWallFluence", "OutsideWallFluence"):
                 self.assertIn(tok, sc, f"{tok} missing for {spec.shape}")
+
+    def test_neutron_lineage_scorer_on_crewskin_every_shape(self):
+        # The secondary-neutron dose fraction is a CrewSkin twin present for all
+        # shapes (dome included -- it has no secondary lining but does have CrewSkin).
+        for spec in (_dome_spec(), _cyl_spec(), _quon_spec()):
+            sc = geometry.build_scorers(spec)
+            self.assertIn('Sc/SkinDoseEqNeutron/Quantity   = "DoseEquivalent_ICRP_Neutron"',
+                          sc, f"neutron scorer missing for {spec.shape}")
+            self.assertIn('Sc/SkinDoseEqNeutron/Component  = "CrewSkin"', sc)
+            self.assertIn('Sc/SkinDoseEqNeutron/OutputFile = "skin_doseeq_neutron"', sc)
 
     def test_cylinder_gets_roof_scorers_only(self):
         sc = geometry.build_scorers(_cyl_spec())
@@ -391,6 +467,78 @@ class TestCsvParsing(unittest.TestCase):
             self.assertIsNone(out["skin_doseeq_sv"])   # file absent
             self.assertIsNone(out["capa_dose_gy"])     # file absent
 
+    def test_parse_results_maps_neutron_doseeq_csv(self):
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d)
+            (run / "skin_doseeq_neutron.csv").write_text("# h\n0, 3.7e-13\n")
+            out = bridge.parse_results(run)
+            self.assertAlmostEqual(out["skin_doseeq_neutron_sv"], 3.7e-13, places=25)
+
+
+class _FakeSpeciesRun:
+    """Minimal ConvergedResult stand-in for the dosimetry dose-weighting path."""
+    def __init__(self, spec, doseeq, frac, dose=1.0e-13, fout=1.0, relerr=0.05):
+        self.spec = spec
+        self.skin_dose_gy = self.dose_gy = dose
+        self.fluence_outside = fout
+        self.skin_dose_rel_err = self.dose_rel_err = relerr
+        self.skin_doseeq_sv = self.skin_doseeq_nasa_sv = doseeq
+        self.phantom_doseeq_sv = self.phantom_doseeq_nasa_sv = doseeq
+        self.neutron_doseeq_fraction = frac
+
+
+class TestNeutronFraction(unittest.TestCase):
+    """The secondary-neutron dose fraction: a ratio of two same-run dose-equivalents,
+    combined across species dose-equivalent-weighted. Normalisation cancels, so these
+    invariants hold without recomputing any flux/gauge factors."""
+
+    def _two_species(self, fa, fb, ea=1.0e-12, eb=1.0e-12):
+        spec = _dome_spec()
+        H, Fe = dosimetry.GCR_COMPOSITION[0], dosimetry.GCR_COMPOSITION[4]
+        return [(H, _FakeSpeciesRun(spec, ea, fa)),
+                (Fe, _FakeSpeciesRun(spec, eb, fb))]
+
+    def test_equal_fractions_combine_to_that_fraction(self):
+        # If every species carries the same neutron fraction, the weighted mean is
+        # it -- independent of the (very different) H/Fe dose-eq weights.
+        a = dosimetry.assess_composition(self._two_species(0.4, 0.4), skin=True)
+        self.assertAlmostEqual(a.neutron_fraction, 0.4, places=12)
+
+    def test_single_species_passes_fraction_through(self):
+        spec = _dome_spec()
+        sr = [(dosimetry.GCR_COMPOSITION[0], _FakeSpeciesRun(spec, 1.0e-12, 0.31))]
+        a = dosimetry.assess_composition(sr, skin=True)
+        self.assertAlmostEqual(a.neutron_fraction, 0.31, places=12)
+
+    def test_species_missing_fraction_drops_out(self):
+        # A species with no neutron scorer (frac=None) leaves both numerator and
+        # denominator, so the combined value is the remaining species' fraction.
+        a = dosimetry.assess_composition(self._two_species(0.5, None), skin=True)
+        self.assertAlmostEqual(a.neutron_fraction, 0.5, places=12)
+
+    def test_none_everywhere_yields_none(self):
+        a = dosimetry.assess_composition(self._two_species(None, None), skin=True)
+        self.assertIsNone(a.neutron_fraction)
+
+    def test_dose_eq_weighting_favours_the_heavier_contributor(self):
+        # Identical species (same flux) so the weight is purely the dose-equivalent:
+        # entry B carries 10x A's H, so the combined fraction sits near B's 0.2, far
+        # below the 0.5 midpoint of a plain average.
+        spec = _dome_spec()
+        H = dosimetry.GCR_COMPOSITION[0]
+        sr = [(H, _FakeSpeciesRun(spec, 1.0e-13, 0.8)),
+              (H, _FakeSpeciesRun(spec, 1.0e-12, 0.2))]
+        a = dosimetry.assess_composition(sr, skin=True)
+        expected = (0.8 * 1.0e-13 + 0.2 * 1.0e-12) / (1.0e-13 + 1.0e-12)
+        self.assertAlmostEqual(a.neutron_fraction, expected, places=12)
+        self.assertLess(a.neutron_fraction, 0.5)
+
+    def test_assess_passes_neutron_fraction_through(self):
+        spec = _dome_spec()
+        r = _FakeSpeciesRun(spec, 1.0e-12, 0.27)
+        a = dosimetry.assess(r, phi_MV=400.0, skin=True)
+        self.assertAlmostEqual(a.neutron_fraction, 0.27, places=12)
+
 
 class _FakeRun:
     """Minimal RunResult stand-in: the kernel fold reads only `.spec`."""
@@ -442,6 +590,181 @@ class TestSpeKernelFold(unittest.TestCase):
                            walls=[WallLayer("aluminium", 5.0)])   # ~13.5 g/cm^2
         a = dosimetry.assess_spe(_FakeRun(thin), WORST_CASE_SPE, skin=False)
         self.assertFalse(a.calibrated)   # kernel not valid off its shielded regime
+
+
+class TestGcrThinWallFold(unittest.TestCase):
+    """Below the ~19 g/cm^2 crossover the flood normalisation over-counts wall-bred
+    secondaries (a 7.5 mm Al dome reads a nonphysical ~3500 mSv/yr under flood), so
+    the chronic-GCR headline is served instead by the phantom-matched kernel fold.
+    Pins the wiring, the regime gate, and the validated folded numbers so a silent
+    edit can't regress them (physics validation of the kernel lives offline)."""
+
+    def _thin_dome(self):
+        # 7.5 mm aluminium dome ~ 2.03 g/cm^2 -- the thinnest kernel anchor
+        return HabitatSpec(name="d", shape="dome", inner_radius_cm=750.0,
+                           walls=[WallLayer("aluminium", 0.75)])
+
+    def test_thin_al_dome_reproduces_validated_fold(self):
+        from lunarsim import dosimetry
+        spec = self._thin_dome()
+        self.assertTrue(dosimetry._gcr_thinwall_applies(spec))
+        self.assertTrue(dosimetry._gcr_thinwall_calibrated(spec))
+        a = dosimetry.assess_gcr_thinwall(spec, mission_days=365.0, phi_MV=400.0)
+        self.assertEqual(a.regime, "thinwall")
+        self.assertIsNone(a.neutron_fraction)      # no neutron twin in this kernel
+        # offline fold: 342.6 mSv/yr ICRP effective at the thinnest anchor
+        self.assertAlmostEqual(a.annual_msv, 342.6, delta=1.0)
+        # squarely in the literature 300-400 mSv/yr bracket (post-hoc check only)
+        self.assertGreater(a.annual_msv, 300.0)
+        self.assertLess(a.annual_msv, 400.0)
+
+    def test_per_species_effective_dose_sums_to_headline(self):
+        from lunarsim import dosimetry
+        a = dosimetry.assess_gcr_thinwall(self._thin_dome(), phi_MV=400.0)
+        yr = dosimetry.SECONDS_PER_DAY * dosimetry.DAYS_PER_YEAR * 1e3
+        esum = sum(c["doseeq_rate_sv_s"] for c in a.contributions) * yr
+        self.assertAlmostEqual(esum, a.annual_msv, delta=0.5)
+
+    def test_dose_decreases_with_wall_thickness(self):
+        from lunarsim import dosimetry
+        def E(tcm):
+            s = HabitatSpec(name="t", shape="dome", inner_radius_cm=750.0,
+                            walls=[WallLayer("aluminium", tcm)])
+            return dosimetry.assess_gcr_thinwall(s, phi_MV=400.0).annual_msv
+        # monotone falling across the thin band (0.75 -> ~3.7 -> ~7 cm Al)
+        self.assertGreater(E(0.75), E(3.7))
+        self.assertGreater(E(3.7), E(7.0))
+
+    def test_near_gate_meets_flood_path_continuously(self):
+        # log-log interpolation must land on the flood-validated ~130 mSv/yr as the
+        # areal density approaches the ~19 g/cm^2 crossover, not leave a step there.
+        from lunarsim import dosimetry
+        s = HabitatSpec(name="g", shape="dome", inner_radius_cm=750.0,
+                        walls=[WallLayer("aluminium", 7.0)])   # ~18.9 g/cm^2
+        a = dosimetry.assess_gcr_thinwall(s, phi_MV=400.0)
+        self.assertAlmostEqual(a.annual_msv, 130.0, delta=10.0)
+
+    def test_thick_design_stays_on_flood_path(self):
+        from lunarsim import dosimetry
+        thick = HabitatSpec(name="std", shape="dome", inner_radius_cm=750.0,
+                            walls=[WallLayer("polyethylene", 10.0),
+                                   WallLayer("regolith", 70.0)])   # ~134 g/cm^2
+        self.assertFalse(dosimetry._gcr_thinwall_applies(thick))
+
+    def test_non_aluminium_thin_wall_is_flagged_indicative(self):
+        from lunarsim import dosimetry
+        poly = HabitatSpec(name="p", shape="dome", inner_radius_cm=750.0,
+                           walls=[WallLayer("polyethylene", 1.0)])
+        self.assertTrue(dosimetry._gcr_thinwall_applies(poly))
+        self.assertFalse(dosimetry._gcr_thinwall_calibrated(poly))  # not Al-dominated
+
+
+class _FakeComposition:
+    """A run_composition stand-in result: carries just enough for the worker's
+    post-run handling (`ok`, the rel-err fields) and the display fold (`spec`)."""
+    def __init__(self, spec):
+        self.spec = spec
+        self.ok = True
+        self.dose_rel_err = 0.05
+        self.skin_dose_rel_err = 0.05
+
+
+class TestCombinedThinWallRender(unittest.TestCase):
+    """The _poll callback must serve the thin-wall Gate 1 fold for a COMBINED
+    ('SPE+GCR') job below the crossover too -- the combined branch returns before
+    the pure-GCR thin-wall gate, so a 7.5 mm Al dome was rendering the nonphysical
+    ~3500 mSv/yr flood number under NASA Q. Drives the real callback."""
+
+    class _FakeResult:
+        """Spec-only fold stand-in that also carries the report statistics the
+        combined branch stamps into the markdown."""
+        def __init__(self, spec):
+            self.spec = spec
+            self.ok = True
+            self.n_batches, self.total_primaries, self.wall_seconds = 12, 24000, 100.0
+
+    def _job(self, spec):
+        from lunarsim.jobs import JobStatus
+        from lunarsim.bridge import WORST_CASE_SPE
+        return types.SimpleNamespace(
+            spec=spec, result=self._FakeResult(spec), spe=WORST_CASE_SPE,
+            combined=True, status=JobStatus.DONE, progress=1.0, rel_err=0.1,
+            progress_cap=12, max_batches=12, batches_done=12, elapsed=100.0)
+
+    def _poll_with(self, spec):
+        from lunarsim import gui
+        job = self._job(spec)
+        orig_get = gui.default_runner.get
+        gui.default_runner.get = lambda jid: job
+        try:
+            return gui._poll(1, "fake")
+        finally:
+            gui.default_runner.get = orig_get
+
+    def test_combined_thin_al_dome_serves_thinwall_gate1(self):
+        spec = HabitatSpec(name="d", shape="dome", inner_radius_cm=750.0,
+                           walls=[WallLayer("aluminium", 0.75)])   # ~2.03 g/cm^2
+        _bar, _st, _metrics, _an, _dis, report, overlay = self._poll_with(spec)
+        # Gate 1 overlay is the folded ICRP effective dose, NOT the flood artifact
+        self.assertAlmostEqual(overlay["skin"], 342.6, delta=1.0)
+        self.assertLess(overlay["skin"], 400.0)          # not the ~3500 flood number
+        self.assertIn("thin-wall", report)               # regime is labelled
+        self.assertIn("ICRP-60 Q(L)", report)            # folded on ICRP Q, not NASA
+        self.assertIn("Gate 2", report)                  # SPE gate still present
+
+
+class TestCombinedJobOrchestration(unittest.TestCase):
+    """A combined ('SPE+GCR') job must transport exactly ONE MC -- the GCR
+    composition. The acute-SPE gate is a response-kernel fold with no MC of its
+    own, so the SPE MC must never be launched (it was rare-tail-starved and could
+    veto a GCR result it never fed). Guards the jobs.py orchestration, which the
+    pure-fold tests above cannot reach."""
+
+    def _wait_terminal(self, runner, jid, timeout=5.0):
+        import time
+        from lunarsim.jobs import JobStatus
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            job = runner.get(jid)
+            if job.status in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED):
+                return job
+            time.sleep(0.01)
+        self.fail("combined job did not reach a terminal state in time")
+
+    def test_combined_runs_gcr_mc_only_no_spe_mc(self):
+        from lunarsim import jobs
+        from lunarsim.jobs import LocalThreadRunner, JobStatus
+        from lunarsim.bridge import WORST_CASE_SPE
+
+        calls = {"composition": 0, "converged": 0}
+
+        def fake_composition(spec, tier, **kw):
+            calls["composition"] += 1
+            return _FakeComposition(spec)
+
+        def fake_converged(spec, tier, **kw):
+            calls["converged"] += 1        # must never fire in a combined job
+            return _FakeComposition(spec)
+
+        orig_comp, orig_conv = jobs.run_composition, jobs.run_converged
+        jobs.run_composition, jobs.run_converged = fake_composition, fake_converged
+        try:
+            runner = LocalThreadRunner(max_parallel=1)
+            jid = runner.submit(self._cal_dome(), spe=WORST_CASE_SPE, combined=True)
+            job = self._wait_terminal(runner, jid)
+        finally:
+            jobs.run_composition, jobs.run_converged = orig_comp, orig_conv
+
+        self.assertEqual(job.status, JobStatus.DONE)
+        self.assertEqual(calls["composition"], 1)   # the one GCR MC
+        self.assertEqual(calls["converged"], 0)      # NO acute-SPE MC
+        self.assertEqual(job.phase, "gcr")           # only the GCR phase runs
+        self.assertIsNotNone(job.spe)                # SPE gate still folded at display
+        # the field that carried the removed SPE run is gone
+        self.assertNotIn("spe_result", job.__dataclass_fields__)
+
+    # reuse the calibrated 7.5 m dome from the fold tests
+    _cal_dome = TestSpeKernelFold._cal_dome
 
 
 if __name__ == "__main__":

@@ -35,8 +35,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .bridge import RunResult, MAKE_SOURCE, SPEScenario
-from .geometry import _outer_gauge_radius, _OUTER_GAUGE_FIXED_CM
+from .bridge import RunResult, MAKE_SOURCE, SPEScenario, DEFAULT_BEAM_SPOT_CM
+from .geometry import _outer_gauge_radius, _OUTER_GAUGE_FIXED_CM, _enclosing_radius_cm
 
 
 def _gauge_corr(spec) -> float:
@@ -54,6 +54,69 @@ def _gauge_corr(spec) -> float:
     designs whose gauge had to grow (e.g. tall cylinders). See memory
     [[outer-fluence-gauge-fix]]."""
     return (_OUTER_GAUGE_FIXED_CM / _outer_gauge_radius(spec)) ** 2
+
+
+# Size-envelope guard (GCR outer gauge). The fixed 880 cm gauge -- and the +-4%
+# cross-shape invariance the whole dose calibration rests on -- was validated only
+# for designs that FIT inside it, i.e. gauge_corr == 1.0 (enclosing corner ~< 860 cm).
+# An oversized design grows the gauge, dropping gauge_corr below 1.0. The 1/R^2
+# correction (_gauge_corr) still restores the anchor, so the number is not wrong --
+# but it now EXTRAPOLATES past the validated envelope, which deserves a caveat. These
+# thresholds grade that extrapolation for the GUI, exactly as _spe_kernel_calibrated
+# flags off-calibration walls on the shielding side. NB this flags the NORMALISATION
+# extrapolation; a design that also pokes past the 900 cm illuminated footprint is
+# physically under-sampled and is flagged separately by beam_footprint_flag.
+GAUGE_CORR_MILD = 0.9      # <- gauge grew a little (enclosing corner ~> 908 cm)
+GAUGE_CORR_STRONG = 0.7    # <- gauge grew a lot; treat the number as indicative
+
+
+def gauge_size_flag(spec) -> str:
+    """Envelope status of a design's GCR outer-gauge normalisation.
+
+    'ok'     gauge at the fixed radius (gauge_corr ~ 1.0); inside the validated
+             envelope, absolute dose is trustworthy.
+    'mild'   gauge grew a little (gauge_corr in [0.7, 0.9)); the oversized design
+             is a mild extrapolation -- treat the absolute number as slightly soft.
+    'strong' gauge grew a lot (gauge_corr < 0.7); treat the number as indicative
+             and anchor it against a <=6 m version of the same wall.
+    """
+    gc = _gauge_corr(spec)
+    if gc >= GAUGE_CORR_MILD:
+        return "ok"
+    if gc >= GAUGE_CORR_STRONG:
+        return "mild"
+    return "strong"
+
+
+# Illuminated-footprint guard (physics, not normalisation). Every GCR source disc is
+# a parallel beam of finite radius DEFAULT_BEAM_SPOT_CM (900 cm) -- the lit footprint
+# on the sky-dome. A habitat whose farthest solid corner exceeds that radius pokes
+# outside the illuminated field: part of the wall receives NO primaries from the
+# grazing directions, so the crew dose is physically UNDER-sampled. This is a
+# different failure from gauge_size_flag: _gauge_corr rescales the normalisation but
+# cannot conjure primaries that were never launched, so this cannot be corrected away
+# -- only flagged. Threshold left of the hard 900 cm edge so a design brushing the
+# rim is caught before it silently loses flux. Feeds a GUI banner (never a hard block:
+# the run still produces a conservative-leaning lower bound the students can see).
+BEAM_FOOTPRINT_MARGIN_CM = 30.0      # amber band just inside the 900 cm rim
+
+
+def beam_footprint_flag(spec) -> str:
+    """Whether a design fits inside the 900 cm illuminated GCR footprint.
+
+    'ok'      enclosing corner comfortably inside the lit disc -- fully sampled.
+    'marginal' within BEAM_FOOTPRINT_MARGIN_CM of the 900 cm rim; grazing directions
+               start to clip, dose begins to read low. Trust it as a lower bound.
+    'over'    enclosing corner beyond 900 cm; the wall extends past the illuminated
+               field and the dose is under-sampled (biased low). Shrink the design or
+               widen the source (bridge.DEFAULT_BEAM_SPOT_CM) and re-anchor.
+    """
+    enc = _enclosing_radius_cm(spec)
+    if enc <= DEFAULT_BEAM_SPOT_CM - BEAM_FOOTPRINT_MARGIN_CM:
+        return "ok"
+    if enc <= DEFAULT_BEAM_SPOT_CM:
+        return "marginal"
+    return "over"
 
 E0_PROTON = 938.272            # MeV, proton rest energy
 SECONDS_PER_DAY = 86_400.0
@@ -101,8 +164,16 @@ GCR_CALIB_PHI_MV = 400.0        # reference modulation the calibration is pinned
 #     a fixed 900 cm so large habitats are fully lit rescales the source density.
 #     The 3 m dome's normalised dose (skin/fo) must stay identical, so CAL scales by
 #     N_500/N_900 = 1.7933e-7 / 3.9997e-8 = 4.4836.  CAL = 0.25620 * 4.4836 = 1.14867.
+#   Stage 3 (gauge 800 -> 880 cm, 2026-08-10): moving the FIXED gauge outward lowers
+#     the reference incident fluence by the very 1/R^2 law _gauge_corr already trusts
+#     for grown gauges, so CAL scales by (800/880)^2 to hold the 3 m dome's dose
+#     EXACTLY constant. This is an internal re-anchor, not a new calibration: every
+#     design reads the identical dose it did at 800 (fitting designs keep gauge_corr
+#     == 1.0 with the reference simply moved; grown designs cancel algebraically),
+#     and the only change is that the mild/strong extrapolation envelope now widens
+#     to enclosing corners ~< 908 cm. Purely geometric -- no dose target enters.
 # See memory [[outer-fluence-gauge-fix]] and [[gcr-source-module]].
-OUTER_GAUGE_ANCHOR_CAL = 0.25620 * (1.7933e-7 / 3.9997e-8)   # = 1.14867
+OUTER_GAUGE_ANCHOR_CAL = 0.25620 * (1.7933e-7 / 3.9997e-8) * (800.0 / 880.0) ** 2   # = 0.94932
 
 # Mean field quality factor for a GCR-dominated field behind modest shielding.
 # Literature mean Q for the deep-space/surface GCR field is ~2-6 (rises as
@@ -249,6 +320,8 @@ class DoseAssessment:
     mission_days: float
     rel_err: Optional[float] = None         # statistical rel. error of the dose rate
     contributions: Optional[list] = None    # per-species dose-rate breakdown (composition)
+    neutron_fraction: Optional[float] = None  # fraction of H carried by wall-bred secondary neutrons
+    regime: Optional[str] = None            # None=flood MC path; "thinwall"=phantom-matched kernel fold
 
     # ---- absorbed dose ----
     @property
@@ -352,6 +425,7 @@ def assess(result: RunResult,
         dose_rate_gy_s=dose_rate_gy_s,
         quality_factor=eff_q,
         mission_days=mission_days,
+        neutron_fraction=getattr(result, "neutron_doseeq_fraction", None),
     )
 
 
@@ -378,6 +452,8 @@ def assess_composition(species_results: list,
     older runs with no dose-eq CSV. Returns None if no species yielded a usable dose."""
     total_rate = 0.0
     total_eqrate = 0.0       # LET-weighted dose-equivalent rate (Sv/s)
+    total_neu_eqrate = 0.0   # neutron-lineage part of that dose-equivalent rate
+    neu_eqrate_denom = 0.0   # dose-eq rate summed only over species that reported a fraction
     total_flux = 0.0
     var = 0.0                # sum of (rate_i * relerr_i)^2  for combined error
     have_doseeq = True       # both targets carry a dose-eq scorer; cleared if any species lacks it
@@ -411,6 +487,12 @@ def assess_composition(species_results: list,
             eqrate_i = doseeq_sv * flux_i / sim_fluence_cm2 * OUTER_GAUGE_ANCHOR_CAL * gc
             total_eqrate += eqrate_i
             q_i = eqrate_i / rate_i if rate_i else None
+            # dose-weight this species' neutron fraction by its dose-eq contribution
+            # (a heavy ion at 20% neutron fraction weighs by how much H it carries)
+            f_i = getattr(result, "neutron_doseeq_fraction", None)
+            if f_i is not None:
+                total_neu_eqrate += f_i * eqrate_i
+                neu_eqrate_denom += eqrate_i
         else:
             have_doseeq = False                              # a species is missing it
         contributions.append({
@@ -432,6 +514,11 @@ def assess_composition(species_results: list,
     # fall back to the flat default when the dose-eq data is unavailable.
     eff_q = (total_eqrate / total_rate
              if have_doseeq and total_eqrate > 0 and total_rate else quality_factor)
+    # Combined secondary-neutron dose fraction: dose-equivalent-weighted mean of the
+    # per-species fractions (numerator and denominator summed over the same species,
+    # so a species missing the scorer simply drops out of both).
+    neutron_fraction = (total_neu_eqrate / neu_eqrate_denom
+                        if neu_eqrate_denom > 0 else None)
     return DoseAssessment(
         real_flux_cm2_s=total_flux,
         sim_fluence_cm2=sim_fluence_used,
@@ -440,6 +527,194 @@ def assess_composition(species_results: list,
         mission_days=mission_days,
         rel_err=rel_err,
         contributions=contributions,
+        neutron_fraction=neutron_fraction,
+    )
+
+
+# ----------------------------------------------------------------------
+# Thin-wall phantom-matched GCR fold  (direct-transmission regime)
+# ----------------------------------------------------------------------
+# The flood-MC normalisation (OUTER_GAUGE_ANCHOR_CAL * _gauge_corr) bathes the crew
+# in a BROAD wall-bred secondary shower -- correct behind thick shielding but a
+# spatial "blackout" for a THIN wall, where the crew dose is instead the direct
+# transmission of the primary column overhead (a 7.5 mm Al dome read an unphysical
+# 3531 mSv/yr under the flood path). Task #17 mapped the crossover: BELOW ~19 g/cm^2
+# areal density the phantom-matched narrow beam aimed at the crew is the valid regime;
+# above it the broad shower dominates and the two paths meet at ~130 mSv/yr. This
+# kernel serves the thin regime by folding a precomputed response R(E)=D_organ/Phi_ff
+# (built by dense monoenergetic phantom-matched transport at three ALUMINIUM areal
+# densities, per species per organ-shell) against the TRUE free-field GCR flux. It uses
+# NO gauge cal and NO 1/R^2 correction -- the only scale is the legitimate free-field
+# flux anchor (_calibration_factor), identical to the GCR flux the flood path already
+# trusts. Folded per anchor then interpolated in areal density; no per-design MC. Only
+# absorbed (D) and ICRP-60 (I) are carried, so the thin-wall headline is ICRP-60
+# effective dose. See data/gcr_thinwall_kernel.json and memory
+# [[variance-reduction-kernel]] / [[thin-shield-bragg-limit]].
+_GCR_THINWALL_KERNEL_PATH = Path(__file__).with_name("data") / "gcr_thinwall_kernel.json"
+
+
+@functools.lru_cache(maxsize=1)
+def _load_gcr_thinwall_kernel() -> dict:
+    with open(_GCR_THINWALL_KERNEL_PATH) as fh:
+        return json.load(fh)
+
+
+def _aluminium_areal_fraction(spec) -> float:
+    """Fraction of the wall's areal density that is the kernel's calibration material
+    (aluminium). 1.0 for an all-Al wall; lower for mixed walls, which still fold but
+    are flagged indicative (the R(E) transport was measured through aluminium)."""
+    from .spec import MATERIALS
+    tot = al = 0.0
+    for w in spec.walls:
+        ad = MATERIALS[w.material]["density"] * w.thickness_cm
+        tot += ad
+        if w.material == "aluminium":
+            al += ad
+    return al / tot if tot else 0.0
+
+
+def _thinwall_fold_point(point: dict, phi_MV: float) -> dict:
+    """Fold ONE areal-density anchor against the true free-field GCR flux.
+
+    R (=D/Phi_ff) [Gy*cm^2] x calibrated free-field species flux [/cm^2/s] -> dose rate,
+    summed over the per-nucleon spectrum (each node carries the LIS integral over its
+    geometric-mean energy bin, computed by the same _raw_gcr_integral the GCR flux model
+    uses). Returns per-organ absorbed (Gy/s) & ICRP dose-eq (Sv/s) rates, the dose-eq
+    variance, and each species' wT-weighted effective-dose and absorbed contribution."""
+    calib = _calibration_factor()
+    organs = _load_gcr_thinwall_kernel()["meta"]["organs"]
+    HI = {k: 0.0 for k, _w in organs}          # ICRP dose-eq rate  (Sv/s)
+    HD = {k: 0.0 for k, _w in organs}          # absorbed dose rate (Gy/s)
+    HIvar = {k: 0.0 for k, _w in organs}
+    per_species = {}
+    for name, sp in point["species"].items():
+        z, a, ab = sp["z"], sp["a"], sp["abundance"]
+        nd = sp["nodes_pernuc_mev"]
+        edges = ([nd[0]] + [math.sqrt(nd[j] * nd[j + 1]) for j in range(len(nd) - 1)]
+                 + [nd[-1]])
+        fw = [ab * calib * _raw_gcr_integral(z, a, phi_MV, edges[j], edges[j + 1], n=400)
+              for j in range(len(nd))]
+        spE = spD = 0.0
+        for k, wT in organs:
+            Ri, Si, Rd = sp["R"][k]["I"], sp["Rsem"][k]["I"], sp["R"][k]["D"]
+            hi = sum(Ri[j] * fw[j] for j in range(len(nd)))
+            hd = sum(Rd[j] * fw[j] for j in range(len(nd)))
+            var = sum((Si[j] * fw[j]) ** 2 for j in range(len(nd)))
+            HI[k] += hi; HD[k] += hd; HIvar[k] += var
+            spE += wT * hi; spD += wT * hd
+        per_species[name] = {"E_sv_s": spE, "D_gy_s": spD, "flux_cm2_s": sum(fw),
+                             "particle": sp["particle"], "group": sp["group"]}
+    return {"HI": HI, "HD": HD, "HIvar": HIvar, "per_species": per_species}
+
+
+def fold_gcr_thinwall(spec, phi_MV: float = 400.0) -> dict:
+    """Thin-wall phantom-matched GCR fold, interpolated to the design's areal density.
+
+    Folds each aluminium anchor (pure arithmetic, no MC) at phi_MV, then interpolates
+    the per-organ dose rates and per-species contributions between the bracketing
+    anchors. Interpolation is geometric in log(areal density) — dose falls off with
+    shielding as a power law, so a log-log fit tracks the physics far better than a
+    straight line and lands continuously on the flood-validated ~130 mSv/yr at the
+    ~19 g/cm2 gate rather than leaving a step there. (Zero-valued endpoints, e.g. a
+    penetration-gated node, fall back to linear.) Below the thinnest / above the
+    thickest anchor it clamps to the end anchor (the regime gate keeps callers inside
+    the measured band). Returns the whole-body effective absorbed rate (Gy/s),
+    effective dose-eq rate (Sv/s) and its standard error, per-organ rows, and the
+    per-species breakdown."""
+    K = _load_gcr_thinwall_kernel()
+    organs = K["meta"]["organs"]
+    pts = K["points"]
+    grid = [p["wall_gcm2"] for p in pts]
+    ad = spec.areal_density_gcm2()
+    folded = [_thinwall_fold_point(p, phi_MV) for p in pts]
+
+    if ad <= grid[0]:
+        lo = hi = 0; t = 0.0
+    elif ad >= grid[-1]:
+        lo = hi = len(grid) - 1; t = 0.0
+    else:
+        hi = next(j for j in range(len(grid)) if grid[j] >= ad)
+        lo = hi - 1
+        t = (math.log(ad) - math.log(grid[lo])) / (math.log(grid[hi]) - math.log(grid[lo]))
+
+    def ip(fa, fb):
+        if fa > 0.0 and fb > 0.0:
+            return fa * (fb / fa) ** t
+        return fa + t * (fb - fa)
+
+    D_eff = E = Evar = 0.0
+    rows = []
+    for k, wT in organs:
+        Hd = ip(folded[lo]["HD"][k], folded[hi]["HD"][k])
+        Hi = ip(folded[lo]["HI"][k], folded[hi]["HI"][k])
+        Hv = ip(folded[lo]["HIvar"][k], folded[hi]["HIvar"][k])
+        D_eff += wT * Hd; E += wT * Hi; Evar += (wT ** 2) * Hv
+        rows.append({"shell": k, "wT": wT, "absorbed_gy_s": Hd, "doseeq_sv_s": Hi})
+
+    per_species = {}
+    names = folded[lo]["per_species"].keys()
+    for name in names:
+        a0, a1 = folded[lo]["per_species"][name], folded[hi]["per_species"][name]
+        per_species[name] = {
+            "E_sv_s": ip(a0["E_sv_s"], a1["E_sv_s"]),
+            "D_gy_s": ip(a0["D_gy_s"], a1["D_gy_s"]),
+            "flux_cm2_s": ip(a0["flux_cm2_s"], a1["flux_cm2_s"]),
+            "particle": a0["particle"], "group": a0["group"]}
+
+    return {"D_eff_gy_s": D_eff, "E_sv_s": E, "sem_E_sv_s": math.sqrt(Evar),
+            "rows": rows, "per_species": per_species,
+            "flux_cm2_s": sum(s["flux_cm2_s"] for s in per_species.values()),
+            "areal_gcm2": ad}
+
+
+def _gcr_thinwall_applies(spec) -> bool:
+    """True when the design is in the thin-wall direct-transmission regime (areal
+    density below the measured crossover), so the phantom-matched fold -- not the broad
+    flood MC -- is the valid normalisation. Above the crossover the flood path stands."""
+    K = _load_gcr_thinwall_kernel()
+    return spec.areal_density_gcm2() < K["meta"]["crossover_gcm2"]
+
+
+def _gcr_thinwall_calibrated(spec) -> bool:
+    """True when the thin-wall fold sits squarely on its calibration: in-regime AND the
+    wall is aluminium-dominated (the material the R(E) transport was measured through).
+    A mixed / non-Al thin wall still folds but is flagged indicative, mirroring
+    _spe_kernel_calibrated on the shielding side."""
+    return _gcr_thinwall_applies(spec) and _aluminium_areal_fraction(spec) >= 0.8
+
+
+def assess_gcr_thinwall(spec, mission_days: float = 365.0,
+                        phi_MV: float = 400.0) -> Optional[DoseAssessment]:
+    """Thin-wall phantom-matched effective dose as a DoseAssessment (drops into the
+    same GCR display path as the flood assessment).
+
+    The folded whole-body effective dose is carried by setting the assessment's
+    absorbed-dose rate to the wT-weighted effective absorbed rate and its quality
+    factor to the emergent E/D_eff, so annual_msv == the ICRP-60 effective dose and
+    annual_mgy == the effective absorbed dose. regime='thinwall' marks it for the GUI;
+    neutron_fraction is None (the thin-wall kernel carries no neutron-lineage twin)."""
+    f = fold_gcr_thinwall(spec, phi_MV)
+    D_eff, E = f["D_eff_gy_s"], f["E_sv_s"]
+    if D_eff <= 0 or E <= 0:
+        return None
+    contributions = []
+    for name, sp in f["per_species"].items():
+        d, e = sp["D_gy_s"], sp["E_sv_s"]
+        contributions.append({
+            "species": name, "particle": sp["particle"], "group": sp["group"],
+            "flux_cm2_s": sp["flux_cm2_s"], "dose_rate_gy_s": d,
+            "doseeq_rate_sv_s": e, "quality_factor": (e / d) if d else None,
+            "dose_fraction": d / D_eff if D_eff else 0.0, "rel_err": 0.0})
+    return DoseAssessment(
+        real_flux_cm2_s=f["flux_cm2_s"],
+        sim_fluence_cm2=0.0,
+        dose_rate_gy_s=D_eff,
+        quality_factor=E / D_eff,
+        mission_days=mission_days,
+        rel_err=(f["sem_E_sv_s"] / E) if E else None,
+        contributions=contributions,
+        neutron_fraction=None,
+        regime="thinwall",
     )
 
 

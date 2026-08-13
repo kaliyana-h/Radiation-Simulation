@@ -51,6 +51,14 @@ The system is a clean two-layer design with a single data contract between them:
 **Left rail — design controls:**
 - Habitat type: dome, cylinder, or quonset (tunnel)
 - Inner radius slider (1.5–6 m)
+- **Axial length slider (2–12 m)** — shown only for the two elongated shapes
+  (cylinder axial length, quonset tunnel length) and hidden for the dome. Left
+  untouched, each shape keeps its radius-driven default (cylinder = radius,
+  quonset = 3×radius capped at 12 m); the slider makes that length a first-class
+  design parameter, which matters because a longer barrel shields the crew
+  slightly better against the axial GCR streaming in through the ends. The 12 m
+  ceiling matches the quonset's internal cap that keeps the tunnel ends inside
+  the ~9 m GCR source dome (uniform flux).
 - **Dynamic wall-layer stack** — add/remove up to 8 concentric layers, each with
   a material dropdown and thickness; labelled innermost→outermost. (Built on a
   fixed-pool pattern so typing in a field is never interrupted by re-renders.)
@@ -102,6 +110,21 @@ outer radius, estimated shell mass in tonnes).
 - **LET-weighted quality factor:** dose-equivalent uses a per-step ICRP-60 Q(L)
   scorer, so high-LET ions carry their own quality weighting; the reported mean Q
   emerges as the dose-equivalent/dose ratio.
+- **Secondary-neutron dose fraction:** a lineage-filtered twin of the ICRP-60 Q(L)
+  scorer (`DoseEquivalent_ICRP_Neutron`), scored on the *same* CrewSkin lining,
+  sums only the dose-equivalent deposited by charged particles that descend from a
+  neutron (full track ancestry via `TsTrackInformation`, enabled with
+  `SetNeedsTrackingAction`; creator-process fallback if ancestry is unavailable).
+  The reported diagnostic `H_neutron / H_total` is therefore the share of the
+  behind-shield crew dose-equivalent carried by **wall-bred (albedo) secondary
+  neutrons** — the quantity that *rises* as shielding hardens and the reason a
+  thick regolith stack has diminishing returns. Being a ratio of two dose-
+  equivalents from one run, its flux/gauge normalisation cancels: it needs no
+  calibration. Combined across the GCR composition it is dose-equivalent-weighted;
+  it is exact for the dome (single shell) and representative for cylinder/quonset
+  (whose secondary linings fold into the reported skin dose but not this ratio).
+  This closes the workshop critique that albedo neutrons were transported but not
+  reported.
 - **Statistically honest:** runs converge to a target precision (5%) and every
   reported figure carries its statistical error band.
 
@@ -320,6 +343,52 @@ result it never fed.
   below ~430 MeV, a soft huge-fluence event (Aug-1972) is largely absorbed while a
   hard event (Feb-1956 / GLE 5) drives the residual deep-organ dose — a genuine
   shielding-dependent fork the tool now models explicitly.
+- **Size-envelope advisory.** The dose normalisation and its ±4% cross-shape
+  invariance were validated for designs that fit inside the fixed 800 cm outer
+  gauge (the workshop envelope, inner radius up to ~3.5 m). A larger design grows
+  the gauge; the 1/R² correction (`_gauge_corr`) still restores the anchor so the
+  number is not wrong, but it extrapolates past the validated envelope. The score
+  card now **self-flags** this: `dosimetry.gauge_size_flag` grades the design as
+  `ok` / `mild` / `strong` from `gauge_corr` alone (target-blind, geometry-only),
+  and the GUI appends an amber (mild, `gauge_corr` 0.7–0.9) or red (strong, < 0.7)
+  advisory under the Radiation Protection Score telling the user to anchor an
+  oversized result against a ≤6 m version. This mirrors the SPE `calibrated` flag
+  on the shielding side.
+- **Secondary-neutron dose fraction is now reported** (previously an open
+  workshop critique: wall-bred albedo neutrons were transported but not
+  surfaced). A lineage-filtered twin scorer (`DoseEquivalent_ICRP_Neutron`)
+  scores dose-equivalent only from tracks with a neutron anywhere in their
+  ancestry, and the pipeline reports `f = H_neutron / H_total`. The fraction is
+  normalisation-invariant (both numerator and denominator are scored in the same
+  run, so flux/gauge calibration cancels), exact for the dome and representative
+  for the cylinder/quonset (computed on the primary crew-skin lining, pre-fold).
+
+### 5.1 Physics validation runs (2026-08)
+
+Four independent cross-checks were run against external references, plus one
+follow-up probing the unshielded limit. Each is target-blind: the reference
+value never enters the calculation, only the post-hoc comparison.
+
+| # | Check | Reference | Tool result | Verdict |
+|---|---|---|---|---|
+| 1 | **Proton Bragg range** — 100 MeV pencil beam into water, 260 Z-bins | NIST PSTAR CSDA range 7.718 cm | peak at **7.725 cm** (258/260 bins non-zero) | **0.09% — transport range exact** |
+| 2 | **Physics-list spread** — proton-only validated dome, 3 lists | model-form uncertainty | FTFP_BERT_HP **117.6**, Shielding **112.5**, QGSP_BIC_HP **102.7** mSv/yr | **13.5% band**; default sits on the conservative high edge; neutron fraction (~0.60) list-independent |
+| 3 | **Unshielded surface anchor** — 1 cm Al dome (~2.7 g/cm²), full GCR, skin | literature ~300–400 mSv/yr | skin **2750 mSv/yr**, eff_Q 8.97 | trend valid but absolute ~2× inflated (thin-shield HZE Bragg over-catch) — **out of clean regime** |
+| 4 | **Lunar neutron albedo** — bare Apollo-17 regolith under GCR protons, leakage phase-space plane | LRO LEND leakage spectrum shape | evaporation peak 1–3 MeV + fast tail to ~300 MeV + epithermal 1/E + thermal; 0 downward neutrons; 30.6% in 0.5–8 MeV band | **matches textbook lunar leakage shape**; corroborates the ~60% albedo-neutron dose fraction |
+
+**Follow-up — can the unshielded number be made more accurate?** Re-running case
+3 to read the **central crew phantom** (effective-dose proxy) rather than the thin
+skin lining, converged on the phantom (16 rounds, 3h25m, rel-err stalled
+0.11–0.13), gave **phantom E = 2117 mSv/yr** — only 21% below the skin reading
+(2686) and still ~5.6× the ~380 mSv/yr published anchor. Si + Fe carry 49% of the
+phantom dose at rel-err ~0.3. **Conclusion:** switching scoring *depth* cannot
+rescue an unshielded number, because at ~2.7 g/cm² there is no material to strip
+the low-energy heavy ions — the flux reaching *any* tissue depth is already
+Bragg-over-caught. This is a transport-**regime** limit, not a scorer-depth
+artifact. The trustworthy deliverables remain the **thick-shielded dome
+(~130 mSv/yr)** and the **thin-slab light-ion partials**; the unshielded case is
+a literature bracket (~300–400), not a tool output, absent variance reduction on
+the heavy-ion Bragg tail.
 
 ---
 

@@ -5,7 +5,7 @@ Layout matches the agreed mockup:
   * Left rail  : branded "Radiation Sim" -> Habitat Geometry -> Primary Wall
                  (+ collapsible extra shielding layer) -> exposure -> Run.
   * Header     : "Radiation Simulation Tool" + a live config subtitle line.
-  * Tabs       : Spacecraft Overview | GCR Environment | Dose Analysis.
+  * Tabs       : Habitat Overview | GCR Environment | Dose Analysis.
   * Overview   : Dose cross-section / 3-D wireframe toggle over the habitat model.
   * Right rail : Dose Metrics card stack + Design Parameters.
 
@@ -29,9 +29,14 @@ import datetime as _dt
 import json
 
 from .spec import HabitatSpec, WallLayer, MATERIALS, SHAPES
-from .bridge import FULL_RUN, WORST_CASE_SPE
+from .bridge import FULL_RUN, WORST_CASE_SPE, DEFAULT_BEAM_SPOT_CM
 from .dosimetry import (assess, assess_composition, assess_spe,
-                        gcr_scalar_fluence_rate, DOSE_LIMITS_MSV)
+                        gcr_scalar_fluence_rate, DOSE_LIMITS_MSV,
+                        gauge_size_flag, _gauge_corr,
+                        beam_footprint_flag,
+                        assess_gcr_thinwall, _gcr_thinwall_applies,
+                        _gcr_thinwall_calibrated)
+from .geometry import _enclosing_radius_cm
 from .jobs import default_runner, JobStatus, ConvergedComposition
 from .trajviz import run_cascade, build_figure
 
@@ -153,16 +158,23 @@ def _num(x):
         return 0.0
 
 
-def spec_from_inputs(name, shape, inner_r_m, layers) -> HabitatSpec:
+def spec_from_inputs(name, shape, inner_r_m, layers, length_m=None) -> HabitatSpec:
     walls = [WallLayer(L.get("m") or "aluminium", float(L.get("t") or 0) / 10.0)
              for L in (layers or []) if float(L.get("t") or 0) > 0]
     if not walls:                                   # never build a wall-less habitat
         walls = [WallLayer("aluminium", 0.6)]
+    shape = shape or "dome"
+    # Axial length applies only to the two elongated shapes; a dome is a
+    # hemisphere with no independent length, so it keeps height_cm=None and the
+    # spec falls back to its radius-driven default.
+    height_cm = (float(length_m) * 100.0
+                 if (length_m and shape in ("cylinder", "quonset")) else None)
     return HabitatSpec(
         name=(name or "habitat").strip().replace(" ", "_") or "habitat",
-        shape=shape or "dome",
+        shape=shape,
         inner_radius_cm=float(inner_r_m) * 100.0,
         walls=walls,
+        height_cm=height_cm,
     )
 
 
@@ -570,6 +582,13 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
     slider_field("Inner radius (m)", "inner-r-val",
                  dcc.Slider(id="inner-r", min=1.5, max=8.0, step=0.05, value=2.5,
                             marks=_marks([2, 3, 4, 5, 6, 7, 8]), tooltip=None)),
+    # Axial length — only meaningful for the two elongated shapes, so this field
+    # is shown for cylinder/quonset and hidden for the dome (see _length_control).
+    html.Div(id="length-field", style={"display": "none"}, children=[
+        slider_field("Axial length (m)", "length-val",
+                     dcc.Slider(id="length-slider", min=2.0, max=12.0, step=0.5,
+                                value=6.0, marks=_marks([2, 4, 6, 8, 10, 12]),
+                                tooltip=None))]),
 
     html.Div("Wall Layers", style=SECTION),
     html.Div("Innermost first. Add the structural shell, insulation and regolith "
@@ -695,12 +714,17 @@ gcr_panel = html.Div(id="panel-gcr", style={"display": "none"}, children=[
                                        "fontWeight": 700, "marginBottom": "12px"}),
     html.Div(style=CARD, children=[
         html.P("Source: force-field-modulated Local Interstellar Spectrum "
-               "(Usoskin 2005) for GCR protons, sampled as an isotropic upper "
-               "hemisphere at the lunar surface and transported with "
-               "FTFP_BERT_HP.", style={"color": MUTED, "fontSize": "13px",
-                                       "lineHeight": "1.6"}),
+               "(Usoskin 2005), sampled as an isotropic upper hemisphere at the "
+               "lunar surface and transported with FTFP_BERT_HP. The proton "
+               "spectrum below is the reference; the scored run transports the "
+               "full weighted GCR ion composition — protons plus the heavier ions "
+               "(He, C, O … up to Fe), whose per-ion dose shares appear in the "
+               "Dose Analysis breakdown.", style={"color": MUTED,
+                                                   "fontSize": "13px",
+                                                   "lineHeight": "1.6"}),
         _kv("Solar modulation φ", "400 MV (solar minimum, worst case)"),
         _kv("Integral proton flux", f"{gcr_scalar_fluence_rate(400.0):.2f} /cm²/s"),
+        _kv("Ion composition", "H + He … Fe (weighted GCR abundances)"),
         _kv("Angular distribution", "isotropic over 2π sr (sky dome)"),
     ]),
 ])
@@ -728,7 +752,7 @@ centre = html.Div(style={"flex": "1", "padding": "26px 30px", "overflowY": "auto
                                       "height": "16px", "marginBottom": "8px"}),
     dcc.Tabs(id="tabs", value="overview", style={"borderBottom": f"1px solid {BORDER}"},
              children=[
-        dcc.Tab(label="\U0001F6F0 Spacecraft Overview", value="overview",
+        dcc.Tab(label="\U0001F6F0 Habitat Overview", value="overview",
                 style=TAB_STYLE, selected_style=TAB_SELECTED),
         dcc.Tab(label="\U0001F4CA GCR Environment", value="gcr",
                 style=TAB_STYLE, selected_style=TAB_SELECTED),
@@ -871,6 +895,17 @@ def _render_layers(active):
 # Callbacks: live geometry / labels / subtitle / design parameters
 # ----------------------------------------------------------------------
 @app.callback(
+    Output("length-field", "style"),
+    Output("length-val", "children"),
+    Input("shape", "value"), Input("length-slider", "value"))
+def _length_control(shape, length):
+    """Length is an axial dimension only the two elongated shapes have. Show the
+    slider for cylinder/quonset; hide it for the dome (which uses its radius)."""
+    show = shape in ("cylinder", "quonset")
+    return ({} if show else {"display": "none"}), f"{float(length or 6.0):.1f}"
+
+
+@app.callback(
     Output("habitat-view", "figure"), Output("view-title", "children"),
     Output("subtitle", "children"), Output("design-params", "children"),
     Output("inner-r-val", "children"),
@@ -879,9 +914,10 @@ def _render_layers(active):
     Input({"type": "layer-thk", "index": ALL}, "value"),
     Input("view-mode", "value"),
     Input("dose-overlay", "data"),
+    Input("length-slider", "value"),
     State({"type": "layer-mat", "index": ALL}, "id"),
     State("active-rows", "data"))
-def _live(shape, inner_r, mats, thks, view_mode, overlay, ids, active):
+def _live(shape, inner_r, mats, thks, view_mode, overlay, length, ids, active):
     r_label = f"{float(inner_r or 2.5):.2f}"
     layers = _layers_from_components(mats, ids, thks, active)
     if not any(L["t"] > 0 for L in layers):
@@ -891,7 +927,7 @@ def _live(shape, inner_r, mats, thks, view_mode, overlay, ids, active):
                 "⚠ Enter a wall thickness (mm) for at least one layer",
                 no_update, r_label)
     try:
-        spec = spec_from_inputs("design", shape, inner_r, layers)
+        spec = spec_from_inputs("design", shape, inner_r, layers, length)
         spec.validate()
     except Exception:
         return (no_update, no_update, no_update, no_update, r_label)
@@ -913,6 +949,11 @@ def _live(shape, inner_r, mats, thks, view_mode, overlay, ids, active):
 
     params = [
         _kv("Inner radius", f"{spec.inner_radius_cm / 100:.2f} m"),
+    ]
+    if spec.shape in ("cylinder", "quonset"):
+        axis = "Axial length" if spec.shape == "cylinder" else "Tunnel length"
+        params.append(_kv(axis, f"{spec.effective_height_cm / 100:.2f} m"))
+    params += [
         _kv("Wall stack", stack),
         _kv("Areal density", f"{spec.areal_density_gcm2():.1f} g/cm²"),
         _kv("Outer radius", f"{spec.outer_radius_cm / 100:.2f} m"),
@@ -934,11 +975,12 @@ def _live(shape, inner_r, mats, thks, view_mode, overlay, ids, active):
     State({"type": "layer-mat", "index": ALL}, "id"),
     State({"type": "layer-thk", "index": ALL}, "value"),
     State("active-rows", "data"),
+    State("length-slider", "value"),
     State("cascade-dir", "data"),
     prevent_initial_call=True)
-def _cascade(n, colour_by, shape, inner_r, mats, ids, thks, active, cascade_dir):
+def _cascade(n, colour_by, shape, inner_r, mats, ids, thks, active, length, cascade_dir):
     spec = spec_from_inputs("habitat", shape, inner_r,
-                            _layers_from_components(mats, ids, thks, active))
+                            _layers_from_components(mats, ids, thks, active), length)
     trigger = ctx.triggered_id
 
     if trigger == "cascade-colour":
@@ -1006,13 +1048,14 @@ def _style_cascade(fig):
     State({"type": "layer-mat", "index": ALL}, "id"),
     State({"type": "layer-thk", "index": ALL}, "value"),
     State("active-rows", "data"), State("scenario", "value"),
+    State("length-slider", "value"),
     prevent_initial_call=True)
-def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario):
+def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length):
     layers = _layers_from_components(mats, ids, thks, active)
     if not any(L["t"] > 0 for L in layers):
         # No layer has a thickness -- refuse rather than score a fabricated wall.
         return no_update, True, "⚠ Enter a wall thickness (mm) for at least one layer before evaluating."
-    spec = spec_from_inputs("habitat", shape, inner_r, layers)
+    spec = spec_from_inputs("habitat", shape, inner_r, layers, length)
     if scenario == "spe":
         # One acute event: a single proton cone at the fixed event fluence.
         # Converge on the wall lining (the skin/BFO surface); no ion composition.
@@ -1031,8 +1074,9 @@ def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario):
                                     min_batches=SCORING_MIN_BATCHES,
                                     composition=True)   # protons + heavy ions, summed
     else:
-        # Workshop default: BOTH gates in one run -- acute SPE then chronic GCR,
-        # reported as two separate verdicts (never summed).
+        # Workshop default: BOTH gates from one GCR run -- the chronic GCR field
+        # (MC) plus the acute SPE gate (folded from job.result.spec, no MC of its
+        # own), reported as two separate verdicts (never summed).
         jid = default_runner.submit(spec, tier=SCORING_TIER,
                                     target_rel_err=SCORING_TARGET_REL_ERR,
                                     max_batches=SCORING_MAX_BATCHES,
@@ -1071,7 +1115,7 @@ def _poll(_n, jid):
     err = f" ±{job.rel_err:.0%}" if job.rel_err else ""
     cap = job.progress_cap or job.max_batches
     if job.combined:
-        kind = f"SPE+GCR ({job.phase or 'gcr'})"
+        kind = "SPE+GCR"          # one MC (GCR); the SPE gate is a fold, no phase
     else:
         kind = "SPE" if job.spe is not None else "GCR"
     status = (f"[{job.status.value}] {kind} · {job.spec.name} — batch "
@@ -1090,31 +1134,62 @@ def _poll(_n, jid):
     if job.combined:
         # The SPE gate folds the event spectrum against the shielded response
         # kernel; it reads only .spec, so the GCR composition result feeds it
-        # (there is no separate SPE MC in a combined job any more).
+        # (there is no separate SPE MC in a combined job any more). It is the
+        # binding Gate 2 dose and is needed whichever way Gate 1 resolves.
         a_spe = assess_spe(job.result, job.spe, skin=False)  # headline = BFO (binding)
-        a = _assess(job.result, skin=False)       # central phantom (noisy)
-        a_skin = _assess(job.result, skin=True)   # habitat-wide lining, ICRP-60 Q (cross-check)
-        a_skin_nasa = _assess(job.result, skin=True, qf="nasa")  # NASA Q lining (headline)
-        primary = a_skin_nasa or a_skin or a
-        if a_spe is None or primary is None:
-            msg = html.Div("Combined run finished but a gate produced no usable "
-                           "dose — a wall-lining scorer recorded no signal. Try "
-                           "more batches.", style={"color": ACCENT, "fontSize": "13px"})
+        if a_spe is None:
+            msg = html.Div("Combined run finished but the SPE gate produced no "
+                           "usable dose. Try more batches.",
+                           style={"color": ACCENT, "fontSize": "13px"})
             return bar, status, no_update, [msg], True, no_update, no_update
-        s = primary.summary("career")
+
+        # Gate 1: below the ~19 g/cm2 crossover the flood normalisation over-counts
+        # wall-bred secondaries, so serve the phantom-matched thin-wall kernel fold
+        # (ICRP-60 Q(L)) instead. It is spec-only, so it does not depend on the flood
+        # lining recording signal -- check it before touching the flood assessments.
+        # Gate 2 (SPE) is unaffected; the flood MC still ran and supplies statistics.
+        a_tw = (assess_gcr_thinwall(job.spec, mission_days=SCORING_MISSION_DAYS,
+                                    phi_MV=SCORING_TIER.phi_mv)
+                if _gcr_thinwall_applies(job.spec) else None)
+        if a_tw is not None:
+            calibrated = _gcr_thinwall_calibrated(job.spec)
+            g1_metrics = _thinwall_metric_cards(a_tw, job, calibrated)
+            g1_analysis = _thinwall_analysis_body(a_tw, job, calibrated)
+            g1_gcr = (None, a_tw, None)
+            g1_overlay_skin, g1_phantom = a_tw.annual_msv, None
+        else:
+            a = _assess(job.result, skin=False)       # central phantom (noisy)
+            a_skin = _assess(job.result, skin=True)   # habitat-wide lining, ICRP-60 Q
+            a_skin_nasa = _assess(job.result, skin=True, qf="nasa")  # NASA Q (headline)
+            primary = a_skin_nasa or a_skin or a
+            if primary is None:
+                msg = html.Div("Combined run finished but the GCR gate produced no "
+                               "usable dose — a wall-lining scorer recorded no "
+                               "signal. Try more batches.",
+                               style={"color": ACCENT, "fontSize": "13px"})
+                return bar, status, no_update, [msg], True, no_update, no_update
+            calibrated = None
+            s = primary.summary("career")
+            g1_metrics = _metric_cards(a, a_skin, s, job, a_skin_nasa=a_skin_nasa)
+            g1_analysis = _analysis_body(a, a_skin, s, job, a_skin_nasa=a_skin_nasa)
+            g1_gcr = (a, a_skin, a_skin_nasa)
+            g1_overlay_skin, g1_phantom = primary.annual_msv, a
+
         metrics = [_gate_header("Gate 1 · Chronic GCR field (annual)"),
-                   *_metric_cards(a, a_skin, s, job, a_skin_nasa=a_skin_nasa),
+                   *g1_metrics,
                    _gate_header("Gate 2 · Solar particle event (acute)"),
                    *_spe_metric_cards(a_spe, job)]
         analysis = [_gate_header("Gate 1 · Chronic GCR field (annual)"),
-                    *_analysis_body(a, a_skin, s, job, a_skin_nasa=a_skin_nasa),
+                    *g1_analysis,
                     _gate_header("Gate 2 · Solar particle event (acute)"),
                     *_spe_analysis_body(a_spe, job)]
-        report = _report_text(job, gcr=(a, a_skin, a_skin_nasa), spe=a_spe)
+        report = _report_text(job, gcr=g1_gcr, spe=a_spe, thinwall=calibrated)
         # Overlay the chronic GCR field: it is the annual number the geometry is
         # mainly judged on, and the two gates are never summed.
-        return (bar, status, metrics, analysis, True, report,
-                _overlay(job.spec, primary, a, "mSv/yr", "GCR annual"))
+        overlay = {"sig": _spec_sig(job.spec), "skin": g1_overlay_skin,
+                   "phantom": g1_phantom.annual_msv if g1_phantom else None,
+                   "unit": "mSv/yr", "scenario": "GCR annual"}
+        return (bar, status, metrics, analysis, True, report, overlay)
 
     # --- acute SPE branch: a single event dose vs the 30-day limit ----------
     if job.spe is not None:
@@ -1134,6 +1209,22 @@ def _poll(_n, jid):
                 _spe_analysis_body(a_spe, job), True, report, spe_overlay)
 
     # --- chronic GCR branch -------------------------------------------------
+    # Thin-wall (direct-transmission) regime: below the ~19 g/cm2 crossover the
+    # flood normalisation over-counts wall-bred secondaries, so serve the
+    # phantom-matched kernel fold instead. The flood MC still ran (its statistics
+    # are shown), but the headline is the folded ICRP effective dose.
+    if _gcr_thinwall_applies(job.spec):
+        a_tw = assess_gcr_thinwall(job.spec, mission_days=SCORING_MISSION_DAYS,
+                                   phi_MV=SCORING_TIER.phi_mv)
+        if a_tw is not None:
+            calibrated = _gcr_thinwall_calibrated(job.spec)
+            report = _report_text(job, gcr=(None, a_tw, None), thinwall=calibrated)
+            overlay = {"sig": _spec_sig(job.spec), "skin": a_tw.annual_msv,
+                       "phantom": None, "unit": "mSv/yr",
+                       "scenario": "GCR annual (thin-wall)"}
+            return (bar, status, _thinwall_metric_cards(a_tw, job, calibrated),
+                    _thinwall_analysis_body(a_tw, job, calibrated), True, report, overlay)
+
     a = _assess(job.result, skin=False)       # central phantom (noisy point dose)
     a_skin = _assess(job.result, skin=True)   # habitat-wide lining, ICRP-60 Q (cross-check)
     a_skin_nasa = _assess(job.result, skin=True, qf="nasa")  # NASA Q lining (headline)
@@ -1181,12 +1272,18 @@ def _assess(result, skin, qf="icrp"):
     return assess(result, mission_days=SCORING_MISSION_DAYS, skin=skin, qf=qf)
 
 
-def _score_card(score, rel_txt, verdict, frac, qf_label=None, cmp_line=None):
+def _score_card(score, rel_txt, verdict, frac, qf_label=None, cmp_line=None,
+                size_note=None, limit_label="NASA career limit"):
     """The headline the student records: habitat-wide annual effective dose.
 
-    qf_label names the quality-factor model behind `score` (the headline runs on
-    NASA/Cucinotta Q so the verdict is consistent with the NASA career limit it is
-    judged against); cmp_line carries the ICRP-60 Q(L) cross-check as a band."""
+    qf_label names the quality-factor model behind `score` (both the flood headline
+    and the thin-wall fold run on ICRP-60 Q(L), so the quantity does not flip across
+    the ~19 g/cm2 crossover); cmp_line carries the NASA/Cucinotta Q conservative
+    cross-check as a band. limit_label names the limit `frac` is a fraction of --
+    plain "career limit" (the 600 mSv career limit is quality-factor-independent, so
+    both the flood and the thin-wall fold share it).
+    size_note, when present, is a (colour, text) advisory that the design is
+    oversized and its dose extrapolates past the validated size envelope."""
     colour = VERDICT_COLOUR.get(verdict, METRIC)
     style = dict(CARD)
     style.update({"borderLeft": f"4px solid {colour}", "background": "#161d27",
@@ -1200,14 +1297,78 @@ def _score_card(score, rel_txt, verdict, frac, qf_label=None, cmp_line=None):
             html.Span(f"{score:.1f}", style={"color": colour, "fontSize": "42px",
                                              "fontWeight": 900, "lineHeight": "1"}),
             html.Span(f"mSv/yr{rel_txt}", style={"color": INK, "fontSize": "14px"})]),
-        html.Div(f"{verdict} · {frac:.0f}% of NASA career limit"
+        html.Div(f"{verdict} · {frac:.0f}% of {limit_label}"
                  + (f" · {qf_label}" if qf_label else ""), style={
             "color": colour, "fontSize": "12px", "fontWeight": 700, "marginTop": "10px"}),
     ]
     if cmp_line:
         children.append(html.Div(cmp_line, style={
             "color": MUTED, "fontSize": "11px", "marginTop": "6px"}))
+    if size_note:
+        note_colour, note_text = size_note
+        children.append(html.Div("⚠ " + note_text, style={
+            "color": note_colour, "fontSize": "11px", "fontWeight": 600,
+            "marginTop": "8px", "lineHeight": "1.35"}))
     return html.Div(style=style, children=children)
+
+
+def _size_note(spec):
+    """(colour, text) advisory when a design is too big for the validated gauge
+    envelope, else None. Keys off geometry only (gauge_corr) -- target-blind."""
+    flag = gauge_size_flag(spec)
+    if flag == "ok":
+        return None
+    gc = _gauge_corr(spec)
+    pct = f"(gauge {gc:.2f}× — normalisation grew to enclose the design)"
+    if flag == "mild":
+        return ("#d29922",
+                "Design exceeds the validated size envelope; absolute dose is a "
+                f"mild extrapolation {pct}.")
+    return (ACCENT,
+            "Design is well beyond the validated size envelope; treat the absolute "
+            f"dose as indicative and anchor it against a ≤6 m version {pct}.")
+
+
+def _footprint_banner(spec):
+    """Prominent full-width banner (NOT a hard block) shown when a design pokes past
+    the 900 cm illuminated GCR footprint, so part of the wall receives no incident
+    primaries and the crew dose is physically under-sampled. Returns an html.Div or
+    None. Keys off geometry only (enclosing radius vs beam spot) -- target-blind.
+
+    Distinct from _size_note: that flags NORMALISATION extrapolation (the 1/R^2 gauge
+    correction still restores the anchor); this flags MISSING FLUX, which no
+    correction can recover -- so it is the more serious, louder advisory."""
+    flag = beam_footprint_flag(spec)
+    if flag == "ok":
+        return None
+    enc = _enclosing_radius_cm(spec)
+    spot_m = DEFAULT_BEAM_SPOT_CM / 100.0
+    if flag == "marginal":
+        colour, bg = "#d29922", "rgba(210,153,34,0.12)"
+        head = "Design brushes the edge of the simulated field"
+        body = (f"The habitat’s farthest corner ({enc/100:.1f} m) sits within "
+                f"{DEFAULT_BEAM_SPOT_CM - enc:.0f} cm of the {spot_m:.0f} m illuminated "
+                "GCR footprint. Grazing directions start to clip, so the dose reads "
+                "slightly low — trust it as a lower bound, not an exact figure.")
+    else:  # over
+        colour, bg = ACCENT, "rgba(242,79,61,0.14)"
+        head = "Design exceeds the simulated radiation field — dose under-sampled"
+        body = (f"The habitat’s farthest corner ({enc/100:.1f} m) extends past the "
+                f"{spot_m:.0f} m illuminated GCR footprint, so part of the outer wall "
+                "receives no incident particles from low angles. The dose below is "
+                "biased LOW and should be read only as a lower bound. For a trustworthy "
+                "number, shrink the habitat below the footprint (or widen the source "
+                "field and re-anchor). The run still completed — it was not blocked.")
+    return html.Div(style={
+        "background": bg, "border": f"1px solid {colour}",
+        "borderLeft": f"5px solid {colour}", "borderRadius": "10px",
+        "padding": "14px 16px", "marginBottom": "2px"}, children=[
+        html.Div("⚠ " + head, style={
+            "color": colour, "fontSize": "13px", "fontWeight": 800,
+            "letterSpacing": "0.3px", "marginBottom": "5px"}),
+        html.Div(body, style={
+            "color": INK, "fontSize": "12px", "lineHeight": "1.45"}),
+    ])
 
 
 # Below this many batches the phantom's error bar is NOT REPORTED at all.
@@ -1256,13 +1417,16 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
     # Absorbed dose is quality-factor-independent, so both Q models share it.
     # Fall back to the phantom only if the lining scorer is unavailable.
     ab = a_skin if a_skin is not None else a
-    # The headline dose-equivalent runs on the NASA/Cucinotta Q twin of the
-    # habitat-wide skin scorer: the verdict is judged against the NASA career
-    # limit, so the dose feeding it must use the matching (NASA) quality model.
-    # ICRP-60 Q(L) is retained as the labelled cross-check. Everything degrades to
-    # ICRP-only for older runs that have no NASA dose-eq CSV.
-    head = a_skin_nasa if a_skin_nasa is not None else a_skin
-    cmp_icrp = a_skin if a_skin_nasa is not None else None      # ICRP band, only if NASA present
+    # Headline dose-equivalent runs on the ICRP-60 Q(L) habitat-wide skin scorer,
+    # the SAME quantity+convention as the below-gate thin-wall kernel, so the
+    # displayed number no longer flips quality-factor model across the ~19 g/cm2
+    # crossover. The ICRP skin-lining headline is OLTARIS-validated in the thick
+    # regime (~1.1x at 50 g/cm2, where final designs sit) and stays the
+    # conservative, safe-erring choice through the messy middle band. The
+    # NASA/Cucinotta Q twin is kept as a labelled conservative cross-check (it
+    # over-reads ~1.5x at thick); older runs with no NASA CSV simply omit it.
+    head = a_skin if a_skin is not None else a
+    cmp_nasa = a_skin_nasa if (a_skin is not None and a_skin_nasa is not None) else None
     aeq = head if head is not None else a
     ratio = aeq.equiv_rate_msv_day / 0.70 if aeq.equiv_rate_msv_day else 0.0
     # The graded score uses the habitat-wide (wall-lining) scorer: it samples the
@@ -1276,22 +1440,27 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
         frac = s_head["fraction_of_limit"] * 100
         skin_rel = getattr(job.result, "skin_dose_rel_err", None)
         rel_txt = f" ± {skin_rel:.0%}" if skin_rel else ""
-        qf_label = "NASA/Cucinotta Q" if a_skin_nasa is not None else "ICRP-60 Q(L)"
-        cmp_line = (f"ICRP-60 Q(L) cross-check: {cmp_icrp.annual_msv:.1f} mSv/yr"
-                    if cmp_icrp is not None else None)
+        qf_label = "ICRP-60 Q(L)"
+        cmp_line = (f"NASA/Cucinotta Q conservative cross-check: "
+                    f"{cmp_nasa.annual_msv:.1f} mSv/yr"
+                    if cmp_nasa is not None else None)
     else:
         score, verdict = ab.annual_msv, s["verdict"]
         frac, rel_txt, qf_label, cmp_line = s["fraction_of_limit"] * 100, "", None, None
     eq_sub = (f"ISS baseline = 0.70 mSv/day | ratio: {ratio:.2f}×"
-              + (f" | ICRP: {cmp_icrp.equiv_rate_msv_day:.3f}" if cmp_icrp is not None else ""))
+              + (f" | NASA Q: {cmp_nasa.equiv_rate_msv_day:.3f}" if cmp_nasa is not None else ""))
     phantom_pt = (f"{a.annual_msv:.1f} mSv/year" if a is not None else "n/a")
     phantom_rel = _phantom_err_text(job.result)
     phantom_note = ("central self-shielded point — noisier diagnostic, not the score"
                     if not phantom_rel else
                     f"central self-shielded point{phantom_rel} — noisier diagnostic, "
                     "not the score")
-    return [
-        _score_card(score, rel_txt, verdict, frac, qf_label=qf_label, cmp_line=cmp_line),
+    size_note = _size_note(job.result.spec) if job.result is not None else None
+    banner = _footprint_banner(job.result.spec) if job.result is not None else None
+    return ([banner] if banner else []) + [
+        _score_card(score, rel_txt, verdict, frac, qf_label=qf_label,
+                    cmp_line=cmp_line, size_note=size_note,
+                    limit_label="career limit"),
         metric_card("Absorbed dose",
                     f"{ab.dose_rate_ugy_day / 1000:.3f} mGy/day",
                     f"= {ab.annual_mgy:.1f} mGy/year"),
@@ -1303,30 +1472,31 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
 
 def _analysis_body(a, a_skin, s, job, a_skin_nasa=None):
     skin_err = getattr(job.result, "skin_dose_rel_err", None)
-    # Headline dose-equivalent runs on the NASA/Cucinotta Q twin (matches the
-    # verdict's NASA career limit); ICRP-60 Q(L) is the labelled cross-check.
-    # Absorbed-dose rows are quality-factor-independent and stay on the phantom.
-    head = a_skin_nasa if a_skin_nasa is not None else a_skin
-    cmp_icrp = a_skin if a_skin_nasa is not None else None
+    # Headline dose-equivalent runs on the ICRP-60 Q(L) skin scorer -- the same
+    # quantity+convention as the below-gate kernel, so the displayed number no
+    # longer flips Q-model at the ~19 g/cm2 crossover. NASA/Cucinotta Q is the
+    # labelled conservative cross-check. Absorbed-dose rows are Q-independent.
+    head = a_skin if a_skin is not None else a
+    cmp_nasa = a_skin_nasa if (a_skin is not None and a_skin_nasa is not None) else None
     aeq = head if head is not None else a
     ab = a if a is not None else a_skin       # absorbed-dose / flux fallback source
     seq = aeq.summary("career")
-    head_qf = "NASA Q" if a_skin_nasa is not None else "ICRP-60 Q(L)"
+    head_qf = "ICRP-60 Q(L)"
     head_txt = (f"{head.annual_msv:.1f} mSv/year"
                 f"{f' ± {skin_err:.0%}' if skin_err else ''}"
                 if head is not None else "n/a")
     phantom_pt = f"{a.annual_msv:.1f} mSv/year" if a is not None else "n/a"
     # mean quality factor: emergent H/D for each model present
-    if cmp_icrp is not None:
-        qf_txt = (f"{seq['quality_factor']:.2f} (NASA) · "
-                  f"{cmp_icrp.summary('career')['quality_factor']:.2f} (ICRP-60)")
+    if cmp_nasa is not None:
+        qf_txt = (f"{seq['quality_factor']:.2f} (ICRP-60) · "
+                  f"{cmp_nasa.summary('career')['quality_factor']:.2f} (NASA)")
     else:
         qf_txt = f"{seq['quality_factor']:.2f}"
     rows = [
         _kv(f"◆ PROTECTION SCORE (habitat-wide, {head_qf})", head_txt)]
-    if cmp_icrp is not None:
-        rows.append(_kv("   ICRP-60 Q(L) cross-check",
-                        f"{cmp_icrp.annual_msv:.1f} mSv/year"))
+    if cmp_nasa is not None:
+        rows.append(_kv("   NASA/Cucinotta Q cross-check (conservative)",
+                        f"{cmp_nasa.annual_msv:.1f} mSv/year"))
     rows += [
         _kv("Crew-phantom dose (point, diagnostic)", phantom_pt),
         _kv("Absorbed dose rate", f"{s['dose_rate_uGy_per_day']:.3f} µGy/day"),
@@ -1335,23 +1505,44 @@ def _analysis_body(a, a_skin, s, job, a_skin_nasa=None):
             f"over {int(seq['mission_days'])} days"),
         _kv("Fraction of career limit", f"{seq['fraction_of_limit'] * 100:.1f} %"),
         _kv("Quality factor (mean, LET-weighted)", qf_txt),
+        _neutron_fraction_row(a_skin if a_skin is not None else head),
         _kv("Wall transmission", f"{job.result.transmission:.2f}"
             if job.result.transmission else "n/a"),
         _kv("GCR flux used", f"{ab.real_flux_cm2_s:.2f} /cm²/s"),
         _kv("Statistics", f"{job.result.n_batches} batches, "
             f"{job.result.total_primaries:,} primaries, {job.result.wall_seconds:.0f}s"),
         *_species_breakdown(a_skin),
+        html.Div("Above ~19 g/cm² the headline is the geometry-aware flood "
+                 "wall-lining dose; below it, the thin-wall kernel fold. The two "
+                 "engines hand off at the ~19 g/cm² gate, the least-certain point of "
+                 "the sweep: the flood errs conservative (safe) through the ~19–30 "
+                 "g/cm² band and lands within ~10% of cross-code (OLTARIS) effective "
+                 "dose at thick shielding, where final designs sit; the kernel just "
+                 "below the gate is the more optimistic estimate. The true value "
+                 "sits between them near the gate.",
+                 style={"color": MUTED, "fontSize": "10px",
+                        "marginTop": "12px", "fontStyle": "italic"}),
         html.Div("Dose is summed over the GCR ion composition (H, He, C, Si, Fe "
                  "groups), each transported separately and normalised to its real "
                  "flux. Equivalent dose is LET-weighted per step by a custom scorer "
-                 "(the headline uses NASA/Cucinotta Q, matching the NASA career "
-                 "limit; ICRP-60 Q(L) is shown alongside as a cross-check), so "
-                 "high-LET ions and secondaries carry their own quality factor and "
-                 "the mean Q shown above is the emergent H/D ratio.",
+                 "(the headline uses ICRP-60 Q(L); NASA/Cucinotta Q is shown "
+                 "alongside as a conservative cross-check), so high-LET ions and "
+                 "secondaries carry their own quality factor and the mean Q shown "
+                 "above is the emergent H/D ratio.",
                  style={"color": MUTED, "fontSize": "10px",
                         "marginTop": "12px", "fontStyle": "italic"}),
     ]
     return rows
+
+
+def _neutron_fraction_row(a):
+    """Row: share of the crew dose-equivalent carried by wall-bred secondary
+    (albedo) neutrons. Emitted only when the neutron-lineage scorer reported a
+    fraction; renders nothing (empty Div) otherwise so older runs are unaffected."""
+    f = getattr(a, "neutron_fraction", None) if a is not None else None
+    if f is None:
+        return html.Div()
+    return _kv("↳ from secondary neutrons (albedo)", f"{f * 100:.0f}% of dose-equivalent")
 
 
 def _species_breakdown(a_skin):
@@ -1369,6 +1560,87 @@ def _species_breakdown(a_skin):
     return [html.Div("Dose share by GCR ion", style={
         "color": MUTED, "fontSize": "11px", "fontWeight": 700,
         "marginTop": "12px", "marginBottom": "4px"}), *rows]
+
+
+# ----------------------------------------------------------------------
+# Thin-wall (direct-transmission) GCR rendering
+# ----------------------------------------------------------------------
+# When the wall is too thin to build a full secondary shower, crew dose is
+# direct primary transmission through the column above them, NOT the broad
+# wall-bred field the flood normalisation assumes -- so the flood path grossly
+# over-counts (a 7.5 mm Al dome reads ~3500 mSv/yr under flood, a spatial
+# blackout artefact). Below the ~19 g/cm2 crossover we serve instead the
+# phantom-matched kernel fold (dosimetry.fold_gcr_thinwall): a per-species,
+# per-organ R(E) transported through aluminium and folded against the true
+# free-field GCR flux -- no gauge, no 1/R^2, target-blind. The headline is the
+# ICRP-60 whole-body effective dose; there is no NASA twin or neutron-lineage
+# scorer in this kernel, and the phantom IS the score (no separate point dose).
+def _thinwall_note(calibrated):
+    """(colour, text) banner explaining the thin-wall regime; amber + 'indicative'
+    when the wall is not aluminium-dominated (folded on the Al transport kernel)."""
+    if calibrated:
+        return ("#3fb950",
+                "Thin-wall regime: dose is the phantom-matched direct-transmission "
+                "fold (aluminium kernel) folded against the free-field GCR flux — not "
+                "the flood normalisation, which over-counts wall-bred secondaries when "
+                "the wall is too thin to build a full shower.")
+    return ("#d29922",
+            "Thin-wall regime, non-aluminium wall: folded on the aluminium transport "
+            "kernel, so the absolute dose is indicative — the regime is right, the "
+            "material scaling approximate.")
+
+
+def _thinwall_metric_cards(a, job, calibrated):
+    s = a.summary("career")
+    rel_txt = f" ± {a.rel_err:.0%}" if a.rel_err else ""
+    banner = _footprint_banner(job.spec)
+    return ([banner] if banner else []) + [
+        _score_card(a.annual_msv, rel_txt, s["verdict"], s["fraction_of_limit"] * 100,
+                    qf_label="ICRP-60 Q(L) · thin-wall phantom-matched",
+                    cmp_line=None,
+                    # The regime is explained in the Analysis footnote, so the card
+                    # stays clean; only the non-Al "indicative" caveat rides here.
+                    size_note=(None if calibrated else _thinwall_note(calibrated)),
+                    limit_label="career limit"),
+        metric_card("Absorbed dose", f"{a.dose_rate_ugy_day / 1000:.3f} mGy/day",
+                    f"= {a.annual_mgy:.1f} mGy/year"),
+        metric_card("Dose equivalent", f"{a.equiv_rate_msv_day:.3f} mSv/day",
+                    f"ISS baseline = 0.70 mSv/day | ratio: "
+                    f"{a.equiv_rate_msv_day / 0.70:.2f}×"),
+        metric_card("Method", "kernel fold (phantom-matched)",
+                    "direct-transmission thin-wall regime — no flood normalisation"),
+    ]
+
+
+def _thinwall_analysis_body(a, job, calibrated):
+    s = a.summary("career")
+    calib_note = ("" if calibrated else
+                  "  ⚠ non-aluminium wall — folded on the Al kernel, indicative only")
+    return [
+        _kv("◆ PROTECTION SCORE (whole-body effective, ICRP-60 Q(L))",
+            f"{a.annual_msv:.1f} mSv/year{f' ± {a.rel_err:.0%}' if a.rel_err else ''}"),
+        _kv("Verdict (career limit)", s["verdict"]),
+        _kv("Absorbed dose rate", f"{a.dose_rate_ugy_day:.3f} µGy/day"),
+        _kv("Equivalent dose rate", f"{a.equiv_rate_msv_day * 1000:.2f} µSv/day"),
+        _kv("Effective dose (mission)", f"{s['mission_mSv']:.1f} mSv "
+            f"over {int(s['mission_days'])} days"),
+        _kv("Fraction of career limit", f"{s['fraction_of_limit'] * 100:.1f} %"),
+        _kv("Quality factor (mean, LET-weighted)", f"{s['quality_factor']:.2f}"),
+        _kv("Wall areal density", f"{job.spec.areal_density_gcm2():.1f} g/cm²"),
+        _kv("GCR flux used (free-field)", f"{a.real_flux_cm2_s:.2f} /cm²/s"),
+        _kv("Method", "phantom-matched kernel fold" + calib_note),
+        *_species_breakdown(a),
+        html.Div("Below ~19 g/cm² the wall is too thin to build a full secondary "
+                 "shower, so crew dose is direct primary transmission — the flood "
+                 "normalisation (right behind thick shielding) over-counts here. Dose "
+                 "is instead folded from each GCR ion's spectrum against a precomputed "
+                 "aluminium response kernel R(E) (per-organ shells, ICRP-60 Q baked "
+                 "in) and normalised to the true free-field flux — no flood gauge, no "
+                 "distance correction. Whole-body effective dose is the wₜ-weighted "
+                 "organ sum.",
+                 style={"color": MUTED, "fontSize": "10px",
+                        "marginTop": "12px", "fontStyle": "italic"}),
+    ]
 
 
 # ----------------------------------------------------------------------
@@ -1452,7 +1724,7 @@ def _spe_analysis_body(a, job):
 # ----------------------------------------------------------------------
 # Design save / load  +  results report  (#2)
 # ----------------------------------------------------------------------
-def _report_text(job, gcr=None, spe=None) -> str:
+def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
     """One-page markdown report of the completed run: design, verdict, breakdown.
     Built here (in the poll) while the assessments are in hand and stashed in the
     report-store, so the download button just serves the string.
@@ -1482,29 +1754,42 @@ def _report_text(job, gcr=None, spe=None) -> str:
     if gcr is not None:
         a, a_skin, *rest = gcr
         a_skin_nasa = rest[0] if rest else None
-        # Headline runs on the NASA/Cucinotta Q twin (consistent with the NASA
-        # career limit); ICRP-60 Q(L) is the labelled cross-check.
-        head = a_skin_nasa if a_skin_nasa is not None else (a_skin if a_skin is not None else a)
-        cmp_icrp = a_skin if a_skin_nasa is not None else None
-        head_qf = "NASA Q" if a_skin_nasa is not None else "ICRP-60 Q(L)"
+        # Headline runs on the ICRP-60 Q(L) skin scorer (same convention as the
+        # below-gate kernel); NASA/Cucinotta Q is the conservative cross-check.
+        head = a_skin if a_skin is not None else a
+        cmp_nasa = a_skin_nasa if (a_skin is not None and a_skin_nasa is not None) else None
+        head_qf = "ICRP-60 Q(L)"
         s = head.summary("career")
         L += ["## Gate 1 — chronic GCR field (annual)" if combined
               else "## Scenario — chronic GCR field (annual)",
               f"- Solar modulation: φ=400 MV (solar minimum)",
               f"- Mission: {SCORING_MISSION_DAYS} days",
               f"- **Protection score (habitat-wide, {head_qf}): {head.annual_msv:.1f} mSv/yr**"]
-        if cmp_icrp is not None:
-            L.append(f"- ICRP-60 Q(L) cross-check: {cmp_icrp.annual_msv:.1f} mSv/yr")
+        if cmp_nasa is not None:
+            L.append(f"- NASA/Cucinotta Q conservative cross-check: "
+                     f"{cmp_nasa.annual_msv:.1f} mSv/yr")
         if a is not None:
             L.append(f"- Crew-phantom point dose: {a.annual_msv:.1f} mSv/yr")
         qf_line = f"- Mean quality factor: {s['quality_factor']:.2f} ({head_qf})"
-        if cmp_icrp is not None:
-            qf_line += f" · {cmp_icrp.summary('career')['quality_factor']:.2f} (ICRP-60)"
+        if cmp_nasa is not None:
+            qf_line += f" · {cmp_nasa.summary('career')['quality_factor']:.2f} (NASA)"
         L += [f"- Absorbed dose: {head.annual_mgy:.1f} mGy/yr",
               qf_line,
               f"- Career limit: {s['limit_mSv']:.0f} mSv "
               f"({s['fraction_of_limit'] * 100:.0f}% used)",
               f"- **Verdict: {s['verdict']}**"]
+        if thinwall is not None:
+            L += ["- Regime: thin-wall phantom-matched fold (wall < ~19 g/cm², below "
+                  "the flood-normalisation crossover — direct primary transmission, "
+                  "not the wall-bred secondary field)"
+                  + ("" if thinwall else
+                     "  ⚠ non-aluminium wall — folded on the Al kernel, indicative only")]
+        elif a_skin is not None:
+            L += ["- Regime: geometry-aware flood wall-lining (wall ≥ ~19 g/cm², above "
+                  "the thin-wall crossover). Conservative/safe-erring through the "
+                  "~19–30 g/cm² band; validated within ~10% of cross-code (OLTARIS) "
+                  "effective dose at thick shielding. The kernel→flood hand-off at "
+                  "the gate is the least-certain point of the sweep."]
         contrib = getattr(a_skin, "contributions", None) if a_skin else None
         if contrib:
             L += ["", "### Dose share by GCR ion"]
@@ -1547,10 +1832,11 @@ def _report_text(job, gcr=None, spe=None) -> str:
     State({"type": "layer-mat", "index": ALL}, "id"),
     State({"type": "layer-thk", "index": ALL}, "value"),
     State("active-rows", "data"),
+    State("length-slider", "value"),
     prevent_initial_call=True)
-def _save_design(n, shape, inner_r, mats, ids, thks, active):
+def _save_design(n, shape, inner_r, mats, ids, thks, active, length):
     spec = spec_from_inputs("habitat", shape, inner_r,
-                            _layers_from_components(mats, ids, thks, active))
+                            _layers_from_components(mats, ids, thks, active), length)
     return dict(content=spec.to_json(), filename=f"{spec.name}.json")
 
 
@@ -1574,6 +1860,7 @@ def _save_report(n, report):
 # hidden. shape/inner-r are plain single outputs.
 @app.callback(
     Output("shape", "value"), Output("inner-r", "value"),
+    Output("length-slider", "value"),
     Output("active-rows", "data", allow_duplicate=True),
     Output({"type": "layer-mat", "index": ALL}, "value"),
     Output({"type": "layer-thk", "index": ALL}, "value"),
@@ -1582,13 +1869,13 @@ def _save_report(n, report):
     prevent_initial_call=True)
 def _load_design(contents):
     if not contents:
-        return (no_update,) * 6
+        return (no_update,) * 7
     try:
         _, b64 = contents.split(",", 1)
         text = base64.b64decode(b64).decode("utf-8")
         spec = HabitatSpec.from_json(text)
     except Exception as exc:
-        return (no_update, no_update, no_update, no_update, no_update,
+        return (no_update, no_update, no_update, no_update, no_update, no_update,
                 html.Span(f"Load failed: {str(exc)[-120:]}", style={"color": ACCENT}))
 
     walls = spec.walls[:MAX_LAYERS]
@@ -1597,8 +1884,13 @@ def _load_design(contents):
     thks = [(f"{walls[i].thickness_cm * 10:g}" if i < len(walls) else "0")
             for i in range(MAX_LAYERS)]
     active = list(range(len(walls)))
+    # Reflect the loaded axial length on the slider (clamped to its range); the
+    # field itself stays hidden for a dome. effective_height_cm resolves the
+    # radius-driven default when the saved design left height_cm unset.
+    length = max(2.0, min(12.0, spec.effective_height_cm / 100.0))
     note = html.Span(f"Loaded '{spec.name}'.", style={"color": "#3fb950"})
-    return spec.shape, spec.inner_radius_cm / 100.0, active, mats, thks, note
+    return (spec.shape, spec.inner_radius_cm / 100.0, length,
+            active, mats, thks, note)
 
 
 def main_entry():
