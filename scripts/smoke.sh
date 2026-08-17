@@ -10,10 +10,14 @@
 set -uo pipefail
 
 export TOPAS_G4_DATA_DIR="${TOPAS_G4_DATA_DIR:-$HOME/G4Data}"
+# Exercise the multicore path the workshop will actually run under, so this also
+# proves the MT-merged dose scorers work end-to-end (not just single-threaded).
+export LUNARSIM_THREADS="${LUNARSIM_THREADS:--2}"
 VENV_PY="${VENV_PY:-$HOME/topas/.venv/bin/python}"
 cd "$(dirname "$0")/.."   # repo root, so `-m lunarsim.bridge` resolves
 
 echo "[smoke] TOPAS_G4_DATA_DIR=$TOPAS_G4_DATA_DIR"
+echo "[smoke] LUNARSIM_THREADS=$LUNARSIM_THREADS"
 echo "[smoke] running default dome (quick-look) end-to-end ..."
 OUT="$("$VENV_PY" -m lunarsim.bridge 2>&1)"
 echo "$OUT"

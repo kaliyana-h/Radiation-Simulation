@@ -17,6 +17,11 @@ MTU="${TS_MTU:-800}"
 VENV_PY="${VENV_PY:-$HOME/topas/.venv/bin/python}"
 LOG="${LUNARSIM_LOG:-$HOME/lunarsim_gui.log}"
 export TOPAS_G4_DATA_DIR="${TOPAS_G4_DATA_DIR:-$HOME/G4Data}"
+# Give each TOPAS run the whole box bar two cores (OS + this Dash server). TOPAS
+# reads 0 as single-threaded, so WITHOUT this every run would use one core of the
+# 24 and a design would take ~20x longer to turn around. -2 auto-adapts to the
+# host's core count; override for a smaller machine. See bridge._scoring_threads.
+export LUNARSIM_THREADS="${LUNARSIM_THREADS:--2}"
 
 echo "[start_gui] $IFACE MTU -> $MTU (needs sudo; the Tailscale underlay here"
 echo "            can't carry the default 1280 -- large packets get dropped and"
@@ -45,5 +50,6 @@ if ! ss -ltnp 2>/dev/null | grep ":$PORT"; then
   exit 1
 fi
 
+echo "[start_gui] LUNARSIM_THREADS=$LUNARSIM_THREADS (per-run TOPAS cores; -n = host cores - n)"
 TS_IP="$(tailscale ip -4 2>/dev/null | head -1 || true)"
 echo "[start_gui] READY -> http://${TS_IP:-<pc-tailscale-ip>}:$PORT"

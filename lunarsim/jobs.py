@@ -451,10 +451,14 @@ class JobRunner(ABC):
 
 
 class LocalThreadRunner(JobRunner):
-    """In-process runner. A semaphore caps concurrent TOPAS runs because each
-    run_design uses all CPU cores (threads=0); default 1 avoids oversubscription
-    on a single workshop laptop. Raise max_parallel only on a fat box where you
-    pin threads-per-run instead."""
+    """In-process runner. A semaphore caps concurrent TOPAS runs; default 1 runs
+    designs strictly serially. Per-run core use is set by $LUNARSIM_THREADS
+    (bridge._scoring_threads): 0 = single-threaded (TOPAS default -- so a bare
+    checkout uses ONE core, NOT all of them), -n = cores-minus-n. At the workshop
+    volume (a few runs/day) leave max_parallel=1 and give each run the whole box
+    via LUNARSIM_THREADS=-2, so a single design turns around as fast as possible.
+    Raise max_parallel only if you instead want concurrent designs, in which case
+    divide threads-per-run to avoid oversubscription."""
 
     def __init__(self, max_parallel: int = 1):
         self._jobs: dict[str, Job] = {}

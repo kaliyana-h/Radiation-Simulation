@@ -41,6 +41,23 @@ ENV_INCLUDE = TOPAS_ROOT / "lunar_environment.txt"
 
 PHYSICS = "FTFP_BERT_HP"          # REDMoon neutron transport (see lunar_environment.txt)
 
+
+def _scoring_threads() -> int:
+    """TOPAS worker-thread count for a scoring run, from $LUNARSIM_THREADS.
+
+    TOPAS `i:Ts/NumberOfThreads` semantics: 0 = single-threaded (sequential),
+    a positive N = exactly N threads, a negative -n = (machine cores - n). The
+    default here is 0 so a bare checkout stays single-threaded and bit-for-bit
+    reproducible; set LUNARSIM_THREADS=-2 on a fat box (the 24-core PC) to use
+    all-but-two cores -- auto-adapts across machines and leaves headroom for the
+    OS and the Dash server. The custom dose scorers accumulate per-instance via
+    AccumulateHit and are merged by TOPAS across threads, so this is safe to
+    raise. Negative values are intentional and must NOT be clamped to >= 0."""
+    try:
+        return int(os.environ.get("LUNARSIM_THREADS", "0"))
+    except ValueError:
+        return 0
+
 # ----------------------------------------------------------------------
 # Source-dome sizing
 # ----------------------------------------------------------------------
@@ -521,7 +538,7 @@ def _fold_secondary_into_skin(spec: HabitatSpec, results: dict) -> None:
 # Top-level driver
 # ----------------------------------------------------------------------
 def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
-               run_dir: Optional[Path] = None, threads: int = 0,
+               run_dir: Optional[Path] = None, threads: Optional[int] = None,
                seed: int = 1, keep: bool = True,
                particle: str = "proton", ion_z: int = 1, ion_a: int = 1,
                spe: Optional[SPEScenario] = None) -> RunResult:
@@ -529,7 +546,12 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
 
     particle/ion_z/ion_a pick the GCR species (default protons). Passing `spe`
     switches the source to a directional solar-particle-event cone (protons); the
-    resulting RunResult is scored with dosimetry.assess_spe, not assess()."""
+    resulting RunResult is scored with dosimetry.assess_spe, not assess().
+
+    threads=None (the default) reads the worker-thread count from $LUNARSIM_THREADS
+    via _scoring_threads(); pass an explicit int to override (the vis path pins 1)."""
+    if threads is None:
+        threads = _scoring_threads()
     spec.validate()
     if run_dir is None:
         run_dir = Path(tempfile.mkdtemp(prefix=f"lunarsim_{spec.safe_name}_"))
