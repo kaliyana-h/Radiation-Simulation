@@ -767,5 +767,60 @@ class TestCombinedJobOrchestration(unittest.TestCase):
     _cal_dome = TestSpeKernelFold._cal_dome
 
 
+class TestSafeName(unittest.TestCase):
+    """spec.safe_name must yield a path/param-file-safe token no matter what the
+    (possibly imported) design name contains, so an odd name can never crash a
+    run or corrupt run.txt. See bridge.py mkdtemp / vis-dir / header sites."""
+
+    def _named(self, name):
+        return HabitatSpec(name=name, shape="dome", inner_radius_cm=300.0,
+                           walls=[WallLayer("aluminium", 5.0)])
+
+    def test_plain_name_survives(self):
+        self.assertEqual(self._named("dome_A").safe_name, "dome_A")
+
+    def test_slash_and_space_and_punctuation_are_neutralised(self):
+        sn = self._named("Bob's Dome/v2").safe_name
+        self.assertRegex(sn, r"^[A-Za-z0-9._-]+$")
+        self.assertNotIn("/", sn)
+        self.assertNotIn(" ", sn)
+
+    def test_newline_cannot_break_the_param_file(self):
+        # a newline in the name would inject a live line into run.txt's header
+        sn = self._named("evil\nSc/Foo/Quantity = Bad").safe_name
+        self.assertNotIn("\n", sn)
+        self.assertRegex(sn, r"^[A-Za-z0-9._-]+$")
+
+    def test_empty_or_symbol_only_falls_back(self):
+        self.assertEqual(self._named("").safe_name, "habitat")
+        self.assertEqual(self._named("///").safe_name, "habitat")
+
+    def test_length_is_capped(self):
+        self.assertLessEqual(len(self._named("x" * 200).safe_name), 48)
+
+
+class TestArealDensityConfidence(unittest.TestCase):
+    """The advisory trust band that flags designs sitting on the crossover cliff.
+    Advisory only -- it must never be mistaken for a computed dose."""
+
+    def test_thick_wall_is_high_confidence(self):
+        self.assertEqual(dosimetry.areal_density_confidence(54.0)["level"], "high")
+
+    def test_thin_wall_is_medium_and_flagged_optimistic(self):
+        band = dosimetry.areal_density_confidence(8.0)
+        self.assertEqual(band["level"], "medium")
+        self.assertIn("optimistic", band["message"].lower())
+
+    def test_gate_band_is_low_confidence(self):
+        for ad in (13.0, 19.0, 25.0, 39.0):
+            self.assertEqual(dosimetry.areal_density_confidence(ad)["level"],
+                             "low", f"ad={ad} should be low-confidence")
+
+    def test_every_band_carries_a_message(self):
+        for ad in (5.0, 19.0, 60.0):
+            b = dosimetry.areal_density_confidence(ad)
+            self.assertTrue(b["label"] and b["message"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

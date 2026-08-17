@@ -675,6 +675,41 @@ def _gcr_thinwall_applies(spec) -> bool:
     return spec.areal_density_gcm2() < K["meta"]["crossover_gcm2"]
 
 
+def areal_density_confidence(ad_gcm2: float) -> dict:
+    """How much to trust the displayed GCR effective-dose headline at this wall
+    areal density, from the measured OLTARIS-Al cross-check map (memory
+    crossover-discontinuity). Trust is governed by where the design sits relative
+    to the ~19 g/cm^2 kernel<->flood crossover:
+
+      * ad >= 40    -> HIGH: the flood MC path, OLTARIS-validated at depth
+                       (skin-ICRP ~1.1x of OLTARIS at 50 g/cm^2).
+      * ad <= 12    -> MEDIUM: thin-wall kernel regime, close but OPTIMISTIC
+                       (~0.8x of OLTARIS at 10 g/cm^2) -- may under-warn.
+      * 12 < ad < 40 -> LOW: straddles the crossover cliff and is *least* certain
+                       right at the 19 g/cm^2 gate (kernel 0.52x below vs flood
+                       2.6x above OLTARIS there); the headline can be ~2-3x off.
+
+    Returns {level, label, message} for a GUI banner. Purely advisory -- it
+    changes no computed dose. Boundaries are soft engineering cut points, not
+    physics edges; treat a design near a boundary as the lower-confidence side."""
+    if ad_gcm2 >= 40.0:
+        return {"level": "high", "label": "validated regime",
+                "message": ("Wall areal density is in the thick regime where the "
+                            "flood MC is OLTARIS-validated (~1.1x). The headline "
+                            "is trustworthy.")}
+    if ad_gcm2 <= 12.0:
+        return {"level": "medium", "label": "thin-wall (optimistic)",
+                "message": ("Thin-wall kernel regime: reasonably close to OLTARIS "
+                            "but OPTIMISTIC (~0.8x at 10 g/cm^2), so the true dose "
+                            "may be somewhat higher than shown.")}
+    return {"level": "low", "label": "crossover band",
+            "message": ("Areal density straddles the ~19 g/cm^2 kernel/flood "
+                        "crossover -- the least-certain band, where the headline "
+                        "can be 2-3x off (optimistic below 19, conservative "
+                        "above). Treat as indicative; a clearly thicker or "
+                        "thinner wall gives a firmer number.")}
+
+
 def _gcr_thinwall_calibrated(spec) -> bool:
     """True when the thin-wall fold sits squarely on its calibration: in-regime AND the
     wall is aluminium-dominated (the material the R(E) transport was measured through).

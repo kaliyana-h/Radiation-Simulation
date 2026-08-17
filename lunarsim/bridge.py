@@ -286,7 +286,7 @@ def build_parameter_file(spec: HabitatSpec, tier: RunTier,
     use_qt = "true" if viewer == "qt" else "false"
     vis_block = _viewer_block(viewer)
     return f"""# ============================================================
-# Auto-generated lunar habitat run  --  design: {spec.name}
+# Auto-generated lunar habitat run  --  design: {spec.safe_name}
 #   shape={spec.shape}  inner_r={spec.inner_radius_cm:.1f} cm
 #   walls={[ (w.material, w.thickness_cm) for w in spec.walls ]}
 #   areal density={spec.areal_density_gcm2():.1f} g/cm2  tier={tier.name}
@@ -532,7 +532,7 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     resulting RunResult is scored with dosimetry.assess_spe, not assess()."""
     spec.validate()
     if run_dir is None:
-        run_dir = Path(tempfile.mkdtemp(prefix=f"lunarsim_{spec.name}_"))
+        run_dir = Path(tempfile.mkdtemp(prefix=f"lunarsim_{spec.safe_name}_"))
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # env include must sit beside the run file (includeFile is CWD-relative)
@@ -598,7 +598,7 @@ def write_vis_run(spec: HabitatSpec, run_dir: Optional[Path] = None,
     if beam_radius_cm is None:
         beam_radius_cm = beam_radius_for(spec)
     if run_dir is None:
-        run_dir = TOPAS_ROOT / f"vis_{spec.name}"
+        run_dir = TOPAS_ROOT / f"vis_{spec.safe_name}"
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 

@@ -9,6 +9,7 @@ independently.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field, replace
 from typing import Optional
 
@@ -93,6 +94,18 @@ class HabitatSpec:
                 "interior. Increase the habitat size or lower crew_height_cm.")
 
     # ---- derived geometry ------------------------------------------
+    @property
+    def safe_name(self) -> str:
+        """Filesystem/TOPAS-safe form of `name`, for run directories and the
+        generated run.txt. `name` is free text -- it can arrive from an imported
+        design file carrying spaces, slashes, punctuation, or (worst) a newline,
+        any of which would crash tempfile.mkdtemp or corrupt the parameter file.
+        Use this anywhere the name becomes a path segment or a .txt token; keep
+        `name` for anything the student reads."""
+        s = re.sub(r"[^A-Za-z0-9._-]+", "_", (self.name or "").strip())
+        s = s.strip("._")[:48]
+        return s or "habitat"
+
     @property
     def total_wall_cm(self) -> float:
         return sum(w.thickness_cm for w in self.walls)
