@@ -1371,34 +1371,6 @@ def _footprint_banner(spec):
     ])
 
 
-# level -> (dot colour, tinted background) for the confidence pill; mirrors the
-# SAFE/MARGINAL/EXCEEDS palette so trust reads the same as verdict.
-_CONF_COLOUR = {"high": "#3fb950", "medium": "#d29922", "low": ACCENT}
-
-
-def _confidence_pill(spec):
-    """Compact one-line trust band for the GCR headline, keyed to the design's
-    wall areal density and the ~19 g/cm2 kernel/flood crossover (memory
-    crossover-discontinuity). Purely advisory -- changes no computed dose; just
-    tells the reader how much to trust THIS design's number. Returns an html.Div."""
-    band = areal_density_confidence(spec.areal_density_gcm2())
-    colour = _CONF_COLOUR.get(band["level"], METRIC)
-    return html.Div(style={
-        "background": "rgba(127,127,127,0.06)", "border": f"1px solid {colour}",
-        "borderRadius": "8px", "padding": "6px 10px", "marginBottom": "2px",
-        "display": "flex", "alignItems": "baseline", "gap": "8px"}, children=[
-        html.Span(style={
-            "flex": "0 0 auto", "width": "8px", "height": "8px",
-            "borderRadius": "50%", "background": colour,
-            "alignSelf": "center"}),
-        html.Span(f"Confidence: {band['label']}", style={
-            "color": colour, "fontSize": "11px", "fontWeight": 700,
-            "letterSpacing": "0.3px", "flex": "0 0 auto"}),
-        html.Span(band["message"], style={
-            "color": INK, "fontSize": "11px", "lineHeight": "1.4"}),
-    ])
-
-
 # Below this many batches the phantom's error bar is NOT REPORTED at all.
 # SCORING_CONVERGE_ON = "both" should now keep the phantom above this floor on
 # its own (10% takes ~4 rounds), so this is a backstop rather than the usual
@@ -1485,8 +1457,7 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
                     "not the score")
     size_note = _size_note(job.result.spec) if job.result is not None else None
     banner = _footprint_banner(job.result.spec) if job.result is not None else None
-    pill = _confidence_pill(job.spec)
-    return ([banner] if banner else []) + [pill] + [
+    return ([banner] if banner else []) + [
         _score_card(score, rel_txt, verdict, frac, qf_label=qf_label,
                     cmp_line=cmp_line, size_note=size_note,
                     limit_label="career limit"),
@@ -1623,8 +1594,7 @@ def _thinwall_metric_cards(a, job, calibrated):
     s = a.summary("career")
     rel_txt = f" ± {a.rel_err:.0%}" if a.rel_err else ""
     banner = _footprint_banner(job.spec)
-    pill = _confidence_pill(job.spec)
-    return ([banner] if banner else []) + [pill] + [
+    return ([banner] if banner else []) + [
         _score_card(a.annual_msv, rel_txt, s["verdict"], s["fraction_of_limit"] * 100,
                     qf_label="ICRP-60 Q(L) · thin-wall phantom-matched",
                     cmp_line=None,

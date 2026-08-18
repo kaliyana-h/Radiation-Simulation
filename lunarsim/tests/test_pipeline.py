@@ -712,28 +712,14 @@ class TestCombinedThinWallRender(unittest.TestCase):
         self.assertIn("ICRP-60 Q(L)", report)            # folded on ICRP Q, not NASA
         self.assertIn("Gate 2", report)                  # SPE gate still present
 
-    def test_thin_wall_report_and_pill_flag_optimistic(self):
-        """The GCR gate carries the advisory confidence band both in the
-        downloadable report and as the compact pill on the Dose Analysis tab.
-        A 2 g/cm^2 dome is the thin-wall (optimistic) regime."""
+    def test_report_carries_confidence_band(self):
+        """The downloadable report labels the GCR headline with the advisory
+        confidence band. A 2 g/cm^2 dome is the thin-wall (optimistic) regime.
+        (The band is report-only; it is deliberately NOT shown on the GUI.)"""
         spec = HabitatSpec(name="d", shape="dome", inner_radius_cm=750.0,
                            walls=[WallLayer("aluminium", 0.75)])   # ~2.03 g/cm^2
-        _bar, _st, metrics, _an, _dis, report, _ov = self._poll_with(spec)
+        _bar, _st, _metrics, _an, _dis, report, _ov = self._poll_with(spec)
         self.assertIn("Confidence (thin-wall (optimistic))", report)
-        self.assertIn("Confidence: thin-wall (optimistic)", str(metrics))
-
-    def test_thick_wall_pill_is_validated_regime_and_green(self):
-        """A 54 g/cm^2 dome sits in the OLTARIS-validated thick regime -> the
-        compact pill flips to the trustworthy 'validated regime' label in the
-        high-confidence green. Tests the pill directly (the flood-path _poll
-        render needs a full result); the report line is regime-independent and
-        is covered by the thin-wall case above."""
-        from lunarsim import gui
-        spec = HabitatSpec(name="d", shape="dome", inner_radius_cm=750.0,
-                           walls=[WallLayer("aluminium", 20.0)])   # ~54 g/cm^2
-        pill = str(gui._confidence_pill(spec))
-        self.assertIn("Confidence: validated regime", pill)
-        self.assertIn(gui._CONF_COLOUR["high"], pill)   # green dot + label
 
 
 class TestCombinedJobOrchestration(unittest.TestCase):
