@@ -17,10 +17,10 @@ MTU="${TS_MTU:-800}"
 VENV_PY="${VENV_PY:-$HOME/topas/.venv/bin/python}"
 LOG="${LUNARSIM_LOG:-$HOME/lunarsim_gui.log}"
 export TOPAS_G4_DATA_DIR="${TOPAS_G4_DATA_DIR:-$HOME/G4Data}"
-# Give each TOPAS run the whole box bar two cores (OS + this Dash server). TOPAS
-# reads 0 as single-threaded, so WITHOUT this every run would use one core of the
-# 24 and a design would take ~20x longer to turn around. -2 auto-adapts to the
-# host's core count; override for a smaller machine. See bridge._scoring_threads.
+# Per-run TOPAS core count. TOPAS reads 0 as ALL cores (already the default), so
+# runs were never single-threaded; -2 instead leaves two cores free for the OS
+# and this Dash server, keeping the GUI responsive while a run saturates the rest.
+# -n auto-adapts to the host's core count. See bridge._scoring_threads.
 export LUNARSIM_THREADS="${LUNARSIM_THREADS:--2}"
 
 echo "[start_gui] $IFACE MTU -> $MTU (needs sudo; the Tailscale underlay here"

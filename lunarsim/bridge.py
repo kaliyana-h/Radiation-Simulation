@@ -45,14 +45,16 @@ PHYSICS = "FTFP_BERT_HP"          # REDMoon neutron transport (see lunar_environ
 def _scoring_threads() -> int:
     """TOPAS worker-thread count for a scoring run, from $LUNARSIM_THREADS.
 
-    TOPAS `i:Ts/NumberOfThreads` semantics: 0 = single-threaded (sequential),
-    a positive N = exactly N threads, a negative -n = (machine cores - n). The
-    default here is 0 so a bare checkout stays single-threaded and bit-for-bit
-    reproducible; set LUNARSIM_THREADS=-2 on a fat box (the 24-core PC) to use
-    all-but-two cores -- auto-adapts across machines and leaves headroom for the
-    OS and the Dash server. The custom dose scorers accumulate per-instance via
-    AccumulateHit and are merged by TOPAS across threads, so this is safe to
-    raise. Negative values are intentional and must NOT be clamped to >= 0."""
+    TOPAS `i:Ts/NumberOfThreads` semantics (verified from this build's banner):
+    0 = ALL available cores (auto-detected -- 24 on the PC), a positive N =
+    exactly N threads, a negative -n = (machine cores - n). So the default 0
+    already uses the whole box; set LUNARSIM_THREADS=-2 to leave two cores free
+    for the OS and the Dash server, keeping the GUI responsive while a run
+    saturates the rest. The physics is unchanged either way: TOPAS seeds
+    per-event, so the dose is bit-identical across thread counts (proven by
+    scripts/threads_ab.py), and the custom scorers accumulate per-instance via
+    AccumulateHit and are merged by TOPAS across threads. Negative values are
+    intentional and must NOT be clamped to >= 0."""
     try:
         return int(os.environ.get("LUNARSIM_THREADS", "0"))
     except ValueError:
