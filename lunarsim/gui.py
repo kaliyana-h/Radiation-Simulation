@@ -817,7 +817,7 @@ def _scenario_conditions(scenario):
                 "not a per-year rate.")
         rows = [
             _kv("🔒 Event", WORST_CASE_SPE.name),
-            _kv("🔒 Fluence", f"{WORST_CASE_SPE.fluence_cm2:.0e} p/cm²"),
+            _kv("🔒 Fluence", f"{WORST_CASE_SPE.fluence_cm2:.1e} p/cm²"),
             _kv("🔒 Limit", f"{DOSE_LIMITS_MSV['nasa_30day']:.0f} mSv (30-day BFO)"),
         ]
     elif scenario == "both":
@@ -1160,7 +1160,7 @@ def _poll(_n, jid):
         else:
             a = _assess(job.result, skin=False)       # central phantom (noisy)
             a_skin = _assess(job.result, skin=True)   # habitat-wide lining, ICRP-60 Q
-            a_skin_nasa = _assess(job.result, skin=True, qf="nasa")  # NASA Q (headline)
+            a_skin_nasa = _assess(job.result, skin=True, qf="nasa")  # NASA Q (cross-check)
             primary = a_skin_nasa or a_skin or a
             if primary is None:
                 msg = html.Div("Combined run finished but the GCR gate produced no "
@@ -1173,7 +1173,11 @@ def _poll(_n, jid):
             g1_metrics = _metric_cards(a, a_skin, s, job, a_skin_nasa=a_skin_nasa)
             g1_analysis = _analysis_body(a, a_skin, s, job, a_skin_nasa=a_skin_nasa)
             g1_gcr = (a, a_skin, a_skin_nasa)
-            g1_overlay_skin, g1_phantom = primary.annual_msv, a
+            # Overlay the ICRP-60 headline (a_skin) at the skin location, NOT the
+            # NASA cross-check — otherwise the number annotated on the cross-section
+            # would not match the headline protection score card.
+            head = a_skin if a_skin is not None else a
+            g1_overlay_skin, g1_phantom = head.annual_msv, a
 
         metrics = [_gate_header("Gate 1 · Chronic GCR field (annual)"),
                    *g1_metrics,
@@ -1226,8 +1230,8 @@ def _poll(_n, jid):
                     _thinwall_analysis_body(a_tw, job, calibrated), True, report, overlay)
 
     a = _assess(job.result, skin=False)       # central phantom (noisy point dose)
-    a_skin = _assess(job.result, skin=True)   # habitat-wide lining, ICRP-60 Q (cross-check)
-    a_skin_nasa = _assess(job.result, skin=True, qf="nasa")  # NASA Q lining (headline)
+    a_skin = _assess(job.result, skin=True)   # habitat-wide lining, ICRP-60 Q (headline)
+    a_skin_nasa = _assess(job.result, skin=True, qf="nasa")  # NASA Q lining (cross-check)
     primary = a_skin_nasa or a_skin or a      # whichever assessment we actually have
     if primary is None:
         msg = html.Div("Run finished but produced no usable dose — no scorer "
@@ -1236,9 +1240,12 @@ def _poll(_n, jid):
         return bar, status, no_update, [msg], True, no_update, no_update
     s = primary.summary("career")
     report = _report_text(job, gcr=(a, a_skin, a_skin_nasa))
+    # Overlay the ICRP-60 headline (a_skin) at the skin location so the cross-section
+    # number matches the headline protection score, not the NASA cross-check.
+    head = a_skin if a_skin is not None else a
     return (bar, status, _metric_cards(a, a_skin, s, job, a_skin_nasa=a_skin_nasa),
             _analysis_body(a, a_skin, s, job, a_skin_nasa=a_skin_nasa), True, report,
-            _overlay(job.spec, primary, a, "mSv/yr", "GCR annual"))
+            _overlay(job.spec, head, a, "mSv/yr", "GCR annual"))
 
 
 def _overlay(spec, a_skin, a_phantom, unit, scenario):
