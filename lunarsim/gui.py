@@ -554,7 +554,7 @@ PLACEHOLDER_METRICS = [
                  style={"color": MUTED, "fontSize": "11px", "marginTop": "10px"})]),
     metric_card("Absorbed dose", "—", "evaluate a design to populate"),
     metric_card("Dose equivalent", "—", "ISS baseline = 0.70 mSv/day"),
-    metric_card("Crew-phantom point dose", "—", "central diagnostic (not the score)"),
+    metric_card("Crew-phantom point dose", "—", "central diagnostic"),
 ]
 
 
@@ -812,7 +812,7 @@ def _switch_tab(tab):
     Input("scenario", "value"))
 def _scenario_conditions(scenario):
     if scenario == "spe":
-        note = ("A single worst-case solar proton event — the acute test. Scored as "
+        note = ("A single worst-case solar proton event. The acute test. Scored as "
                 "the TOTAL event dose against the 30-day blood-forming-organ limit, "
                 "not a per-year rate.")
         rows = [
@@ -823,7 +823,7 @@ def _scenario_conditions(scenario):
     elif scenario == "both":
         note = ("One run, both hazards: the chronic GCR field AND a worst-case solar "
                 "event, judged as two SEPARATE pass/fail gates (annual/career limit vs "
-                "the 30-day limit). The two doses are never summed — they reward "
+                "the 30-day limit). The two doses are never summed. They reward "
                 "different shielding, so a design must clear both.")
         rows = [
             _kv("🔒 GCR field", "φ=400 MV (solar min)"),
@@ -1451,10 +1451,9 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
               + (f" | NASA Q: {cmp_nasa.equiv_rate_msv_day:.3f}" if cmp_nasa is not None else ""))
     phantom_pt = (f"{a.annual_msv:.1f} mSv/year" if a is not None else "n/a")
     phantom_rel = _phantom_err_text(job.result)
-    phantom_note = ("central self-shielded point — noisier diagnostic, not the score"
+    phantom_note = ("central self-shielded point — noisier diagnostic"
                     if not phantom_rel else
-                    f"central self-shielded point{phantom_rel} — noisier diagnostic, "
-                    "not the score")
+                    f"central self-shielded point{phantom_rel} — noisier diagnostic")
     size_note = _size_note(job.result.spec) if job.result is not None else None
     banner = _footprint_banner(job.result.spec) if job.result is not None else None
     return ([banner] if banner else []) + [
