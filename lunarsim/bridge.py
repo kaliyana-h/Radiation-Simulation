@@ -25,7 +25,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .spec import HabitatSpec
 from .geometry import build_geometry, build_scorers, _outer_gauge_radius
@@ -543,7 +543,8 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                run_dir: Optional[Path] = None, threads: Optional[int] = None,
                seed: int = 1, keep: bool = True,
                particle: str = "proton", ion_z: int = 1, ion_a: int = 1,
-               spe: Optional[SPEScenario] = None) -> RunResult:
+               spe: Optional[SPEScenario] = None,
+               cancel_cb: Optional[Callable[[], bool]] = None) -> RunResult:
     """Generate, run, and parse a single design end-to-end (blocking).
 
     particle/ion_z/ion_a pick the GCR species (default protons). Passing `spe`
@@ -551,7 +552,14 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     resulting RunResult is scored with dosimetry.assess_spe, not assess().
 
     threads=None (the default) reads the worker-thread count from $LUNARSIM_THREADS
-    via _scoring_threads(); pass an explicit int to override (the vis path pins 1)."""
+    via _scoring_threads(); pass an explicit int to override (the vis path pins 1).
+
+    cancel_cb() -> True asks for a prompt stop: the in-flight TOPAS process is
+    terminated (then killed if it lingers) instead of the caller waiting for it
+    to finish, and a not-ok RunResult is returned. Without it the run is an
+    ordinary blocking subprocess. This is what makes the GUI's "Cancel run"
+    button interrupt a heavy species mid-transport rather than only between
+    species/batches."""
     if threads is None:
         threads = _scoring_threads()
     spec.validate()
@@ -575,9 +583,43 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
 
     env = dict(os.environ, TOPAS_G4_DATA_DIR=str(G4_DATA_DIR))
     t0 = time.time()
-    proc = subprocess.run([str(TOPAS_BIN), "run.txt"], cwd=run_dir,
-                          env=env, capture_output=True, text=True)
+    # Popen + poll (not the simpler blocking subprocess.run) so a cancel request
+    # can terminate TOPAS mid-run. Combined stdout/stderr goes to a file, not a
+    # PIPE, so a long run's output can't fill a pipe buffer and deadlock the
+    # process while we poll. Exit code alone (no PIPE drain) is what we act on.
+    log_path = run_dir / "topas_stdout.log"
+    cancelled = False
+    with open(log_path, "w") as lf:
+        proc = subprocess.Popen([str(TOPAS_BIN), "run.txt"], cwd=run_dir,
+                                env=env, stdout=lf,
+                                stderr=subprocess.STDOUT, text=True)
+        while True:
+            try:
+                proc.wait(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel_cb and cancel_cb():
+                    cancelled = True
+                    proc.terminate()          # SIGTERM: let TOPAS unwind
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()           # still alive -> SIGKILL
+                        proc.wait()
+                    break
     wall = time.time() - t0
+    out_text = log_path.read_text(errors="replace")
+
+    if cancelled:
+        # A terminated run has no usable CSVs; return a not-ok result (returncode
+        # != 0, no dose) so the convergence loop and the runner mark the job
+        # CANCELLED rather than trying to parse a half-written output.
+        log_tail = "[cancelled] " + "\n".join(out_text.splitlines()[-24:])
+        if not keep:
+            shutil.rmtree(run_dir, ignore_errors=True)
+        return RunResult(spec=spec, tier=tier, run_dir=run_dir,
+                         returncode=proc.returncode or -15, wall_seconds=wall,
+                         log_tail=log_tail)
 
     results = parse_results(run_dir)
     # Secondary-neutron dose fraction on the PRIMARY CrewSkin lining, taken before
@@ -591,7 +633,7 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     results["neutron_doseeq_fraction"] = (
         _neu / _base_eq if (_neu is not None and _base_eq) else None)
     _fold_secondary_into_skin(spec, results)
-    log_tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-25:])
+    log_tail = "\n".join(out_text.splitlines()[-25:])
     result = RunResult(spec=spec, tier=tier, run_dir=run_dir,
                        returncode=proc.returncode, wall_seconds=wall,
                        log_tail=log_tail, **results)

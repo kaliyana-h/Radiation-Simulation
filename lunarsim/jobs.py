@@ -184,7 +184,8 @@ def run_converged(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
         if cancel_cb and cancel_cb():
             break
         res = run_design(spec, tier, seed=i + 1, keep=False,
-                         particle=particle, ion_z=ion_z, ion_a=ion_a, spe=spe)
+                         particle=particle, ion_z=ion_z, ion_a=ion_a, spe=spe,
+                         cancel_cb=cancel_cb)
         if not res.ok:
             # surface the failure immediately rather than averaging garbage
             cr = _combine(spec, tier, batches)
@@ -334,7 +335,8 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                 cancelled = True
                 break
             res = run_design(spec, sp_tier, seed=rnd + 1, keep=False,
-                             particle=particle, ion_z=z, ion_a=a)
+                             particle=particle, ion_z=z, ion_a=a,
+                             cancel_cb=cancel_cb)
             if not res.ok:
                 # a species failed -- surface immediately rather than a partial sum
                 return ConvergedComposition(spec=spec, tier=tier,
