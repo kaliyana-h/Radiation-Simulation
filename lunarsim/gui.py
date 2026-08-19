@@ -232,6 +232,7 @@ def _layer_row(i, material, thickness_mm, active_init):
         head,
         dcc.Dropdown(id={"type": "layer-mat", "index": i}, value=material,
                      options=MATERIAL_OPTIONS, clearable=False,
+                     persistence=True, persistence_type="session",
                      style={"marginBottom": "8px"}),
         html.Div("Thickness (mm)", style=FIELD_LABEL),
         # type="text" (not "number"): the number widget doesn't reliably sync
@@ -240,6 +241,7 @@ def _layer_row(i, material, thickness_mm, active_init):
         # parses it. inputMode shows a numeric keypad on touch devices.
         dcc.Input(id={"type": "layer-thk", "index": i}, type="text",
                   inputMode="decimal", value=f"{thickness_mm:g}",
+                  persistence=True, persistence_type="session",
                   debounce=False, style=INPUT),
     ])
 
@@ -577,10 +579,12 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
     html.Div("Habitat Geometry", style=SECTION),
     html.Div("Habitat type", style=FIELD_LABEL),
     dcc.Dropdown(id="shape", value="dome", clearable=False,
+                 persistence=True, persistence_type="session",
                  options=[{"label": SHAPE_LABELS[s], "value": s} for s in SHAPES],
                  style={"marginBottom": "16px"}),
     slider_field("Inner radius (m)", "inner-r-val",
                  dcc.Slider(id="inner-r", min=1.5, max=8.0, step=0.05, value=2.5,
+                            persistence=True, persistence_type="session",
                             marks=_marks([2, 3, 4, 5, 6, 7, 8]), tooltip=None)),
     # Axial length — only meaningful for the two elongated shapes, so this field
     # is shown for cylinder/quonset and hidden for the dome (see _length_control).
@@ -588,6 +592,7 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
         slider_field("Axial length (m)", "length-val",
                      dcc.Slider(id="length-slider", min=2.0, max=12.0, step=0.5,
                                 value=6.0, marks=_marks([2, 4, 6, 8, 10, 12]),
+                                persistence=True, persistence_type="session",
                                 tooltip=None))]),
 
     html.Div("Wall Layers", style=SECTION),
@@ -605,10 +610,15 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
         "background": "transparent", "color": INK, "border": f"1px dashed {BORDER}",
         "borderRadius": "8px", "padding": "9px", "cursor": "pointer", "fontSize": "13px",
         "width": "100%", "marginTop": "2px"}),
-    dcc.Store(id="active-rows", data=list(range(len(DEFAULT_LAYERS)))),
+    # storage_type="session" so the active-layer set matches the persisted layer
+    # widgets after a refresh (otherwise the design would restore its per-row
+    # values but reset which rows are shown).
+    dcc.Store(id="active-rows", data=list(range(len(DEFAULT_LAYERS))),
+              storage_type="session"),
 
     html.Div("Exposure Scenario", style=SECTION),
     dcc.RadioItems(id="scenario", value="both",
+                   persistence=True, persistence_type="session",
                    options=[
                        {"label": " GCR + SPE", "value": "both"},
                        {"label": " GCR only", "value": "gcr"},
@@ -781,10 +791,18 @@ right = html.Div(style={"width": "320px", "minWidth": "320px", "padding": "26px 
 
 app.layout = html.Div(style={"display": "flex", "background": BG}, children=[
     sidebar, centre, right,
-    dcc.Store(id="job-store", data=None),
-    dcc.Store(id="report-store", data=None),
+    # job-store/report-store use SESSION storage so a browser refresh (or an
+    # accidental tab reload) mid-run does not orphan the job: the run keeps
+    # executing server-side, the jid survives in the tab's sessionStorage, and the
+    # `boot` Interval below re-arms the poll to reconnect to it. (Memory storage --
+    # the dcc.Store default -- is wiped on every refresh, which silently lost the
+    # handle to a ~50-min run.)
+    dcc.Store(id="job-store", data=None, storage_type="session"),
+    dcc.Store(id="report-store", data=None, storage_type="session"),
     dcc.Store(id="dose-overlay", data=None),
     dcc.Interval(id="poll", interval=1500, disabled=True),
+    # Fires exactly once, shortly after (re)load, to reconnect a still-live job.
+    dcc.Interval(id="boot", interval=500, n_intervals=0, max_intervals=1),
 ])
 
 
@@ -1093,6 +1111,28 @@ def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length):
 def _cancel(n, jid):
     if jid:
         default_runner.cancel(jid)
+    return no_update
+
+
+@app.callback(
+    Output("poll", "disabled", allow_duplicate=True),
+    Input("boot", "n_intervals"),
+    State("job-store", "data"),
+    prevent_initial_call=True)
+def _resume_after_reload(_n, jid):
+    """Reconnect the UI to a run that outlived a browser refresh.
+
+    On reload the layout is rebuilt fresh -- the poll Interval comes back
+    disabled and the metrics panel resets to its placeholder -- but the jid
+    persists in the tab's sessionStorage (job-store is storage_type="session").
+    The job itself is still executing (or already finished) inside the
+    server-side default_runner, so if that jid still resolves to a job we
+    re-arm the poll: it will stream progress again, or render the final result
+    on its next tick if the run completed while the page was gone. If the
+    server process itself restarted the job is gone (get -> None) and we leave
+    the poll disabled -- there is nothing to reconnect to."""
+    if jid and default_runner.get(jid) is not None:
+        return False
     return no_update
 
 
