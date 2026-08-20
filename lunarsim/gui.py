@@ -1,10 +1,10 @@
-"""Radiation Simulation Tool -- Dash GUI for the lunar-habitat workshop.
+"""Habitat Dose -- Dash GUI for the lunar-habitat radiation workshop.
 
 Layout matches the agreed mockup:
 
-  * Left rail  : branded "Radiation Sim" -> Habitat Geometry -> Primary Wall
+  * Left rail  : branded "Habitat Dose" -> Habitat Geometry -> Primary Wall
                  (+ collapsible extra shielding layer) -> exposure -> Run.
-  * Header     : "Radiation Simulation Tool" + a live config subtitle line.
+  * Header     : "Habitat Dose" + a live config subtitle line.
   * Tabs       : Habitat Overview | GCR Environment | Dose Analysis.
   * Overview   : Dose cross-section / 3-D wireframe toggle over the habitat model.
   * Right rail : Dose Metrics card stack + Design Parameters.
@@ -503,7 +503,7 @@ def cross_section(spec: HabitatSpec, dose=None) -> go.Figure:
 # ----------------------------------------------------------------------
 # App  + CSS (dark dropdowns, red sliders, native disclosure)
 # ----------------------------------------------------------------------
-app = Dash(__name__, title="Radiation Simulation Tool",
+app = Dash(__name__, title="Habitat Dose",
            suppress_callback_exceptions=True)
 server = app.server
 
@@ -569,9 +569,9 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
                    children=[
     html.Div(style={"display": "flex", "alignItems": "center", "gap": "8px"}, children=[
         html.Span("☢", style={"color": ACCENT, "fontSize": "20px"}),
-        html.Span("Radiation Sim", style={"color": INK, "fontSize": "18px",
+        html.Span("Habitat Dose", style={"color": INK, "fontSize": "18px",
                                           "fontWeight": 800})]),
-    html.P("Galactic Cosmic Ray exposure tool for conceptual habitat design",
+    html.P("Space-radiation dose tool for conceptual habitat shielding",
            style={"color": MUTED, "fontSize": "12px", "lineHeight": "1.5",
                   "marginTop": "8px"}),
     html.Hr(style={"borderColor": BORDER, "margin": "16px 0"}),
@@ -710,7 +710,13 @@ overview_panel = html.Div(id="panel-overview", children=[
              "needed). First run takes a few seconds.",
              style={"color": MUTED, "fontSize": "11px", "margin": "8px 0 4px"}),
     html.Div(id="cascade-status", style={"color": MUTED, "fontSize": "12px",
-                                         "height": "18px", "margin": "6px 0"}),
+                                         # minHeight (not a fixed height): reserve one
+                                         # line so the layout doesn't jump, but let a
+                                         # multi-line error (e.g. an overlap abort) grow
+                                         # instead of overflowing under the plot below.
+                                         "minHeight": "18px", "lineHeight": "1.5",
+                                         "margin": "6px 0 10px",
+                                         "whiteSpace": "pre-wrap"}),
     dcc.Loading(type="default", color=ACCENT, children=dcc.Graph(
         id="cascade-view", config={"displayModeBar": True},
         style={"height": "520px"}, figure=go.Figure(
@@ -749,7 +755,7 @@ dose_panel = html.Div(id="panel-dose", style={"display": "none"}, children=[
 
 centre = html.Div(style={"flex": "1", "padding": "26px 30px", "overflowY": "auto",
                          "height": "100vh", "boxSizing": "border-box"}, children=[
-    html.H1("Radiation Simulation Tool", style={"color": INK, "fontSize": "30px",
+    html.H1("Habitat Dose", style={"color": INK, "fontSize": "30px",
                                                 "fontWeight": 800, "margin": 0}),
     html.Div(id="subtitle", style={"color": MUTED, "fontSize": "13px",
                                    "margin": "8px 0 4px"}),
