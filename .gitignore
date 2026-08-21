@@ -253,3 +253,4 @@ __marimo__/
 /extensions/CMakeLists.txt
 /extensions/TsExtensionManager.cc
 /extensions/TsExtensionManager.hh
+bin/topas
