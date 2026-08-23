@@ -192,15 +192,34 @@ def collect(out: Path) -> dict:
 # --------------------------------------------------------------------------
 # VALIDATE (aluminium regeneration vs committed kernel)
 # --------------------------------------------------------------------------
+def _geomean(vals):
+    vals = [v for v in vals if v > 0]
+    return math.exp(statistics.fmean(math.log(v) for v in vals)) if vals else float("nan")
+
+
+def _grouped(records, keyfn):
+    """{key: geo-mean ratio} over records grouped by keyfn(record)."""
+    buckets = {}
+    for rec in records:
+        buckets.setdefault(keyfn(rec), []).append(rec["ratio"])
+    return {k: (_geomean(v), len(v)) for k, v in buckets.items()}
+
+
+# committed R must exceed this many of its own seed-SEMs to count as high-SNR.
+# Below it the committed value is dominated by 128-primary MC noise and its ratio
+# is meaningless for detecting a real reconstruction bias.
+_SNR_MIN = 5.0
+
+
 def validate(out: Path) -> None:
     regen = collect(out)
     ref = config.load_reference()
     if regen["meta"]["cal_material"] != "aluminium":
         print("WARNING: validate expects an aluminium regeneration.")
     organs = [n for n, _ in config.organs_from_reference()]
-    ratios = []
-    flagged = []
-    print("\n=== Al regeneration vs committed kernel (ratio regen/committed) ===")
+
+    # one record per (wall,species,organ,q,node) with a positive committed value
+    records = []
     for rp, cp in zip(regen["points"], ref["points"]):
         w = cp["wall_gcm2"]
         for sname, cs in cp["species"].items():
@@ -210,37 +229,68 @@ def validate(out: Path) -> None:
                     cvals, rvals = cs["R"][o][q], rs["R"][o][q]
                     csem = cs["Rsem"][o][q]
                     for j, (c, r) in enumerate(zip(cvals, rvals)):
-                        if c <= 0 and r <= 0:
+                        if c <= 0:
                             continue
-                        if c > 0:
-                            ratio = r / c
-                            ratios.append(ratio)
-                            # z-score against committed value's own seed SEM
-                            sem = csem[j] if csem[j] > 0 else abs(c)
-                            z = (r - c) / sem
-                            if ratio < 0.5 or ratio > 2.0:
-                                flagged.append((w, sname, o, q, j, c, r, ratio, z))
-    if ratios:
-        ratios.sort()
-        med = ratios[len(ratios) // 2]
-        within2 = sum(1 for x in ratios if 0.5 <= x <= 2.0) / len(ratios)
-        gm = math.exp(statistics.fmean(math.log(x) for x in ratios if x > 0))
-        print(f"  n compared        : {len(ratios)}")
-        print(f"  median ratio      : {med:.3f}")
-        print(f"  geo-mean ratio    : {gm:.3f}   (1.0 = unbiased reconstruction)")
-        print(f"  within 0.5-2.0x   : {within2*100:.0f}%")
-        print(f"  flagged (>2x off) : {len(flagged)}")
-        if flagged:
-            print("\n  worst offenders (wall,species,organ,q,node: committed -> regen  ratio):")
-            for f in sorted(flagged, key=lambda t: abs(math.log(t[7] if t[7] else 1)))[:15]:
-                w, sn, o, q, j, c, r, ratio, z = f
-                print(f"    {w:>5g} {sn:<3} {o:<8} {q} n{j}: {c:.2e} -> {r:.2e}  x{ratio:.2f}")
-        print("\n  Interpretation: a geo-mean ratio near 1.0 with no organ-systematic")
-        print("  bias means the phantom-shell radii + wall geometry are reconstructed")
-        print("  faithfully. A whole organ skewed high/low => adjust that shell's radii")
-        print("  in config.SHELLS and re-run. Only then trust the EVA kernel.")
-    else:
+                        sem = csem[j] if csem[j] > 0 else 0.0
+                        records.append({"w": w, "s": sname, "o": o, "q": q,
+                                        "j": j, "c": c, "r": r, "sem": sem,
+                                        "ratio": r / c,
+                                        "snr": (c / sem) if sem > 0 else float("inf")})
+    if not records:
         print("  no overlapping non-zero values -- did the runs complete? check topas.log")
+        return
+
+    ratios = sorted(rec["ratio"] for rec in records)
+    med = ratios[len(ratios) // 2]
+    within2 = sum(1 for x in ratios if 0.5 <= x <= 2.0) / len(ratios)
+    gm = _geomean(ratios)
+
+    print("\n=== Al regeneration vs committed kernel (ratio regen/committed) ===")
+    print(f"  n compared        : {len(records)}")
+    print(f"  median ratio      : {med:.3f}")
+    print(f"  geo-mean ratio    : {gm:.3f}   (1.0 = unbiased reconstruction)")
+    print(f"  within 0.5-2.0x   : {within2*100:.0f}%")
+
+    # ---- high-SNR subset: isolates a TRUE systematic from committed MC noise ----
+    hi = [rec for rec in records if rec["snr"] >= _SNR_MIN]
+    print(f"\n  --- high-SNR subset (committed R >= {_SNR_MIN:g} sigma; noise-immune) ---")
+    if hi:
+        hr = sorted(rec["ratio"] for rec in hi)
+        print(f"  n high-SNR        : {len(hi)} of {len(records)}")
+        print(f"  median (high-SNR) : {hr[len(hr)//2]:.3f}")
+        print(f"  geo-mean (high-SNR): {_geomean(hr):.3f}   <-- the real systematic factor")
+    else:
+        print("  (none -- committed kernel has no Rsem, or all points are noise-limited)")
+    src = hi if hi else records
+
+    # ---- structure: is the bias flat (normalization) or trending (geometry)? ----
+    def _show(title, keyfn, order=None):
+        g = _grouped(src, keyfn)
+        keys = order if order is not None else sorted(g)
+        print(f"\n  geo-mean ratio by {title}:")
+        for k in keys:
+            if k in g:
+                gmv, n = g[k]
+                print(f"    {str(k):<10} x{gmv:.2f}   (n={n})")
+
+    _show("organ (outer->inner)", lambda t: t["o"], organs)
+    _show("quantity", lambda t: t["q"], ["D", "I"])
+    _show("wall g/cm^2", lambda t: t["w"])
+    _show("species", lambda t: t["s"], ["H", "He", "C", "O", "Fe"])
+    _show("node index (low->high E)", lambda t: t["j"])
+
+    # ---- true worst offenders (largest |log ratio|), high-SNR only ----
+    worst = sorted(src, key=lambda t: abs(math.log(t["ratio"])), reverse=True)[:12]
+    print("\n  true worst offenders (high-SNR; wall,species,organ,q,node  committed->regen):")
+    for t in worst:
+        print(f"    {t['w']:>5g} {t['s']:<3} {t['o']:<8} {t['q']} n{t['j']}: "
+              f"{t['c']:.2e} -> {t['r']:.2e}  x{t['ratio']:.2f}  (snr {t['snr']:.0f})")
+
+    print("\n  Read the breakdown:")
+    print("   * high-SNR geo-mean ~FLAT across organ/species/node => a single")
+    print("     normalization/counting constant (one-line fix, not geometry).")
+    print("   * geo-mean TRENDING with organ (depth) or node (energy) => shell radii")
+    print("     or wall thickness wrong; retune config.SHELLS for the skewed organ.")
 
 
 # --------------------------------------------------------------------------
