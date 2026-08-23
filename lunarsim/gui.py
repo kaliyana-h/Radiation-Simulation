@@ -1138,6 +1138,24 @@ def _resume_after_reload(_n, jid):
     return no_update
 
 
+# The Run button is locked while a job is active so an impatient double-click (or
+# a "looks stuck, hit it again" on a slow heavy-ion run) can't stack duplicate
+# jobs on the single-slot queue -- extra clicks would each enqueue another full
+# run and overwrite job-store, orphaning the earlier ones (still holding the
+# queue, no longer cancellable from the UI). The button's locked state is exactly
+# the inverse of poll.disabled: the poll runs iff a job is active, and _evaluate /
+# _poll / _resume_after_reload already drive that flag, so we mirror it here rather
+# than threading a run-disabled output through every one of their return paths.
+@app.callback(
+    Output("run", "disabled"), Output("run", "children"),
+    Input("poll", "disabled"),
+    prevent_initial_call=True)
+def _lock_run_while_active(poll_disabled):
+    if not poll_disabled:            # poll enabled -> a job is running/queued
+        return True, "⏳  Running…"
+    return False, "▶  Evaluate protection"
+
+
 @app.callback(
     Output("progress-bar", "style"), Output("status-line", "children"),
     Output("dose-metrics-body", "children"), Output("dose-analysis-body", "children"),
