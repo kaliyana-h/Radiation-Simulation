@@ -282,6 +282,52 @@ def _bare_phantom_norm_check(regen: dict) -> None:
             print("         the wall-thickness trend.")
 
 
+def _skin_wall_ladder(regen: dict, ref: dict) -> None:
+    """Print committed vs regen SKIN proton R_D for every (wall, node).
+
+    The skin shell is the outermost organ -- a particle reaches it after crossing
+    ONLY the wall, with zero tissue overburden. So this table isolates whether the
+    reconstructed WALL TRANSPORT matches the committed kernel, cleanly separated
+    from any organ-DEPTH (phantom-size) error, which only shows up in the inner
+    shells. Reading it:
+      * regen ~= committed at every node/wall  => wall transport is faithful; any
+        remaining --validate residual lives in the INNER organs => phantom-depth
+        (config.SHELLS radii / PHANTOM_R) is the knob, NOT the wall.
+      * regen > committed growing with wall thickness and at low E => the wall
+        under-attenuates (too thin / wrong slant) => fix the wall model first.
+    Only protons (H) are shown: no nuclear fragmentation to muddy the transport.
+    """
+    cpts = {p["wall_gcm2"]: p for p in ref["points"]}
+    rpts = {p["wall_gcm2"]: p for p in regen["points"]}
+    walls = [w for w in sorted(cpts) if w in rpts and w > 0]
+    if not walls:
+        return
+    print("\n  --- SKIN proton ladder: regen vs committed R_D (wall transport, "
+          "no tissue overburden) ---")
+    for w in walls:
+        cH = cpts[w]["species"].get("H")
+        rH = rpts[w]["species"].get("H")
+        if not cH or not rH:
+            continue
+        nodes = cH["nodes_pernuc_mev"]
+        csem = cH["Rsem"]["skin"]["D"]
+        print(f"    wall {w:g} g/cm^2:   E/n   committed     regen      ratio  (snr)")
+        rr = []
+        for j, e in enumerate(nodes):
+            c = cH["R"]["skin"]["D"][j]
+            r = rH["R"]["skin"]["D"][j]
+            if c <= 0:
+                continue
+            snr = c / csem[j] if csem[j] > 0 else float("inf")
+            ratio = r / c
+            rr.append(ratio)
+            flag = "  <-- range-threshold" if e <= 150 else ""
+            print(f"                    {e:>7g}  {c:.3e}  {r:.3e}   x{ratio:.2f}"
+                  f"  ({snr:.0f}){flag}")
+        if rr:
+            print(f"                    skin wall-{w:g} geo-mean x{_geomean(rr):.2f}")
+
+
 def validate(out: Path) -> None:
     regen = collect(out)
     ref = config.load_reference()
@@ -352,6 +398,9 @@ def validate(out: Path) -> None:
 
     # ---- bare-phantom absolute check (needs the appended wall=0 Al anchor) ----
     _bare_phantom_norm_check(regen)
+
+    # ---- skin ladder: isolates wall transport from organ depth ----
+    _skin_wall_ladder(regen, ref)
 
     # ---- true worst offenders (largest |log ratio|), high-SNR only ----
     worst = sorted(src, key=lambda t: abs(math.log(t["ratio"])), reverse=True)[:12]
