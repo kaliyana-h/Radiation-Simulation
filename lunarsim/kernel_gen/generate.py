@@ -176,7 +176,9 @@ def collect(out: Path) -> dict:
             "organs": [list(o) for o in config.organs_from_reference()],
             "note": ref_meta.get("note", ""),
             "phantom_shells_cm": [list(s) for s in config.SHELLS],
-            "wall_rmin_cm": config.WALL_RMIN_CM,
+            "wall_geometry": "flat_slab",   # areal-density slab crossed at t/cos(theta)
+            "wall_slab_bottom_z_cm": config.WALL_RMIN_CM,
+            "wall_slab_half_extent_cm": config.WALL_SLAB_HL_CM,
         },
         "points": points,
     }

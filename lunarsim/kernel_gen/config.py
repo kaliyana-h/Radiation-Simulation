@@ -78,13 +78,30 @@ SHELLS = [
 ]
 
 # --------------------------------------------------------------------------
-# Wall shell -- RECONSTRUCTED, pinned by --validate.
+# Wall shield -- RECONSTRUCTED, pinned by --validate.
 # --------------------------------------------------------------------------
-# A concentric spherical shell of the calibration material sitting directly on
-# the phantom (RMin = PHANTOM_R). Radial thickness = areal_density / density, so
-# every inward ray crosses exactly `areal_density` g/cm^2 radially; oblique rays
-# cross more, which is the physical slant-path over-shielding of a curved wall.
-WALL_RMIN_CM = PHANTOM_R_CM   # wall inner radius (touches the phantom skin)
+# A FLAT areal-density slab (the OLTARIS/HZETRN shielding convention this kernel
+# is cross-checked against), NOT a concentric shell. A horizontal TsBox of
+# thickness t = areal_density / density sits directly above the phantom
+# (z in [WALL_RMIN, WALL_RMIN + t]). Every upper-hemisphere ring at zenith theta
+# crosses it at slant path t/cos(theta), so the effective shielding is the
+# flux-weighted <1/cos(theta)> ~ 1.70x the radial areal density.
+#
+# WHY A SLAB, NOT A SHELL (pinned by the Al --validate on 2026-08-23): a
+# spherically-symmetric shell is theta-independent -- every ring crosses the same
+# radial t -- so it CANNOT produce a 1/cos(theta) attenuation pattern. The Al
+# regeneration with a shell wall came out biased HIGH by a factor that was flat
+# across organ / quantity / species but grew with wall thickness (2.025->1.32,
+# 10->1.57, 50->3.21 g/cm^2), and whose high-SNR geo-mean was 1.717 -- almost
+# exactly mean(1/cos(theta)) over the four ring angles (1.70). That is the
+# fingerprint of a planar slant-path shield the shell was missing.
+WALL_RMIN_CM = PHANTOM_R_CM   # slab bottom face z (sits on the phantom north pole)
+# Lateral half-extent of the shield slab. Must exceed the horizontal footprint a
+# grazing (theta=69 deg) ring ray sweeps while inside the slab so the ray enters
+# the top face and exits the bottom face (path = t/cos(theta)); 200 cm covers the
+# 50 g/cm^2 Al slab (t=18.5 cm -> ~88 cm sweep) with margin and stays inside the
+# world (half = BEAM_RADIUS + 50).
+WALL_SLAB_HL_CM = 200.0
 
 # --------------------------------------------------------------------------
 # Calibration materials -- TOPAS name, density, and (for non-builtins) the

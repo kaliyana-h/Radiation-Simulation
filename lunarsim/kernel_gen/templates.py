@@ -9,10 +9,13 @@ BeamEnergy per node instead of a continuous spectrum. The ring-angle convention
 verbatim from make_source._ring_groups / gcr_block so the reconstructed field is
 identical to the one the committed Al kernel was built with.
 
-Geometry: concentric water organ-shell spheres (config.SHELLS) optionally
-wrapped in a spherical shell of the wall material (radial thickness =
-areal_density / rho). Each shell carries two whole-volume scorers -- DoseToMedium
-(absorbed, -> R["D"]) and DoseEquivalent_ICRP (ICRP-60 dose-eq, -> R["I"]).
+Geometry: concentric water organ-shell spheres (config.SHELLS) shielded by a
+FLAT areal-density slab of the wall material (horizontal TsBox, thickness =
+areal_density / rho) sitting directly above the phantom -- the OLTARIS-style
+slant-path shield, so each upper-hemisphere ring crosses t/cos(theta) (see
+config.py "WHY A SLAB, NOT A SHELL"). Each shell carries two whole-volume
+scorers -- DoseToMedium (absorbed, -> R["D"]) and DoseEquivalent_ICRP
+(ICRP-60 dose-eq, -> R["I"]).
 """
 from __future__ import annotations
 
@@ -73,7 +76,6 @@ def build_param_file(material: str, wall_gcm2: float, species_name: str,
     particle = species["particle"]           # 'proton' | 'alpha' | 'GenericIon(z,a)'
 
     wall_thick = (wall_gcm2 / mat["density"]) if wall_gcm2 > 0 else 0.0
-    wall_rmax = config.WALL_RMIN_CM + wall_thick
     world_half = config.BEAM_RADIUS_CM + 50.0
 
     L = []
@@ -107,13 +109,19 @@ def build_param_file(material: str, wall_gcm2: float, species_name: str,
         L.append(f"# --- {material} material definition (from lunar_environment.txt) ---")
         L.extend(mat["defn"])
         L.append("")
-    # Wall spherical shell (skip at the 0 g/cm^2 bare-phantom anchor).
+    # Flat areal-density shield slab (skip at the 0 g/cm^2 bare-phantom anchor).
+    # Horizontal TsBox of thickness t = areal/rho sitting on the phantom north
+    # pole; every upper-hemisphere ring at zenith theta crosses it at t/cos(theta).
     if wall_gcm2 > 0:
-        L.append('s:Ge/Wall/Type     = "TsSphere"')
+        slab_hlz = wall_thick / 2.0
+        slab_z = config.WALL_RMIN_CM + slab_hlz   # box centre -> spans [RMIN, RMIN+t]
+        L.append('s:Ge/Wall/Type     = "TsBox"')
         L.append('s:Ge/Wall/Parent   = "World"')
         L.append(f's:Ge/Wall/Material = "{mat["topas"]}"')
-        L.append(f"d:Ge/Wall/RMin     = {config.WALL_RMIN_CM:.4f} cm")
-        L.append(f"d:Ge/Wall/RMax     = {wall_rmax:.4f} cm")
+        L.append(f"d:Ge/Wall/HLX      = {config.WALL_SLAB_HL_CM:.1f} cm")
+        L.append(f"d:Ge/Wall/HLY      = {config.WALL_SLAB_HL_CM:.1f} cm")
+        L.append(f"d:Ge/Wall/HLZ      = {slab_hlz:.4f} cm")
+        L.append(f"d:Ge/Wall/TransZ   = {slab_z:.4f} cm")
         L.append('b:Ge/Wall/Invisible = "true"')
         L.append("")
     # Concentric water organ shells + their two scorers.
