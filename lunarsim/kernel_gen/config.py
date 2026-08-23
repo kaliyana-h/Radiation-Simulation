@@ -131,7 +131,11 @@ MATERIALS = {
 # Areal-density anchor grids.
 # --------------------------------------------------------------------------
 # Aluminium: the committed grid, used ONLY to validate the reconstruction.
-AL_GRID_GCM2 = [2.025, 10.0, 50.0]
+# 0.0 is APPENDED (not prepended) so validate's positional zip against the 3
+# committed points stays aligned (2.025/10/50); the bare-phantom point carries no
+# committed reference and is used only for the first-principles normalization
+# check (isolates the wall-independent baseline that transfers to the EVA kernel).
+AL_GRID_GCM2 = [2.025, 10.0, 50.0, 0.0]
 # EVA: the locked multi-anchor grid (0 = bare-crew reference; 0.5, 1.0 g/cm^2
 # bracket a single suit ~0.28 and a doubled/patched suit). 0.0 means "no wall
 # shell" -- the free-field-on-bare-phantom response.

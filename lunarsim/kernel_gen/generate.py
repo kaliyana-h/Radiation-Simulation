@@ -213,6 +213,75 @@ def _grouped(records, keyfn):
 _SNR_MIN = 5.0
 
 
+# --------------------------------------------------------------------------
+# First-principles normalization check (bare-phantom / wall=0 point)
+# --------------------------------------------------------------------------
+# NIST PSTAR liquid-water proton TOTAL mass stopping power (MeV cm^2 / g),
+# (E_MeV, SP). Log-log interpolated. Absorbed dose per unit fluence for a thin
+# entrance layer is  D/Phi = SP_mass * 1.602e-10  [Gy cm^2]  (MeV cm^2/g ->
+# Gy cm^2). The outermost skin shell (0-0.5 cm depth) is that entrance layer, so
+# R_skin["D"] at wall=0 must equal SP(E)*1.602e-10 with NO free parameters --
+# this pins the illumination/normalization independently of any wall model.
+_PROTON_SP_WATER = [
+    (10, 45.67), (20, 26.07), (50, 12.45), (80, 8.625), (100, 7.289),
+    (150, 5.445), (200, 4.492), (300, 3.610), (500, 2.940), (600, 2.790),
+    (1000, 2.400), (1200, 2.320), (2000, 2.150), (2500, 2.110),
+    (4000, 2.100), (6000, 2.130),
+]
+_MEV_TO_GYCM2 = 1.602e-10   # (MeV cm^2/g) -> (Gy cm^2)
+
+
+def _sp_water_proton(e_mev: float) -> float:
+    """Log-log interpolated PSTAR water proton stopping power [MeV cm^2/g]."""
+    tbl = _PROTON_SP_WATER
+    if e_mev <= tbl[0][0]:
+        return tbl[0][1]
+    if e_mev >= tbl[-1][0]:
+        return tbl[-1][1]
+    for (e0, s0), (e1, s1) in zip(tbl, tbl[1:]):
+        if e0 <= e_mev <= e1:
+            f = (math.log(e_mev) - math.log(e0)) / (math.log(e1) - math.log(e0))
+            return math.exp(math.log(s0) + f * (math.log(s1) - math.log(s0)))
+    return tbl[-1][1]
+
+
+def _bare_phantom_norm_check(regen: dict) -> None:
+    """If the regen grid carries a wall=0 anchor, compare its skin absorbed-dose
+    proton response to first-principles LET-dose. This isolates the wall-
+    INDEPENDENT baseline (illumination x normalization x phantom) -- the part
+    that transfers to the EVA kernel -- from any wall-transport error."""
+    bare = next((p for p in regen["points"] if p["wall_gcm2"] == 0), None)
+    if bare is None:
+        return
+    H = bare["species"].get("H")
+    if H is None or "skin" not in H["R"]:
+        return
+    nodes = H["nodes_pernuc_mev"]
+    rskin = H["R"]["skin"]["D"]
+    print("\n  --- bare-phantom (wall=0) normalization check: skin R_D vs PSTAR ---")
+    print("      (no wall material at all -> pure illumination x normalization)")
+    print("      E/n MeV   regen R_D    analytic     ratio")
+    ratios = []
+    for e_pernuc, r in zip(nodes, rskin):
+        if r <= 0:
+            continue
+        analytic = _sp_water_proton(e_pernuc) * _MEV_TO_GYCM2
+        ratio = r / analytic
+        ratios.append(ratio)
+        print(f"      {e_pernuc:>7g}  {r:.3e}  {analytic:.3e}   x{ratio:.3f}")
+    if ratios:
+        gm = _geomean(ratios)
+        print(f"      geo-mean ratio = {gm:.3f}")
+        if 0.9 <= gm <= 1.1:
+            print("      => normalization CLEAN: the thin-wall floor is a WALL effect,")
+            print("         not a counting constant. Do NOT rescale; tune the wall model.")
+        else:
+            print(f"      => a wall-INDEPENDENT factor of {gm:.3f} sits in the baseline")
+            print("         (illumination/normalization). This transfers to EVA and is a")
+            print("         one-line fix (PHI_FF / HISTORIES / beam-spot), independent of")
+            print("         the wall-thickness trend.")
+
+
 def validate(out: Path) -> None:
     regen = collect(out)
     ref = config.load_reference()
@@ -280,6 +349,9 @@ def validate(out: Path) -> None:
     _show("wall g/cm^2", lambda t: t["w"])
     _show("species", lambda t: t["s"], ["H", "He", "C", "O", "Fe"])
     _show("node index (low->high E)", lambda t: t["j"])
+
+    # ---- bare-phantom absolute check (needs the appended wall=0 Al anchor) ----
+    _bare_phantom_norm_check(regen)
 
     # ---- true worst offenders (largest |log ratio|), high-SNR only ----
     worst = sorted(src, key=lambda t: abs(math.log(t["ratio"])), reverse=True)[:12]
