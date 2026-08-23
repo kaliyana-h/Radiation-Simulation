@@ -97,10 +97,12 @@ SHELLS = [
 # fingerprint of a planar slant-path shield the shell was missing.
 WALL_RMIN_CM = PHANTOM_R_CM   # slab bottom face z (sits on the phantom north pole)
 # Lateral half-extent of the shield slab. Must exceed the horizontal footprint a
-# grazing (theta=69 deg) ring ray sweeps while inside the slab so the ray enters
-# the top face and exits the bottom face (path = t/cos(theta)); 200 cm covers the
-# 50 g/cm^2 Al slab (t=18.5 cm -> ~88 cm sweep) with margin and stays inside the
-# world (half = BEAM_RADIUS + 50).
+# grazing ring ray sweeps while inside the slab so the ray enters the top face and
+# exits the bottom face (path = t/cos(theta)). The grazing ring now fires at
+# theta_eff=75.5 deg (flux-correct; see templates._ring_directions): a
+# centre-aimed ray of that ring reaches x ~ 130 cm at the top face of the 50 g/cm^2
+# Al slab (t=18.5 cm), so 200 cm covers it with margin and stays inside the world
+# (half = BEAM_RADIUS + 50).
 WALL_SLAB_HL_CM = 200.0
 
 # --------------------------------------------------------------------------

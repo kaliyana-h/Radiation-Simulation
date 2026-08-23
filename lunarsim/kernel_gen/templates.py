@@ -1,13 +1,15 @@
 """kernel_gen.templates -- emit one TOPAS parameter file per
 (material, areal-density anchor, species, energy node, seed).
 
-The illumination is the SAME equal-flux Lambert-weighted upper-hemisphere ring
-pattern make_source.py writes for the habitat GCR source (rings x azimuth
-parallel disc beams firing inward from BeamRadius), only mono-energetic: one
-BeamEnergy per node instead of a continuous spectrum. The ring-angle convention
-(s^2-equal-area zenith, RotZ/RotY nesting, RotX=180 to fire inward) is copied
-verbatim from make_source._ring_groups / gcr_block so the reconstructed field is
-identical to the one the committed Al kernel was built with.
+The illumination is the equal-flux upper-hemisphere ring pattern make_source.py
+writes for the habitat GCR source (rings x azimuth parallel disc beams firing
+inward from BeamRadius), only mono-energetic: one BeamEnergy per node instead of
+a continuous spectrum. The source NESTING (RotZ/RotY groups, RotX=180 to fire
+inward) is copied verbatim from make_source._ring_groups. The zenith ANGLES,
+however, use the FLUX-CORRECT band-effective secant (see _ring_directions), not
+gcr_block's area-midpoint: the committed Al kernel's shielding response requires
+the true continuous-hemisphere <1/cos(theta)> = 2.0, which four discrete midpoint
+angles under-sample to 1.70 (pinned by the Al --validate; see _ring_directions).
 
 Geometry: concentric water organ-shell spheres (config.SHELLS) shielded by a
 FLAT areal-density slab of the wall material (horizontal TsBox, thickness =
@@ -25,12 +27,34 @@ from . import config
 
 
 def _ring_directions(rings: int = config.RINGS, azimuth: int = config.AZIMUTH):
-    """(phi_deg, theta_deg) for every source, matching make_source.gcr_block:
-    equal-area-in-sin^2 zenith rings x uniform azimuth over the upper hemisphere."""
+    """(phi_deg, theta_deg) for every source: equal-area-in-sin^2 zenith rings x
+    uniform azimuth over the upper hemisphere, but each ring fires at its
+    FLUX-CORRECT band-effective zenith, not the band area-midpoint.
+
+    Why not the midpoint (make_source.gcr_block's convention): the shield is
+    crossed at slant path t/cos(theta), and what matters for the kernel is the
+    flux-weighted <1/cos(theta)> of the whole hemisphere, which for the true
+    continuous isotropic field is exactly 2.0. Four discrete AREA-MIDPOINT angles
+    (20.7/37.8/52.2/69.3 deg) sum to only <1/cos> = 1.70 -- they badly
+    under-sample the grazing band [60,90] deg where 1/cos(theta) blows up. The Al
+    --validate pinned this exactly (2026-08-23): the committed kernel suppresses
+    an 80 MeV proton (range ~4.9 g/cm^2 Al) to 0.22x its entrance dose through
+    only 2.025 g/cm^2 -- impossible at normal incidence, but exactly what an
+    effective <1/cos> ~ 2.0 does. So each ring instead fires at theta_eff with
+    1/cos(theta_eff) = <1/cos(theta)>_band, the band-averaged secant:
+
+        <1/cos>_band = 2*rings*( sqrt(1 - r/rings) - sqrt(1 - (r+1)/rings) )
+
+    which restores the exact continuous-hemisphere <1/cos> = 2.0 while keeping
+    rings x azimuth = [4,8], phi_ff and the 128-primary count unchanged. The four
+    zenith angles become 21.1/38.1/52.9/75.5 deg -- only the grazing ring moves
+    much (69.3 -> 75.5 deg, 1/cos 2.83 -> 4.0), which is the whole fix.
+    """
     dirs = []
     for r in range(rings):
-        s2 = (r + 0.5) / rings
-        theta = math.degrees(math.asin(math.sqrt(s2)))
+        s_lo, s_hi = r / rings, (r + 1) / rings
+        mean_sec = 2.0 * rings * (math.sqrt(1.0 - s_lo) - math.sqrt(1.0 - s_hi))
+        theta = math.degrees(math.acos(1.0 / mean_sec))
         for a in range(azimuth):
             phi = a * 360.0 / azimuth
             dirs.append((phi, theta))
