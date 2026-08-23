@@ -55,6 +55,15 @@ def _dome_spec(inner=300.0):
                               WallLayer("regolith", 70.0)])
 
 
+def _buried_spec(inner=300.0, burial=100.0):
+    # ceiling stack only (sides/floor are native regolith); overburden on top
+    return HabitatSpec(name="b", shape="buried", inner_radius_cm=inner,
+                       burial_depth_cm=burial,
+                       walls=[WallLayer("polyethylene", 10.0),
+                              WallLayer("aluminium", 5.0),
+                              WallLayer("regolith", 70.0)])
+
+
 def _ge_param(text, name, param):
     """Pull a numeric d:Ge/<name>/<param> value out of emitted geometry text."""
     m = re.search(rf'Ge/{name}/{param}\s*=\s*(-?[\d.]+)', text)
@@ -101,6 +110,44 @@ class TestSpec(unittest.TestCase):
                            height_cm=800.0,
                            walls=[WallLayer("aluminium", 5.0)])
         self.assertEqual(spec.effective_height_cm, 800.0)   # honoured verbatim
+
+    def test_buried_areal_density_includes_overburden(self):
+        # the buried headline's dominant shield is the regolith heaped on the
+        # ceiling: areal density = engineered ceiling stack + rho_reg * depth.
+        spec = _buried_spec(burial=150.0)
+        ceiling = (MATERIALS["polyethylene"]["density"] * 10.0
+                   + MATERIALS["aluminium"]["density"] * 5.0
+                   + MATERIALS["regolith"]["density"] * 70.0)
+        expect = ceiling + MATERIALS["regolith"]["density"] * 150.0
+        self.assertAlmostEqual(spec.areal_density_gcm2(), expect, places=9)
+        # deeper burial -> strictly more shielding
+        self.assertGreater(_buried_spec(burial=200.0).areal_density_gcm2(),
+                           _buried_spec(burial=100.0).areal_density_gcm2())
+
+    def test_buried_shell_mass_counts_ceiling_only(self):
+        # only the launched engineered ceiling is mass; the in-situ regolith
+        # (sides, floor, overburden) costs nothing to lift, so burial depth must
+        # NOT change the launched mass.
+        spec = _buried_spec(inner=300.0, burial=150.0)
+        expect = sum(MATERIALS[w.material]["density"]
+                     * math.pi * spec.inner_radius_cm**2 * w.thickness_cm
+                     for w in spec.walls) / 1000.0
+        self.assertAlmostEqual(spec.shell_mass_kg(), expect, places=6)
+        self.assertAlmostEqual(_buried_spec(burial=300.0).shell_mass_kg(),
+                               spec.shell_mass_kg(), places=6)
+
+    def test_buried_effective_height_defaults_to_radius(self):
+        self.assertEqual(_buried_spec(inner=300.0).effective_height_cm, 300.0)
+
+    def test_buried_validate_rejects_nonpositive_depth(self):
+        with self.assertRaises(ValueError):
+            _buried_spec(burial=0.0).validate()
+
+    def test_buried_burial_depth_round_trips(self):
+        spec = _buried_spec(burial=175.0)
+        back = HabitatSpec.from_dict(spec.to_dict())
+        self.assertEqual(back.shape, "buried")
+        self.assertAlmostEqual(back.burial_depth_cm, 175.0, places=9)
 
 
 # --------------------------------------------------------------------------
@@ -156,7 +203,7 @@ class TestGaugeSizeFlag(unittest.TestCase):
 # --------------------------------------------------------------------------
 class TestScorerEmission(unittest.TestCase):
     def test_base_scorers_always_present(self):
-        for spec in (_dome_spec(), _cyl_spec(), _quon_spec()):
+        for spec in (_dome_spec(), _cyl_spec(), _quon_spec(), _buried_spec()):
             sc = geometry.build_scorers(spec)
             for tok in ("SkinDose", "SkinDoseEq", "PhantomDose", "PhantomDoseEq",
                         "InsideWallFluence", "OutsideWallFluence"):
@@ -165,7 +212,7 @@ class TestScorerEmission(unittest.TestCase):
     def test_neutron_lineage_scorer_on_crewskin_every_shape(self):
         # The secondary-neutron dose fraction is a CrewSkin twin present for all
         # shapes (dome included -- it has no secondary lining but does have CrewSkin).
-        for spec in (_dome_spec(), _cyl_spec(), _quon_spec()):
+        for spec in (_dome_spec(), _cyl_spec(), _quon_spec(), _buried_spec()):
             sc = geometry.build_scorers(spec)
             self.assertIn('Sc/SkinDoseEqNeutron/Quantity   = "DoseEquivalent_ICRP_Neutron"',
                           sc, f"neutron scorer missing for {spec.shape}")
@@ -174,6 +221,15 @@ class TestScorerEmission(unittest.TestCase):
 
     def test_cylinder_gets_roof_scorers_only(self):
         sc = geometry.build_scorers(_cyl_spec())
+        self.assertIn('Sc/RoofDose/Component  = "CrewRoof"', sc)
+        self.assertIn('Sc/RoofDoseEq/Component  = "CrewRoof"', sc)
+        self.assertNotIn("CapADose", sc)
+        self.assertNotIn("CapBDose", sc)
+
+    def test_buried_gets_roof_scorers_only(self):
+        # buried reuses the cylinder's flat-ceiling roof lining, so it gets the
+        # CrewRoof scorers and none of the quonset cap scorers.
+        sc = geometry.build_scorers(_buried_spec())
         self.assertIn('Sc/RoofDose/Component  = "CrewRoof"', sc)
         self.assertIn('Sc/RoofDoseEq/Component  = "CrewRoof"', sc)
         self.assertNotIn("CapADose", sc)
@@ -246,6 +302,37 @@ class TestGeometryEmission(unittest.TestCase):
         for name in ("CrewRoof", "CrewCapA", "CrewCapB"):
             self.assertNotIn(name, geo)
 
+    def test_buried_has_ceiling_caps_berm_overburden_and_roof(self):
+        # the defining buried components: an engineered ceiling cap per layer, the
+        # native regolith side berm, the variable overburden disc, and the reused
+        # cylinder roof/side crew linings.
+        geo = geometry.build_geometry(_buried_spec())
+        for name in ("Cap0", "Cap1", "Cap2", "SideBerm", "Overburden",
+                     "CrewRoof", "CrewSkin"):
+            self.assertIn(name, geo, f"{name} missing from buried geometry")
+        # sides are native regolith, not the user's stack -> no Wall{i} barrels
+        self.assertNotIn("Ge/Wall0/Type", geo)
+
+    def test_buried_overburden_sits_above_ceiling(self):
+        # the overburden disc (dominant shield) must be stacked strictly above the
+        # engineered ceiling, and deeper burial pushes it higher.
+        spec = _buried_spec(burial=100.0)
+        geo = geometry.build_geometry(spec)
+        over_z = _ge_param(geo, "Overburden", "TransZ")
+        cap0_z = _ge_param(geo, "Cap0", "TransZ")
+        self.assertIsNotNone(over_z)
+        self.assertGreater(over_z, cap0_z)
+        deeper = _ge_param(geometry.build_geometry(_buried_spec(burial=200.0)),
+                           "Overburden", "TransZ")
+        self.assertGreater(deeper, over_z)
+
+    def test_buried_roof_disc_clears_inner_fluence_shell(self):
+        # same non-overlap invariant as the cylinder: roof RMax (inner-6) stays
+        # strictly inside InnerShell RMin (inner-5).
+        geo = geometry.build_geometry(_buried_spec())
+        self.assertLess(_ge_param(geo, "CrewRoof", "RMax"),
+                        _ge_param(geo, "InnerShell", "RMin"))
+
     def test_outer_gauge_clears_every_solid(self):
         # The standardised hemispherical OuterShell gauge must ENCLOSE the whole
         # habitat: its RMin has to exceed the farthest corner of every emitted wall
@@ -254,7 +341,7 @@ class TestGeometryEmission(unittest.TestCase):
         # by the full wall thickness, and a barrel-rim-sized gauge cut through Cap2).
         # Corner of a sphere shell = RMax; of a cylinder/cap = hypot(RMax, |off|+HL)
         # where off is TransZ (cylinder) or TransY (quonset, length axis after RotX).
-        for spec in (_dome_spec(), _cyl_spec(), _quon_spec()):
+        for spec in (_dome_spec(), _cyl_spec(), _quon_spec(), _buried_spec()):
             geo = geometry.build_geometry(spec)
             rmin = _ge_param(geo, "OuterShell", "RMin")
             self.assertIsNotNone(rmin, f"{spec.shape}: no OuterShell gauge emitted")
@@ -385,6 +472,22 @@ class TestFold(unittest.TestCase):
             res["skin_doseeq_sv"],
             (1.0e-12 * v_wall + 1.3e-12 * v_roof) / (v_wall + v_roof), places=24)
 
+    def test_buried_folds_roof_like_cylinder(self):
+        # buried reuses the cylinder barrel + flat-roof lining, so the roof folds
+        # into the skin dose by the identical mass-weighted mean.
+        spec = _buried_spec()
+        v_wall, v_roof = bridge._crewskin_volumes_cm3(spec)
+        res = self._base(5.0e-13, 1.0e-12)
+        res["roof_dose_gy"] = 6.0e-13
+        res["roof_doseeq_sv"] = 1.3e-12
+        bridge._fold_secondary_into_skin(spec, res)
+        self.assertAlmostEqual(
+            res["skin_dose_gy"],
+            (5.0e-13 * v_wall + 6.0e-13 * v_roof) / (v_wall + v_roof), places=25)
+        self.assertAlmostEqual(
+            res["skin_doseeq_sv"],
+            (1.0e-12 * v_wall + 1.3e-12 * v_roof) / (v_wall + v_roof), places=24)
+
     def test_quonset_folds_both_caps(self):
         spec = _quon_spec()
         v_arch, v_cap = bridge._quonset_skin_volumes_cm3(spec)
@@ -404,9 +507,9 @@ class TestFold(unittest.TestCase):
 
     def test_secondary_keys_always_popped(self):
         # RunResult(**results) must never see stray roof_/cap_ kwargs, for any shape.
-        for spec in (_dome_spec(), _cyl_spec(), _quon_spec()):
+        for spec in (_dome_spec(), _cyl_spec(), _quon_spec(), _buried_spec()):
             res = self._base(5.0e-13, 1.0e-12)
-            if spec.shape == "cylinder":
+            if spec.shape in ("cylinder", "buried"):
                 res["roof_dose_gy"] = res["roof_doseeq_sv"] = 6.0e-13
             elif spec.shape == "quonset":
                 res["capa_dose_gy"] = res["capb_dose_gy"] = 6.0e-13

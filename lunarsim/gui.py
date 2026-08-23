@@ -28,7 +28,8 @@ import base64
 import datetime as _dt
 import json
 
-from .spec import HabitatSpec, WallLayer, MATERIALS, SHAPES
+from .spec import (HabitatSpec, WallLayer, MATERIALS, SHAPES,
+                   SUIT_MATERIALS, eva_suit_spec)
 from .bridge import FULL_RUN, WORST_CASE_SPE, DEFAULT_BEAM_SPOT_CM
 from .dosimetry import (assess, assess_composition, assess_spe,
                         gcr_scalar_fluence_rate, DOSE_LIMITS_MSV,
@@ -54,8 +55,13 @@ METRIC   = "#6ea9da"      # light-blue metric numbers
 GROUND   = "#6b7280"
 
 SHAPE_LABELS = {"dome": "Dome (half-sphere)", "cylinder": "Cylinder",
-                "quonset": "Half-cylinder (tunnel)"}
-MATERIAL_OPTIONS = [{"label": m.capitalize(), "value": m} for m in MATERIALS]
+                "quonset": "Half-cylinder (tunnel)",
+                "buried": "Buried cylinder (regolith-covered)",
+                "eva": "EVA suit (single crew)"}
+# The suit layers are preset-only: they are consumed by the fixed EVA shape, not
+# offered as free wall materials, so keep them out of the layer-material picker.
+MATERIAL_OPTIONS = [{"label": m.capitalize(), "value": m}
+                    for m in MATERIALS if m not in SUIT_MATERIALS]
 VERDICT_COLOUR = {"SAFE": "#3fb950", "MARGINAL": "#d29922", "EXCEEDS LIMIT": ACCENT}
 
 # --- Fixed scoring preset --------------------------------------------------
@@ -158,23 +164,36 @@ def _num(x):
         return 0.0
 
 
-def spec_from_inputs(name, shape, inner_r_m, layers, length_m=None) -> HabitatSpec:
+def spec_from_inputs(name, shape, inner_r_m, layers, length_m=None,
+                     burial_depth_m=None) -> HabitatSpec:
+    # EVA is a fixed one-click preset: a human-sized cylinder in the two-layer
+    # suit. Ignore the geometry/layer inputs entirely (the GUI hides them) and
+    # return the canned spec so every call site -- preview, cascade, run -- agrees.
+    if shape == "eva":
+        return eva_suit_spec(name)
     walls = [WallLayer(L.get("m") or "aluminium", float(L.get("t") or 0) / 10.0)
              for L in (layers or []) if float(L.get("t") or 0) > 0]
     if not walls:                                   # never build a wall-less habitat
         walls = [WallLayer("aluminium", 0.6)]
     shape = shape or "dome"
-    # Axial length applies only to the two elongated shapes; a dome is a
-    # hemisphere with no independent length, so it keeps height_cm=None and the
-    # spec falls back to its radius-driven default.
+    # Axial length applies to the elongated shapes (cylinder/quonset) and to the
+    # buried cylinder; a dome is a hemisphere with no independent length, so it keeps
+    # height_cm=None and the spec falls back to its radius-driven default.
     height_cm = (float(length_m) * 100.0
-                 if (length_m and shape in ("cylinder", "quonset")) else None)
+                 if (length_m and shape in ("cylinder", "quonset", "buried"))
+                 else None)
+    # Burial depth (regolith overburden above the ceiling) applies only to the
+    # buried shape; other shapes keep the dataclass default.
+    kw = {}
+    if shape == "buried" and burial_depth_m is not None:
+        kw["burial_depth_cm"] = float(burial_depth_m) * 100.0
     return HabitatSpec(
         name=(name or "habitat").strip().replace(" ", "_") or "habitat",
         shape=shape,
         inner_radius_cm=float(inner_r_m) * 100.0,
         walls=walls,
         height_cm=height_cm,
+        **kw,
     )
 
 
@@ -311,6 +330,17 @@ def wireframe_3d(spec: HabitatSpec) -> go.Figure:
         gx = [ro * math.cos(2 * math.pi * s / 72) for s in range(73)]
         gy = [ro * math.sin(2 * math.pi * s / 72) for s in range(73)]
         gz = [0] * 73
+    elif spec.shape == "buried":
+        # crew cylinder (void) with the engineered ceiling + regolith overburden
+        # column drawn directly above it -- the overhead shield the depth controls.
+        H = spec.effective_height_cm / 100.0
+        lid = (spec.total_wall_cm + spec.burial_depth_cm) / 100.0
+        xi, yi, zi = _cylinder_lines(ri, H)
+        xo, yo, zo = _cylinder_lines(ri, lid)
+        zo = [None if z is None else z + H for z in zo]   # raise the lid onto the roof
+        gx = [ri * math.cos(2 * math.pi * s / 72) for s in range(73)]
+        gy = [ri * math.sin(2 * math.pi * s / 72) for s in range(73)]
+        gz = [0] * 73
     elif spec.shape == "quonset":
         HL = spec.effective_height_cm / 200.0           # half-length, m
         xi, yi, zi = _arch_lines(ri, HL)
@@ -324,10 +354,12 @@ def wireframe_3d(spec: HabitatSpec) -> go.Figure:
         gx = [ro * math.cos(2 * math.pi * s / 72) for s in range(73)]
         gy = [ro * math.sin(2 * math.pi * s / 72) for s in range(73)]
         gz = [0] * 73
+    outer_name = ("Regolith cover (ceiling + overburden)"
+                  if spec.shape == "buried" else "Outer surface")
     fig.add_trace(go.Scatter3d(x=xi, y=yi, z=zi, mode="lines",
                   line=dict(color="#9aa7b3", width=2), name="Inner surface"))
     fig.add_trace(go.Scatter3d(x=xo, y=yo, z=zo, mode="lines",
-                  line=dict(color=METRIC, width=2), name="Outer surface"))
+                  line=dict(color=METRIC, width=2), name=outer_name))
     fig.add_trace(go.Scatter3d(x=gx, y=gy, z=gz, mode="lines",
                   line=dict(color=GROUND, width=1), name="Ground level"))
     ax = dict(backgroundcolor=BG, gridcolor="#1d242d", zerolinecolor="#2a323d",
@@ -484,17 +516,64 @@ def _cross_cylinder(spec: HabitatSpec, dose=None) -> go.Figure:
     return fig
 
 
+def _cross_buried(spec: HabitatSpec, dose=None) -> go.Figure:
+    """Axial slice through a buried cylinder: the whole field is native regolith
+    (sides, floor AND the overburden above), with the crew void and the engineered
+    ceiling stack carved into it. The regolith depth above the ceiling -- the
+    dominant, user-set shield -- is drawn to scale down to the lunar surface line."""
+    fig = go.Figure()
+    inner = spec.inner_radius_cm
+    H = spec.effective_height_cm
+    ceiling = spec.total_wall_cm
+    surface = H + ceiling + spec.burial_depth_cm          # top of the overburden
+    span = inner * 1.6
+    top = surface * 1.08
+    # entire slice is regolith (native sides/floor + heaped overburden)
+    fig.add_shape(type="rect", x0=-span, x1=span, y0=-span * 0.35, y1=top,
+                  fillcolor=MATERIALS["regolith"]["colour"], line_width=0, layer="below")
+    # crew void
+    fig.add_trace(_rect_trace(-inner, inner, 0, H, "#0b1d2e", "interior", legend=False))
+    # engineered ceiling: flat layers stacked directly above the void (r<=inner)
+    for i, ((ri, ro), w) in enumerate(zip(spec.layer_radii_cm(), spec.walls)):
+        c = MATERIALS[w.material]["colour"]
+        lab = f"L{i}: {w.material} {w.thickness_cm:g} cm"
+        below = ri - inner
+        fig.add_trace(_rect_trace(-inner, inner, H + below, H + below + w.thickness_cm,
+                                  c, lab))
+    # lunar surface line at the top of the overburden -- makes the burial depth read
+    fig.add_shape(type="line", x0=-span, x1=span, y0=surface, y1=surface,
+                  line=dict(color=GROUND, width=1, dash="dot"))
+    fig.add_annotation(x=-span * 0.96, y=surface, text="lunar surface",
+                       showarrow=False, xanchor="left", yanchor="bottom",
+                       font=dict(color=MUTED, size=10))
+    fig.add_annotation(x=0, y=(H + ceiling + surface) / 2.0,
+                       text=f"regolith overburden<br>{spec.burial_depth_cm:g} cm",
+                       showarrow=False, font=dict(color="#f0e2cf", size=10))
+    cz, pr = spec.crew_height_cm, spec.phantom_radius_cm   # matches geometry.py
+    _add_scorers(fig, spec, dose, cz, pr, lining_r=inner,
+                 label_x=inner * 0.55, lining_y=H * 0.80)
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor=BG, plot_bgcolor=BG,
+        margin=dict(l=10, r=10, t=10, b=10), height=470,
+        showlegend=True, legend=dict(font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
+        xaxis=dict(visible=False, range=[-span, span], scaleanchor="y"),
+        yaxis=dict(visible=False, range=[-span * 0.35, top]))
+    return fig
+
+
 def _spec_sig(spec: HabitatSpec) -> str:
     """Identity of a design. A dose overlay is only drawn when its signature still
     matches the design on screen, so editing the wall can never leave last run's
     numbers sitting on a geometry they were not scored against."""
-    return (f"{spec.shape}|{spec.inner_radius_cm:.3f}|"
+    return (f"{spec.shape}|{spec.inner_radius_cm:.3f}|{spec.burial_depth_cm:.3f}|"
             + ";".join(f"{w.material}:{w.thickness_cm:.4f}" for w in spec.walls))
 
 
 def cross_section(spec: HabitatSpec, dose=None) -> go.Figure:
     if spec.shape == "cylinder":
         return _cross_cylinder(spec, dose)
+    if spec.shape == "buried":
+        return _cross_buried(spec, dose)
     return _cross_arch(spec, dose)  # dome + quonset share the half-arch slice
 
 
@@ -577,8 +656,12 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
     html.Div("Habitat Geometry", style=SECTION),
     html.Div("Habitat type", style=FIELD_LABEL),
     dcc.Dropdown(id="shape", value="dome", clearable=False,
-                 options=[{"label": SHAPE_LABELS[s], "value": s} for s in SHAPES],
+                 options=([{"label": SHAPE_LABELS[s], "value": s} for s in SHAPES]
+                          + [{"label": SHAPE_LABELS["eva"], "value": "eva"}]),
                  style={"marginBottom": "16px"}),
+    # Geometry + wall-stack editor. Hidden as a group when the EVA preset is
+    # selected (its geometry and suit wall are fixed -- see _geo_controls_vis).
+    html.Div(id="geo-controls", children=[
     slider_field("Inner radius (m)", "inner-r-val",
                  dcc.Slider(id="inner-r", min=1.5, max=8.0, step=0.05, value=2.5,
                             marks=_marks([2, 3, 4, 5, 6, 7, 8]), tooltip=None)),
@@ -589,10 +672,17 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
                      dcc.Slider(id="length-slider", min=2.0, max=12.0, step=0.5,
                                 value=6.0, marks=_marks([2, 4, 6, 8, 10, 12]),
                                 tooltip=None))]),
+    # Regolith overburden above the ceiling — buried shape only (see _length_control).
+    html.Div(id="burial-field", style={"display": "none"}, children=[
+        slider_field("Burial depth (m of regolith)", "burial-val",
+                     dcc.Slider(id="burial-slider", min=0.5, max=5.0, step=0.1,
+                                value=1.0, marks=_marks([1, 2, 3, 4, 5]),
+                                tooltip=None))]),
 
-    html.Div("Wall Layers", style=SECTION),
+    html.Div("Wall Layers", id="layers-title", style=SECTION),
     html.Div("Innermost first. Add the structural shell, insulation and regolith "
              "overburden as your team designed them.",
+             id="layers-note",
              style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
                     "marginBottom": "12px"}),
     html.Div(id="layer-rows", children=[
@@ -612,6 +702,15 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
     # reaching the Run callback -- and would also bleed one team's design into the
     # next in a reused tab. Design inputs are intentionally NOT persisted.
     dcc.Store(id="active-rows", data=list(range(len(DEFAULT_LAYERS)))),
+    ]),  # end geo-controls
+
+    # Shown only for the EVA preset, in place of the geometry/layer editor.
+    html.Div(id="eva-fixed-note", style={"display": "none"}, children=[
+        html.Div("Fixed suit geometry", style=SECTION),
+        html.Div("A single crew member as a human-sized cylinder in the two-layer "
+                 "pressure garment (LCVG + outer suit laminate, ~0.28 g/cm²). "
+                 "Geometry and wall are fixed — nothing further to set.",
+                 style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5"})]),
 
     html.Div("Exposure Scenario", style=SECTION),
     dcc.RadioItems(id="scenario", value="both",
@@ -755,6 +854,8 @@ centre = html.Div(style={"flex": "1", "padding": "26px 30px", "overflowY": "auto
                                                 "fontWeight": 800, "margin": 0}),
     html.Div(id="subtitle", style={"color": MUTED, "fontSize": "13px",
                                    "margin": "8px 0 4px"}),
+    # EVA/spacesuit indicative-regime banner (populated by _live; empty otherwise)
+    html.Div(id="eva-warning"),
     # thin progress line
     html.Div(style={"background": "#11161d", "borderRadius": "4px", "height": "3px",
                     "overflow": "hidden", "margin": "10px 0 0"}, children=[
@@ -917,27 +1018,78 @@ def _render_layers(active):
 @app.callback(
     Output("length-field", "style"),
     Output("length-val", "children"),
-    Input("shape", "value"), Input("length-slider", "value"))
-def _length_control(shape, length):
-    """Length is an axial dimension only the two elongated shapes have. Show the
-    slider for cylinder/quonset; hide it for the dome (which uses its radius)."""
-    show = shape in ("cylinder", "quonset")
-    return ({} if show else {"display": "none"}), f"{float(length or 6.0):.1f}"
+    Output("burial-field", "style"),
+    Output("burial-val", "children"),
+    Output("layers-title", "children"),
+    Output("layers-note", "children"),
+    Input("shape", "value"), Input("length-slider", "value"),
+    Input("burial-slider", "value"))
+def _length_control(shape, length, burial):
+    """Show the axial-length slider for the elongated shapes and the buried
+    cylinder (all have an independent length); hide it for the dome. The burial-
+    depth slider appears only for the buried shape, where the layer editor defines
+    the CEILING stack (sides/floor are native regolith) -- relabel it to say so."""
+    length_style = ({} if shape in ("cylinder", "quonset", "buried")
+                    else {"display": "none"})
+    burial_style = {} if shape == "buried" else {"display": "none"}
+    if shape == "buried":
+        title = "Ceiling Layers"
+        note = ("Innermost first — this stack is the engineered CEILING only "
+                "(sides and floor are native regolith). Regolith overburden above "
+                "it is set by the burial-depth slider.")
+    else:
+        title = "Wall Layers"
+        note = ("Innermost first. Add the structural shell, insulation and regolith "
+                "overburden as your team designed them.")
+    return (length_style, f"{float(length or 6.0):.1f}",
+            burial_style, f"{float(burial or 1.0):.1f}", title, note)
+
+
+@app.callback(
+    Output("geo-controls", "style"),
+    Output("eva-fixed-note", "style"),
+    Input("shape", "value"))
+def _geo_controls_vis(shape):
+    """The EVA preset is a fixed human-sized cylinder in a fixed suit wall, so it
+    takes no geometry or layer input. Hide the whole radius+layers editor and show
+    a short note in its place; every other shape keeps the editor."""
+    if shape == "eva":
+        return {"display": "none"}, {"display": "block"}
+    return {"display": "block"}, {"display": "none"}
+
+
+# EVA / spacesuit designs sit below the tool's validated (thick-shield) regime,
+# so any design carrying a suit layer is flagged as indicative rather than a dose
+# to plan against. Returns a banner Div, or "" when no suit layer is present.
+def _eva_warning(spec):
+    if not any(w.material in SUIT_MATERIALS for w in spec.walls):
+        return ""
+    return html.Div(style={
+        "background": "#3a2a12", "border": "1px solid #e8b04a",
+        "borderRadius": "8px", "padding": "10px 12px", "margin": "8px 0 0",
+        "color": "#f0c469", "fontSize": "12px", "lineHeight": "1.5"}, children=[
+        html.B("⚠ EVA / spacesuit regime — indicative only. "),
+        "A pressure-garment laminate is ~0.5–1 g/cm² — far below the tool's "
+        "validated thick-shield regime, where the thin-wall kernel is aluminium-"
+        "calibrated and the heavy-ion Monte Carlo is Bragg-limited. Use this to "
+        "compare suit-vs-bare shielding qualitatively, not as a career dose to "
+        "plan against."])
 
 
 @app.callback(
     Output("habitat-view", "figure"), Output("view-title", "children"),
     Output("subtitle", "children"), Output("design-params", "children"),
-    Output("inner-r-val", "children"),
+    Output("inner-r-val", "children"), Output("eva-warning", "children"),
     Input("shape", "value"), Input("inner-r", "value"),
     Input({"type": "layer-mat", "index": ALL}, "value"),
     Input({"type": "layer-thk", "index": ALL}, "value"),
     Input("view-mode", "value"),
     Input("dose-overlay", "data"),
     Input("length-slider", "value"),
+    Input("burial-slider", "value"),
     State({"type": "layer-mat", "index": ALL}, "id"),
     State("active-rows", "data"))
-def _live(shape, inner_r, mats, thks, view_mode, overlay, length, ids, active):
+def _live(shape, inner_r, mats, thks, view_mode, overlay, length, burial, ids, active):
     r_label = f"{float(inner_r or 2.5):.2f}"
     layers = _layers_from_components(mats, ids, thks, active)
     if not any(L["t"] > 0 for L in layers):
@@ -945,12 +1097,12 @@ def _live(shape, inner_r, mats, thks, view_mode, overlay, length, ids, active):
         # fabricate a fake wall and show a misleading score -- say what's wrong.
         return (no_update, no_update,
                 "⚠ Enter a wall thickness (mm) for at least one layer",
-                no_update, r_label)
+                no_update, r_label, no_update)
     try:
-        spec = spec_from_inputs("design", shape, inner_r, layers, length)
+        spec = spec_from_inputs("design", shape, inner_r, layers, length, burial)
         spec.validate()
     except Exception:
-        return (no_update, no_update, no_update, no_update, r_label)
+        return (no_update, no_update, no_update, no_update, r_label, no_update)
 
     # Only overlay dose that was actually scored against THIS geometry.
     dose = overlay if (overlay and overlay.get("sig") == _spec_sig(spec)) else None
@@ -970,17 +1122,23 @@ def _live(shape, inner_r, mats, thks, view_mode, overlay, length, ids, active):
     params = [
         _kv("Inner radius", f"{spec.inner_radius_cm / 100:.2f} m"),
     ]
-    if spec.shape in ("cylinder", "quonset"):
-        axis = "Axial length" if spec.shape == "cylinder" else "Tunnel length"
+    if spec.shape in ("cylinder", "quonset", "buried"):
+        axis = ("Tunnel length" if spec.shape == "quonset" else "Axial length")
         params.append(_kv(axis, f"{spec.effective_height_cm / 100:.2f} m"))
+    if spec.shape == "buried":
+        params.append(_kv("Burial depth", f"{spec.burial_depth_cm / 100:.2f} m regolith"))
+    stack_label = "Ceiling stack" if spec.shape == "buried" else "Wall stack"
     params += [
-        _kv("Wall stack", stack),
+        _kv(stack_label, stack),
         _kv("Areal density", f"{spec.areal_density_gcm2():.1f} g/cm²"),
-        _kv("Outer radius", f"{spec.outer_radius_cm / 100:.2f} m"),
+    ]
+    if spec.shape != "buried":
+        params.append(_kv("Outer radius", f"{spec.outer_radius_cm / 100:.2f} m"))
+    params += [
         _kv("Shell mass", f"{spec.shell_mass_kg() / 1000:.1f} t"),
         _kv("Mission", f"{SCORING_MISSION_DAYS} days"),
     ]
-    return fig, title, subtitle, params, r_label
+    return fig, title, subtitle, params, r_label, _eva_warning(spec)
 
 
 # ----------------------------------------------------------------------
@@ -996,11 +1154,13 @@ def _live(shape, inner_r, mats, thks, view_mode, overlay, length, ids, active):
     State({"type": "layer-thk", "index": ALL}, "value"),
     State("active-rows", "data"),
     State("length-slider", "value"),
+    State("burial-slider", "value"),
     State("cascade-dir", "data"),
     prevent_initial_call=True)
-def _cascade(n, colour_by, shape, inner_r, mats, ids, thks, active, length, cascade_dir):
+def _cascade(n, colour_by, shape, inner_r, mats, ids, thks, active, length, burial, cascade_dir):
     spec = spec_from_inputs("habitat", shape, inner_r,
-                            _layers_from_components(mats, ids, thks, active), length)
+                            _layers_from_components(mats, ids, thks, active),
+                            length, burial)
     trigger = ctx.triggered_id
 
     if trigger == "cascade-colour":
@@ -1069,13 +1229,14 @@ def _style_cascade(fig):
     State({"type": "layer-thk", "index": ALL}, "value"),
     State("active-rows", "data"), State("scenario", "value"),
     State("length-slider", "value"),
+    State("burial-slider", "value"),
     prevent_initial_call=True)
-def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length):
+def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length, burial):
     layers = _layers_from_components(mats, ids, thks, active)
     if not any(L["t"] > 0 for L in layers):
         # No layer has a thickness -- refuse rather than score a fabricated wall.
         return no_update, True, "⚠ Enter a wall thickness (mm) for at least one layer before evaluating."
-    spec = spec_from_inputs("habitat", shape, inner_r, layers, length)
+    spec = spec_from_inputs("habitat", shape, inner_r, layers, length, burial)
     if scenario == "spe":
         # One acute event: a single proton cone at the fixed event fluence.
         # Converge on the wall lining (the skin/BFO surface); no ion composition.
@@ -1901,10 +2062,12 @@ def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
     State({"type": "layer-thk", "index": ALL}, "value"),
     State("active-rows", "data"),
     State("length-slider", "value"),
+    State("burial-slider", "value"),
     prevent_initial_call=True)
-def _save_design(n, shape, inner_r, mats, ids, thks, active, length):
+def _save_design(n, shape, inner_r, mats, ids, thks, active, length, burial):
     spec = spec_from_inputs("habitat", shape, inner_r,
-                            _layers_from_components(mats, ids, thks, active), length)
+                            _layers_from_components(mats, ids, thks, active),
+                            length, burial)
     return dict(content=spec.to_json(), filename=f"{spec.name}.json")
 
 
@@ -1929,6 +2092,7 @@ def _save_report(n, report):
 @app.callback(
     Output("shape", "value"), Output("inner-r", "value"),
     Output("length-slider", "value"),
+    Output("burial-slider", "value"),
     Output("active-rows", "data", allow_duplicate=True),
     Output({"type": "layer-mat", "index": ALL}, "value"),
     Output({"type": "layer-thk", "index": ALL}, "value"),
@@ -1937,13 +2101,14 @@ def _save_report(n, report):
     prevent_initial_call=True)
 def _load_design(contents):
     if not contents:
-        return (no_update,) * 7
+        return (no_update,) * 8
     try:
         _, b64 = contents.split(",", 1)
         text = base64.b64decode(b64).decode("utf-8")
         spec = HabitatSpec.from_json(text)
     except Exception as exc:
         return (no_update, no_update, no_update, no_update, no_update, no_update,
+                no_update,
                 html.Span(f"Load failed: {str(exc)[-120:]}", style={"color": ACCENT}))
 
     walls = spec.walls[:MAX_LAYERS]
@@ -1956,8 +2121,11 @@ def _load_design(contents):
     # field itself stays hidden for a dome. effective_height_cm resolves the
     # radius-driven default when the saved design left height_cm unset.
     length = max(2.0, min(12.0, spec.effective_height_cm / 100.0))
+    # Reflect the loaded overburden on the burial slider (clamped to its range);
+    # the field itself stays hidden for a non-buried shape.
+    burial = max(0.5, min(5.0, spec.burial_depth_cm / 100.0))
     note = html.Span(f"Loaded '{spec.name}'.", style={"color": "#3fb950"})
-    return (spec.shape, spec.inner_radius_cm / 100.0, length,
+    return (spec.shape, spec.inner_radius_cm / 100.0, length, burial,
             active, mats, thks, note)
 
 

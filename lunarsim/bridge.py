@@ -28,7 +28,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .spec import HabitatSpec
-from .geometry import build_geometry, build_scorers, _outer_gauge_radius
+from .geometry import (build_geometry, build_scorers, _outer_gauge_radius,
+                       _enclosing_radius_cm)
 
 # ----------------------------------------------------------------------
 # Environment / install locations (override via env vars for other hosts)
@@ -284,7 +285,10 @@ def _world_half_cm(spec: HabitatSpec, beam_radius_cm: float,
     # axis (max of R.sin@ + S.cos@ over zenith angle @); the world must contain it,
     # else TOPAS clips the widest discs and silently under-fills the far sky.
     source_reach = (beam_radius_cm ** 2 + beam_spot_cm ** 2) ** 0.5
-    return max(source_reach, spec.outer_radius_cm, vertical, 300.0) + 300.0
+    # the buried block's regolith berm + overburden push its farthest corner well
+    # past both outer_radius and `vertical`; _enclosing_radius_cm captures it.
+    enclosing = _enclosing_radius_cm(spec)
+    return max(source_reach, spec.outer_radius_cm, vertical, enclosing, 300.0) + 300.0
 
 
 def build_parameter_file(spec: HabitatSpec, tier: RunTier,
@@ -525,7 +529,9 @@ def _fold_secondary_into_skin(spec: HabitatSpec, results: dict) -> None:
     capb_d = results.pop("capb_dose_gy", None)
     capb_de = results.pop("capb_doseeq_sv", None)
     capb_den = results.pop("capb_doseeq_nasa_sv", None)
-    if spec.shape == "cylinder":
+    if spec.shape in ("cylinder", "buried"):
+        # buried reuses the cylinder barrel + CrewRoof lining verbatim, so the same
+        # (barrel, roof-disc) volume split and roof fold apply.
         v_wall, v_roof = _crewskin_volumes_cm3(spec)
         _mass_weight_into_skin(results, v_wall,
                                [(roof_d, roof_de, roof_den, v_roof)])

@@ -27,9 +27,22 @@ MATERIALS: dict[str, dict] = {
     "concrete":     {"topas": "G4_CONCRETE",      "density": 2.30, "colour": "#b0b0a0"},
     "regolith":     {"topas": "LunarReg178",      "density": 1.78, "colour": "#8a6a4a"},
     "titanium":     {"topas": "G4_Ti",            "density": 4.51, "colour": "#c0c4c8"},
+    # EVA pressure-garment layers (see lunar_environment.txt). Densities MUST
+    # match the TOPAS materials there so areal density and transport agree. These
+    # are NOT offered as free-standing wall materials -- they are consumed only by
+    # the fixed EVA-suit preset (see eva_suit_spec / SUIT_MATERIALS below), which
+    # sits below the tool's validated shielding regime, so the GUI raises an
+    # explicit EVA warning whenever either is present.
+    "lcvg":         {"topas": "LCVG",             "density": 0.5133, "colour": "#7fd0e8"},
+    "evasuit":      {"topas": "EVASuit",          "density": 0.252,  "colour": "#e8b04a"},
 }
 
-SHAPES = ("dome", "cylinder", "quonset")
+SHAPES = ("dome", "cylinder", "quonset", "buried")
+
+# The two EVA pressure-garment layers above are preset-only: the GUI hides them
+# from the free wall-material dropdown and drives them solely through the fixed
+# EVA-suit shape. Anything in this set triggers the indicative-regime warning.
+SUIT_MATERIALS = ("lcvg", "evasuit")
 
 
 @dataclass
@@ -52,10 +65,15 @@ class WallLayer:
 class HabitatSpec:
     """A complete, self-contained description of a student's habitat design."""
     name: str = "habitat"
-    shape: str = "dome"                      # dome | cylinder | quonset
+    shape: str = "dome"                      # dome | cylinder | quonset | buried
     inner_radius_cm: float = 400.0           # interior radius
-    height_cm: Optional[float] = None        # axial length (cylinder/quonset); None = use radius
+    height_cm: Optional[float] = None        # axial length (cylinder/quonset/buried); None = use radius
     walls: list[WallLayer] = field(default_factory=lambda: [WallLayer()])
+    # Regolith overburden ABOVE the engineered ceiling (buried shape only). The
+    # vertical cylinder is sunk into the surface: sides and floor are native
+    # regolith, only the flat ceiling takes the user's wall stack, and this depth
+    # of loose regolith is heaped on top of that ceiling. Deeper -> more shielding.
+    burial_depth_cm: float = 100.0
     phantom_radius_cm: float = 20.0          # tissue-equivalent crew proxy
     # Height of the phantom CENTRE above the floor (z=0). A standing adult's
     # trunk/BFO centre, which is what the dose limits are written against. Fixed,
@@ -80,7 +98,9 @@ class HabitatSpec:
             raise ValueError("crew phantom would sink below the floor: "
                              f"crew_height_cm ({self.crew_height_cm:g}) must be "
                              f">= phantom_radius_cm ({self.phantom_radius_cm:g})")
-        if self.shape == "cylinder":
+        if self.shape == "buried" and self.burial_depth_cm <= 0:
+            raise ValueError("burial_depth_cm must be > 0 for a buried habitat")
+        if self.shape in ("cylinder", "buried"):
             # flat roof: clear it vertically; the barrel wall is the radial limit
             headroom = self.effective_height_cm
         else:
@@ -138,8 +158,13 @@ class HabitatSpec:
     def areal_density_gcm2(self) -> float:
         """Total mass per unit frontal area through the wall stack (g/cm^2).
         This is what GCR dose-depth attenuation actually scales with, so it
-        is the right quantity to label designs by and to key any cache on."""
-        return sum(MATERIALS[w.material]["density"] * w.thickness_cm for w in self.walls)
+        is the right quantity to label designs by and to key any cache on.
+        For a buried habitat the regolith overburden heaped on the ceiling
+        adds to the engineered-wall column (it is the dominant shield)."""
+        wall = sum(MATERIALS[w.material]["density"] * w.thickness_cm for w in self.walls)
+        if self.shape == "buried":
+            wall += MATERIALS["regolith"]["density"] * self.burial_depth_cm
+        return wall
 
     # ---- mass estimate (for the dose-vs-mass trade-off) -------------
     def shell_mass_kg(self) -> float:
@@ -148,6 +173,14 @@ class HabitatSpec:
         import math
         mass = 0.0
         h = self.effective_height_cm
+        if self.shape == "buried":
+            # Only the engineered ceiling is launched mass -- the regolith sides,
+            # floor and overburden are in situ and cost nothing to lift. Ceiling is
+            # a flat disc stack spanning the full interior radius (r <= inner).
+            for w in self.walls:
+                rho = MATERIALS[w.material]["density"]
+                mass += rho * math.pi * self.inner_radius_cm**2 * w.thickness_cm
+            return mass / 1000.0
         for (ri, ro), w in zip(self.layer_radii_cm(), self.walls):
             rho = MATERIALS[w.material]["density"]          # g/cm^3
             if self.shape == "dome":
@@ -177,6 +210,7 @@ class HabitatSpec:
             "shape": self.shape,
             "inner_radius_cm": self.inner_radius_cm,
             "height_cm": self.height_cm,
+            "burial_depth_cm": self.burial_depth_cm,
             "phantom_radius_cm": self.phantom_radius_cm,
             "crew_height_cm": self.crew_height_cm,
             "walls": [{"material": w.material, "thickness_cm": w.thickness_cm}
@@ -201,6 +235,7 @@ class HabitatSpec:
             inner_radius_cm=float(data.get("inner_radius_cm", 400.0)),
             height_cm=(None if data.get("height_cm") is None
                        else float(data["height_cm"])),
+            burial_depth_cm=float(data.get("burial_depth_cm", 100.0)),
             walls=walls,
             phantom_radius_cm=float(data.get("phantom_radius_cm", 20.0)),
             crew_height_cm=float(data.get("crew_height_cm", 100.0)),
@@ -211,6 +246,28 @@ class HabitatSpec:
     @classmethod
     def from_json(cls, text: str) -> "HabitatSpec":
         return cls.from_dict(json.loads(text))
+
+
+def eva_suit_spec(name: str = "eva") -> HabitatSpec:
+    """A single crew member on an EVA, modelled as a fixed human-sized cylinder
+    wearing the two-layer pressure garment: the LCVG against the skin, then the
+    outer suit laminate. Geometry and wall are fixed -- the GUI exposes this as a
+    one-click shape with no further selection. Total areal density ~0.28 g/cm^2
+    sits far below the tool's validated thick-shield regime, so the result is
+    INDICATIVE only (the GUI shows an EVA warning whenever a suit layer is used).
+
+    Stored as shape='cylinder' so the whole geometry/scoring/fold pipeline treats
+    it as an ordinary (small) barrel; 'EVA' is purely the GUI-side preset."""
+    return HabitatSpec(
+        name=name or "eva",
+        shape="cylinder",
+        inner_radius_cm=25.0,      # ~50 cm across: a standing adult torso
+        height_cm=175.0,           # standing height
+        walls=[WallLayer("lcvg", 0.3),      # 3 mm inner liquid-cooling garment
+               WallLayer("evasuit", 0.5)],  # 5 mm outer pressure-suit laminate
+        phantom_radius_cm=15.0,    # crew proxy inside the suit
+        crew_height_cm=100.0,      # torso / BFO centre above the floor
+    )
 
 
 def default_spec() -> HabitatSpec:

@@ -18,6 +18,15 @@ from .spec import HabitatSpec, MATERIALS
 # Standoff (cm) between an oversized habitat's enclosing radius and the outer gauge.
 _GAUGE_STANDOFF_CM = 20.0
 
+# Lateral regolith berm (cm) around a buried habitat's side wall. The buried shape
+# sinks a vertical cylinder into the surface: only the flat ceiling takes the user's
+# engineered wall stack, while the sides are native regolith. This fixed, deep berm
+# (~356 g/cm^2 at rho 1.78) makes the lateral path effectively opaque, so the DEPTH
+# of overburden above the ceiling is the single dominant, pedagogically-meaningful
+# shielding knob -- not the side thickness. It is in-situ regolith, so it costs no
+# launched mass (see spec.shell_mass_kg, which counts only the ceiling).
+_BURIED_SIDE_REGOLITH_CM = 200.0
+
 # Fixed outer-gauge radius (cm), IDENTICAL for every design. Chosen to clear the
 # core workshop envelope (inner_radius up to ~3.5 m, all three shapes) while staying
 # a safe margin inside the 900 cm sky-dome source. Designs larger than this grow the
@@ -78,6 +87,12 @@ def _enclosing_radius_cm(spec: HabitatSpec) -> float:
     if spec.shape == "cylinder":
         # farthest = outer top corner of the roof caps: (r=outer, z=H+wall_total)
         return math.hypot(outer, spec.effective_height_cm + wall_total)
+    if spec.shape == "buried":
+        # farthest = top rim of the regolith overburden cap: it spans radially out to
+        # the side berm (r = inner + side) and up to z = H + ceiling + burial_depth.
+        r = spec.inner_radius_cm + _BURIED_SIDE_REGOLITH_CM
+        z = spec.effective_height_cm + wall_total + spec.burial_depth_cm
+        return math.hypot(r, z)
     # quonset: arch of radius `outer`, half-length HL; end caps at Y=HL+wall
     return math.hypot(outer, spec.effective_height_cm / 2.0 + wall_total)
 
@@ -254,6 +269,83 @@ def _cylinder(spec: HabitatSpec) -> tuple[str, list[str]]:
     return "\n".join(lines), wall_names
 
 
+def _buried(spec: HabitatSpec) -> tuple[str, list[str]]:
+    """Vertical cylinder sunk into the lunar surface (regolith-covered). The crew
+    volume is a cylinder standing on the ground plane; its SIDES and floor are
+    native regolith (a deep fixed berm, see _BURIED_SIDE_REGOLITH_CM), and only the
+    flat CEILING carries the user's engineered wall stack. A variable depth of loose
+    regolith overburden is heaped on top of that ceiling -- the dominant, adjustable
+    shield. Modelled above grade (z>=0) as a regolith-encased block rather than a
+    below-grade carve: it reuses the validated _cylinder roof/lining machinery, never
+    overlaps the z<0 environment slabs, and is shielding-identical (the sign of z is
+    irrelevant to attenuation). The GUI preview depicts it as buried."""
+    lines: list[str] = ["# --- Habitat: buried vertical cylinder (regolith-covered) ---"]
+    wall_names: list[str] = []
+    H = spec.effective_height_cm
+    inner = spec.inner_radius_cm
+    ceiling_total = spec.total_wall_cm
+    side = _BURIED_SIDE_REGOLITH_CM
+    reg = MATERIALS["regolith"]["topas"]
+    reg_col = MATERIALS["regolith"]["colour"]
+
+    # Engineered ceiling: one flat cap per wall layer, innermost lowest, spanning the
+    # full interior radius (r in [0, inner]) and stacked z in [H, H+ceiling_total].
+    # Mirrors the _cylinder roof caps, but the barrel side wall is regolith, not the
+    # user's stack, so there are no `Wall{i}` barrels here.
+    for i, ((ri, ro), layer) in enumerate(zip(spec.layer_radii_cm(), spec.walls)):
+        topas_mat = MATERIALS[layer.material]["topas"]
+        colour = MATERIALS[layer.material]["colour"]
+        t = layer.thickness_cm
+        lines.append(f"# ceiling layer {i}: {layer.material} {t:.1f} cm "
+                     f"(z {H + (ri - inner):.1f}->{H + (ro - inner):.1f} cm)")
+        cname = f"Cap{i}"
+        wall_names.append(cname)
+        cap_z = H + (ri - inner) + t / 2.0
+        lines.append(_cyl_block(cname, "World", topas_mat, 0.0, inner,
+                                t / 2.0, cap_z, colour))
+
+    # Native regolith side berm: a thick annular wall around the crew cylinder,
+    # r in [inner, inner+side], full height up to the top of the ceiling stack.
+    lines.append(f"# native regolith side berm ({side:.0f} cm)")
+    lines.append(_cyl_block("SideBerm", "World", reg, inner, inner + side,
+                            (H + ceiling_total) / 2.0, (H + ceiling_total) / 2.0,
+                            reg_col))
+
+    # Regolith overburden heaped on the ceiling: a full disc (out to the berm rim)
+    # of the user-set depth, sitting on top of the engineered ceiling. This is the
+    # dominant, variable shield.
+    lines.append(f"# regolith overburden ({spec.burial_depth_cm:.0f} cm)")
+    over_z = H + ceiling_total + spec.burial_depth_cm / 2.0
+    lines.append(_cyl_block("Overburden", "World", reg, 0.0, inner + side,
+                            spec.burial_depth_cm / 2.0, over_z, reg_col))
+
+    # fluence scorer shells (thin air cylinders just inside the barrel)
+    lines.append("# fluence scorer shells (air)")
+    lines.append(_cyl_block("InnerShell", "World", "G4_AIR",
+                            inner - 5.0, inner - 3.0, H / 2.0, H / 2.0,
+                            "grey", style="Wireframe"))
+    # standardised outer fluence gauge: a HEMISPHERE enclosing the whole buried
+    # block, identical in shape to every other design (see _outer_gauge_radius).
+    _rg = _outer_gauge_radius(spec)
+    lines.append(_sphere_shell("OuterShell", "World", "G4_AIR",
+                               _rg, _rg + 2.0, "grey", style="Wireframe"))
+
+    # holistic crew-dose shell: tissue lining the barrel side wall (see _dome)
+    lines.append("# holistic crew-dose shell (tissue-equivalent inner-wall lining)")
+    lines.append(_cyl_block("CrewSkin", "World", "G4_WATER",
+                            inner - 2.0, inner, H / 2.0, H / 2.0,
+                            "blue", style="Wireframe"))
+
+    # roof-underside disc lining the ceiling's inner face (see _cylinder CrewRoof).
+    lines.append(_cyl_block("CrewRoof", "World", "G4_WATER",
+                            0.0, inner - 6.0, 1.0, H - 1.0,
+                            "blue", style="Wireframe"))
+
+    lines.append("# tissue-equivalent crew phantom (standing trunk height)")
+    lines.append(_phantom(spec, spec.crew_height_cm))
+    return "\n".join(lines), wall_names
+
+
 def _quonset(spec: HabitatSpec) -> tuple[str, list[str]]:
     """Quonset hut: a half-cylinder arch lying on the ground, axis along Y
     (RotX=-90), flat diametral face on the z=0 plane. Mirrors habitat_quonset.txt,
@@ -333,6 +425,7 @@ _BUILDERS = {
     "dome": _dome,
     "cylinder": _cylinder,
     "quonset": _quonset,
+    "buried": _buried,
 }
 
 
@@ -448,11 +541,12 @@ s:Sc/SkinDoseEqNeutron/IfOutputFileAlreadyExists = "Overwrite"
     # it defines no extra component; emitting these scorers for it would reference
     # an undefined volume and abort the run.
     #   cylinder -> CrewRoof   (flat roof underside; the barrel lining is side-only)
+    #   buried   -> CrewRoof   (same flat ceiling underside; sides are regolith)
     #   quonset  -> CrewCapA/B (the two flat end bulkheads; the arch lining is
     #               curved-wall-only)
-    if spec.shape == "cylinder":
+    if spec.shape in ("cylinder", "buried"):
         scorers += """
-# roof-underside disc lining (cylinder only)
+# roof-underside disc lining (cylinder / buried)
 s:Sc/RoofDose/Quantity   = "DoseToMedium"
 s:Sc/RoofDose/Component  = "CrewRoof"
 s:Sc/RoofDose/OutputFile = "roof_dose"
