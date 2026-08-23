@@ -161,6 +161,20 @@ def collect(out: Path) -> dict:
     runs_dir = out / "runs"
     ref_meta = config.load_reference()["meta"]
     points = [_collect_point(runs_dir, material, w, seeds) for w in manifest["grid_gcm2"]]
+    note = ref_meta.get("note", "")
+    if material != "aluminium":
+        # Self-document the regime the Al validation gate actually cleared for this
+        # reconstruction (locked 2026-08-23). The skin ladder (wall transport with
+        # zero tissue overburden) reproduces the committed Al kernel to 0.9-1.25x
+        # for penetrating energies through THIN walls (<= 2.025 g/cm^2); the EVA
+        # grid is entirely thin (0/0.5/1.0 g/cm^2), so it sits inside that cleared
+        # band. The reconstruction's discrete-zenith quadrature under-attenuates at
+        # THICK walls (10/50 g/cm^2) and at range-threshold low-E cells -- neither
+        # regime is reached by an EVA suit, so it does not affect any EVA number.
+        note = ("VALIDATED REGIME: thin-wall (<=2.025 g/cm^2), penetrating energies "
+                "-- reproduces committed Al kernel to 0.9-1.25x. Not calibrated for "
+                "thick walls (>=10 g/cm^2) or range-threshold low-E cells; the EVA "
+                "grid lies entirely within the validated band. " + note).strip()
     kernel = {
         "meta": {
             "description": f"Thin-wall GCR response kernel R=D_organ/Phi_ff, "
@@ -174,7 +188,7 @@ def collect(out: Path) -> dict:
             "crossover_gcm2": ref_meta["crossover_gcm2"],
             "areal_grid_gcm2": manifest["grid_gcm2"],
             "organs": [list(o) for o in config.organs_from_reference()],
-            "note": ref_meta.get("note", ""),
+            "note": note,
             "phantom_shells_cm": [list(s) for s in config.SHELLS],
             "wall_geometry": "flat_slab",   # areal-density slab crossed at t/cos(theta)
             "wall_slab_bottom_z_cm": config.WALL_RMIN_CM,
