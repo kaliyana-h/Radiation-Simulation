@@ -27,6 +27,10 @@ MATERIALS: dict[str, dict] = {
     "concrete":     {"topas": "G4_CONCRETE",      "density": 2.30, "colour": "#b0b0a0"},
     "regolith":     {"topas": "LunarReg178",      "density": 1.78, "colour": "#8a6a4a"},
     "titanium":     {"topas": "G4_Ti",            "density": 4.51, "colour": "#c0c4c8"},
+    # NIST built-in Fe-Cr-Ni stainless (G4_STAINLESS-STEEL, rho 8.0). Dense, so a
+    # useful high-mass foil for the dose-vs-mass trade-off; no custom TOPAS
+    # definition needed (Geant4 resolves the NIST name directly).
+    "stainless_steel": {"topas": "G4_STAINLESS-STEEL", "density": 8.00, "colour": "#7f8792"},
     # EVA pressure-garment layers (see lunar_environment.txt). Densities MUST
     # match the TOPAS materials there so areal density and transport agree. These
     # are NOT offered as free-standing wall materials -- they are consumed only by

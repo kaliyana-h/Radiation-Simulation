@@ -60,7 +60,7 @@ SHAPE_LABELS = {"dome": "Dome (half-sphere)", "cylinder": "Cylinder",
                 "eva": "EVA suit (single crew)"}
 # The suit layers are preset-only: they are consumed by the fixed EVA shape, not
 # offered as free wall materials, so keep them out of the layer-material picker.
-MATERIAL_OPTIONS = [{"label": m.capitalize(), "value": m}
+MATERIAL_OPTIONS = [{"label": m.replace("_", " ").capitalize(), "value": m}
                     for m in MATERIALS if m not in SUIT_MATERIALS]
 VERDICT_COLOUR = {"SAFE": "#3fb950", "MARGINAL": "#d29922", "EXCEEDS LIMIT": ACCENT}
 
