@@ -761,6 +761,40 @@ class TestGcrThinWallFold(unittest.TestCase):
         self.assertTrue(dosimetry._gcr_thinwall_applies(poly))
         self.assertFalse(dosimetry._gcr_thinwall_calibrated(poly))  # not Al-dominated
 
+    def test_eva_suit_folds_against_its_own_kernel_when_shipped(self):
+        """An EVA suit design must dispatch to the suit-calibrated kernel (not the
+        aluminium one) and report a calibrated thin-wall dose. Skips until the EVA
+        kernel JSON is present on this machine (the harness generates it offline)."""
+        from lunarsim import dosimetry
+        from lunarsim.spec import eva_suit_spec
+        if not dosimetry._has_gcr_kernel("evasuit"):
+            self.skipTest("EVA kernel not shipped on this machine yet")
+        spec = eva_suit_spec()
+        self.assertEqual(dosimetry._gcr_calibration_material(spec), "evasuit")
+        self.assertTrue(dosimetry._gcr_thinwall_applies(spec))       # ~0.28 g/cm^2
+        self.assertTrue(dosimetry._gcr_thinwall_calibrated(spec))    # suit-family wall
+        a = dosimetry.assess_gcr_thinwall(spec, mission_days=365.0, phi_MV=400.0)
+        self.assertEqual(a.regime, "thinwall")
+        self.assertGreater(a.annual_msv, 0.0)
+        # per-species effective dose must sum to the headline (same invariant as Al)
+        yr = dosimetry.SECONDS_PER_DAY * dosimetry.DAYS_PER_YEAR * 1e3
+        esum = sum(c["doseeq_rate_sv_s"] for c in a.contributions) * yr
+        self.assertAlmostEqual(esum, a.annual_msv, delta=0.5)
+
+    def test_eva_suit_falls_back_to_aluminium_without_kernel(self):
+        """Before the EVA kernel is shipped, a suit design still folds (against the Al
+        kernel) but is flagged indicative -- the tool must never crash on a missing
+        material kernel."""
+        from lunarsim import dosimetry
+        from lunarsim.spec import eva_suit_spec
+        spec = eva_suit_spec()
+        if dosimetry._has_gcr_kernel("evasuit"):
+            self.skipTest("EVA kernel present; fallback path not exercised")
+        self.assertEqual(dosimetry._gcr_calibration_material(spec), "aluminium")
+        self.assertFalse(dosimetry._gcr_thinwall_calibrated(spec))   # suit != aluminium
+        a = dosimetry.assess_gcr_thinwall(spec, phi_MV=400.0)
+        self.assertIsNotNone(a)
+
 
 class _FakeComposition:
     """A run_composition stand-in result: carries just enough for the worker's

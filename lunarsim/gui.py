@@ -1058,12 +1058,23 @@ def _geo_controls_vis(shape):
     return {"display": "block"}, {"display": "none"}
 
 
-# EVA / spacesuit designs sit below the tool's validated (thick-shield) regime,
-# so any design carrying a suit layer is flagged as indicative rather than a dose
-# to plan against. Returns a banner Div, or "" when no suit layer is present.
+# EVA / spacesuit designs carry a pressure-garment laminate (~0.5-1 g/cm^2). When a
+# suit-calibrated thin-wall kernel is shipped the design folds against it and gets a
+# CALIBRATED number (green banner); without one it falls back to the aluminium kernel
+# and is flagged indicative (amber). Returns a banner Div, or "" when no suit layer.
 def _eva_warning(spec):
     if not any(w.material in SUIT_MATERIALS for w in spec.walls):
         return ""
+    if _gcr_thinwall_calibrated(spec):
+        return html.Div(style={
+            "background": "#12301c", "border": "1px solid #4ac06a",
+            "borderRadius": "8px", "padding": "10px 12px", "margin": "8px 0 0",
+            "color": "#7fe0a0", "fontSize": "12px", "lineHeight": "1.5"}, children=[
+            html.B("✓ EVA / spacesuit regime — suit-calibrated. "),
+            "The GCR dose folds against a thin-wall kernel measured through the "
+            "EVA pressure-garment laminate itself (validated against the aluminium "
+            "kernel to 0.9–1.25× in this regime), so this is a calibrated suit dose, "
+            "not a proxy. Heavy-ion partials remain Monte-Carlo-limited at the tail."])
     return html.Div(style={
         "background": "#3a2a12", "border": "1px solid #e8b04a",
         "borderRadius": "8px", "padding": "10px 12px", "margin": "8px 0 0",

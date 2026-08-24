@@ -550,30 +550,69 @@ def assess_composition(species_results: list,
 # absorbed (D) and ICRP-60 (I) are carried, so the thin-wall headline is ICRP-60
 # effective dose. See data/gcr_thinwall_kernel.json and memory
 # [[variance-reduction-kernel]] / [[thin-shield-bragg-limit]].
-_GCR_THINWALL_KERNEL_PATH = Path(__file__).with_name("data") / "gcr_thinwall_kernel.json"
+# Per-calibration-material thin-wall kernels. The aluminium kernel is the committed
+# reference; other materials (the EVA laminate) ship their own kernel built by the
+# same offline harness (lunarsim.kernel_gen) and validated against the Al one in the
+# thin-wall regime. A material whose kernel file is not present falls back to the
+# aluminium kernel and is flagged indicative (see _gcr_thinwall_calibrated), so the
+# tool runs correctly whether or not the EVA kernel has been shipped yet.
+_GCR_THINWALL_KERNELS = {
+    "aluminium": Path(__file__).with_name("data") / "gcr_thinwall_kernel.json",
+    "evasuit":   Path(__file__).with_name("data") / "gcr_thinwall_kernel_eva.json",
+}
+
+# Wall materials that fold against each material-specific kernel. The EVA kernel is
+# built through the EVASuit laminate and absorbs the thin LCVG liner via areal
+# density, so both suit layers count as its calibration family.
+_GCR_KERNEL_FAMILIES = {"evasuit": ("evasuit", "lcvg")}
 
 
-@functools.lru_cache(maxsize=1)
-def _load_gcr_thinwall_kernel() -> dict:
-    with open(_GCR_THINWALL_KERNEL_PATH) as fh:
+def _has_gcr_kernel(material: str) -> bool:
+    path = _GCR_THINWALL_KERNELS.get(material)
+    return bool(path and path.exists())
+
+
+@functools.lru_cache(maxsize=None)
+def _load_gcr_thinwall_kernel(material: str = "aluminium") -> dict:
+    """Thin-wall GCR response kernel for a calibration material. Falls back to the
+    aluminium kernel when the requested material has no kernel file yet; callers gate
+    whether that fallback counts as calibrated (see _gcr_thinwall_calibrated)."""
+    path = _GCR_THINWALL_KERNELS.get(material) or _GCR_THINWALL_KERNELS["aluminium"]
+    if not path.exists():
+        path = _GCR_THINWALL_KERNELS["aluminium"]
+    with open(path) as fh:
         return json.load(fh)
 
 
-def _aluminium_areal_fraction(spec) -> float:
-    """Fraction of the wall's areal density that is the kernel's calibration material
-    (aluminium). 1.0 for an all-Al wall; lower for mixed walls, which still fold but
-    are flagged indicative (the R(E) transport was measured through aluminium)."""
+def _gcr_calibration_material(spec) -> str:
+    """Which thin-wall kernel this design folds against. A suit-laminate wall uses the
+    EVA kernel once it is shipped; every other wall (and any suit design where the EVA
+    kernel is still absent) folds against the aluminium kernel."""
+    from .spec import SUIT_MATERIALS
+    if (any(w.material in SUIT_MATERIALS for w in spec.walls)
+            and _has_gcr_kernel("evasuit")):
+        return "evasuit"
+    return "aluminium"
+
+
+def _calibration_areal_fraction(spec, material: str) -> float:
+    """Fraction of the wall's areal density belonging to the kernel's calibration
+    family (aluminium; or the suit laminate for the EVA kernel, which folds LCVG in via
+    areal density). 1.0 when the family fills the wall; lower for mixed walls, which
+    still fold but are flagged indicative (the R(E) transport was measured through the
+    calibration material)."""
     from .spec import MATERIALS
-    tot = al = 0.0
+    family = _GCR_KERNEL_FAMILIES.get(material, (material,))
+    tot = cal = 0.0
     for w in spec.walls:
         ad = MATERIALS[w.material]["density"] * w.thickness_cm
         tot += ad
-        if w.material == "aluminium":
-            al += ad
-    return al / tot if tot else 0.0
+        if w.material in family:
+            cal += ad
+    return cal / tot if tot else 0.0
 
 
-def _thinwall_fold_point(point: dict, phi_MV: float) -> dict:
+def _thinwall_fold_point(point: dict, phi_MV: float, organs: list) -> dict:
     """Fold ONE areal-density anchor against the true free-field GCR flux.
 
     R (=D/Phi_ff) [Gy*cm^2] x calibrated free-field species flux [/cm^2/s] -> dose rate,
@@ -582,7 +621,6 @@ def _thinwall_fold_point(point: dict, phi_MV: float) -> dict:
     uses). Returns per-organ absorbed (Gy/s) & ICRP dose-eq (Sv/s) rates, the dose-eq
     variance, and each species' wT-weighted effective-dose and absorbed contribution."""
     calib = _calibration_factor()
-    organs = _load_gcr_thinwall_kernel()["meta"]["organs"]
     HI = {k: 0.0 for k, _w in organs}          # ICRP dose-eq rate  (Sv/s)
     HD = {k: 0.0 for k, _w in organs}          # absorbed dose rate (Gy/s)
     HIvar = {k: 0.0 for k, _w in organs}
@@ -607,7 +645,7 @@ def _thinwall_fold_point(point: dict, phi_MV: float) -> dict:
     return {"HI": HI, "HD": HD, "HIvar": HIvar, "per_species": per_species}
 
 
-def fold_gcr_thinwall(spec, phi_MV: float = 400.0) -> dict:
+def fold_gcr_thinwall(spec, phi_MV: float = 400.0, material: Optional[str] = None) -> dict:
     """Thin-wall phantom-matched GCR fold, interpolated to the design's areal density.
 
     Folds each aluminium anchor (pure arithmetic, no MC) at phi_MV, then interpolates
@@ -621,12 +659,13 @@ def fold_gcr_thinwall(spec, phi_MV: float = 400.0) -> dict:
     the measured band). Returns the whole-body effective absorbed rate (Gy/s),
     effective dose-eq rate (Sv/s) and its standard error, per-organ rows, and the
     per-species breakdown."""
-    K = _load_gcr_thinwall_kernel()
+    material = material or _gcr_calibration_material(spec)
+    K = _load_gcr_thinwall_kernel(material)
     organs = K["meta"]["organs"]
     pts = K["points"]
     grid = [p["wall_gcm2"] for p in pts]
     ad = spec.areal_density_gcm2()
-    folded = [_thinwall_fold_point(p, phi_MV) for p in pts]
+    folded = [_thinwall_fold_point(p, phi_MV, organs) for p in pts]
 
     if ad <= grid[0]:
         lo = hi = 0; t = 0.0
@@ -635,7 +674,12 @@ def fold_gcr_thinwall(spec, phi_MV: float = 400.0) -> dict:
     else:
         hi = next(j for j in range(len(grid)) if grid[j] >= ad)
         lo = hi - 1
-        t = (math.log(ad) - math.log(grid[lo])) / (math.log(grid[hi]) - math.log(grid[lo]))
+        if grid[lo] > 0.0:
+            t = (math.log(ad) - math.log(grid[lo])) / (math.log(grid[hi]) - math.log(grid[lo]))
+        else:
+            # Zero-areal anchor (the bare-phantom reference in the EVA grid): the
+            # log map is singular at 0, so bracket this cell linearly in areal density.
+            t = (ad - grid[lo]) / (grid[hi] - grid[lo])
 
     def ip(fa, fb):
         if fa > 0.0 and fb > 0.0:
@@ -671,7 +715,7 @@ def _gcr_thinwall_applies(spec) -> bool:
     """True when the design is in the thin-wall direct-transmission regime (areal
     density below the measured crossover), so the phantom-matched fold -- not the broad
     flood MC -- is the valid normalisation. Above the crossover the flood path stands."""
-    K = _load_gcr_thinwall_kernel()
+    K = _load_gcr_thinwall_kernel(_gcr_calibration_material(spec))
     return spec.areal_density_gcm2() < K["meta"]["crossover_gcm2"]
 
 
@@ -712,10 +756,13 @@ def areal_density_confidence(ad_gcm2: float) -> dict:
 
 def _gcr_thinwall_calibrated(spec) -> bool:
     """True when the thin-wall fold sits squarely on its calibration: in-regime AND the
-    wall is aluminium-dominated (the material the R(E) transport was measured through).
-    A mixed / non-Al thin wall still folds but is flagged indicative, mirroring
-    _spe_kernel_calibrated on the shielding side."""
-    return _gcr_thinwall_applies(spec) and _aluminium_areal_fraction(spec) >= 0.8
+    wall is dominated by the chosen kernel's calibration material (aluminium, or the
+    suit laminate when the EVA kernel is shipped -- the material the R(E) transport was
+    measured through). A mixed / off-material thin wall still folds but is flagged
+    indicative, mirroring _spe_kernel_calibrated on the shielding side."""
+    material = _gcr_calibration_material(spec)
+    return (_gcr_thinwall_applies(spec)
+            and _calibration_areal_fraction(spec, material) >= 0.8)
 
 
 def assess_gcr_thinwall(spec, mission_days: float = 365.0,
