@@ -64,6 +64,26 @@ MATERIAL_OPTIONS = [{"label": m.replace("_", " ").capitalize(), "value": m}
                     for m in MATERIALS if m not in SUIT_MATERIALS]
 VERDICT_COLOUR = {"SAFE": "#3fb950", "MARGINAL": "#d29922", "EXCEEDS LIMIT": ACCENT}
 
+# The headline score is compared against MORE THAN ONE agency limit, because a
+# career dose limit is a risk-policy choice, not a physical constant: the same
+# simulated mSv/yr can read EXCEEDS under one programme and MARGINAL under
+# another. Rows are (DOSE_LIMITS_MSV key, display name, short annotation). This
+# is purely a post-hoc comparison table -- no limit ever feeds back into the
+# Monte-Carlo / kernel fold, so the tool stays target-blind.
+SCORE_STANDARDS = (
+    ("career",     "NASA career",            "flat limit, 2021"),
+    ("esa_career", "ESA / Roscosmos career", ""),
+)
+_PILL_LABEL = {"SAFE": "SAFE", "MARGINAL": "MARGINAL", "EXCEEDS LIMIT": "EXCEEDS"}
+_PILL_BG = {"SAFE": "rgba(63,185,80,0.14)", "MARGINAL": "rgba(210,153,34,0.16)",
+            "EXCEEDS LIMIT": "rgba(242,79,61,0.16)"}
+_SCORE_FOOTNOTE = (
+    "Career limits are risk-policy thresholds, not physical constants. NASA moved "
+    "to a flat 600 mSv in 2021 (from age/sex-varying 600–1200); ESA/Roscosmos use "
+    "1000; exploration-class limits are under review. The mSv/yr above is the "
+    "model's physical result and does not depend on which limit it is compared "
+    "against.")
+
 # --- Fixed scoring preset --------------------------------------------------
 # Every evaluation uses THESE settings, hidden from the student, so that two
 # teams' scores -- generated in separate sessions -- are on one comparable
@@ -1513,35 +1533,73 @@ def _assess(result, skin, qf="icrp"):
     return assess(result, mission_days=SCORING_MISSION_DAYS, skin=skin, qf=qf)
 
 
-def _score_card(score, rel_txt, verdict, frac, qf_label=None, cmp_line=None,
-                size_note=None, limit_label="NASA career limit"):
-    """The headline the student records: habitat-wide annual effective dose.
+def _standard_row(assessment, key, name, note):
+    """One agency limit as a comparison row: name + limit, verdict pill, percent,
+    and a capped progress bar. Reads assessment.fraction_of / .verdict, the same
+    post-hoc comparison the single-standard card used -- no value feeds back into
+    the physics."""
+    verdict = assessment.verdict(key)
+    colour = VERDICT_COLOUR.get(verdict, METRIC)
+    frac = assessment.fraction_of(key) * 100.0
+    limit = DOSE_LIMITS_MSV[key]
+    sub = f"{limit:.0f} mSv" + (f" · {note}" if note else "")
+    return html.Div(style={"marginTop": "12px"}, children=[
+        html.Div(style={"display": "flex", "justifyContent": "space-between",
+                        "alignItems": "center"}, children=[
+            html.Div([
+                html.Span(name, style={"color": INK, "fontSize": "12.5px",
+                                       "fontWeight": 600}),
+                html.Span(" " + sub, style={"color": MUTED, "fontSize": "10.5px"})]),
+            html.Span(_PILL_LABEL.get(verdict, verdict), style={
+                "fontSize": "10px", "fontWeight": 800, "letterSpacing": "0.5px",
+                "padding": "2px 7px", "borderRadius": "20px",
+                "background": _PILL_BG.get(verdict, "rgba(110,169,218,0.16)"),
+                "color": colour})]),
+        html.Div(f"{frac:.0f}%", style={
+            "color": colour, "fontSize": "13px", "fontWeight": 700,
+            "textAlign": "right", "marginTop": "4px"}),
+        html.Div(style={"height": "5px", "borderRadius": "3px",
+                        "background": "#0b0f15", "border": f"1px solid {BORDER}",
+                        "overflow": "hidden", "marginTop": "4px"}, children=[
+            html.Div(style={"width": f"{min(frac, 100.0):.1f}%", "height": "100%",
+                            "borderRadius": "3px", "background": colour})]),
+    ])
 
-    qf_label names the quality-factor model behind `score` (both the flood headline
-    and the thin-wall fold run on ICRP-60 Q(L), so the quantity does not flip across
-    the ~19 g/cm2 crossover); cmp_line carries the NASA/Cucinotta Q conservative
-    cross-check as a band. limit_label names the limit `frac` is a fraction of --
-    plain "career limit" (the 600 mSv career limit is quality-factor-independent, so
-    both the flood and the thin-wall fold share it).
+
+def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
+                size_note=None, standards=SCORE_STANDARDS):
+    """The headline the student records: habitat-wide annual effective dose,
+    compared against several agency career limits rather than NASA's alone.
+
+    The big number is neutral-coloured -- it is the model's physical result and
+    carries no pass/fail. Verdict colour lives on the per-standard rows (see
+    SCORE_STANDARDS / _SCORE_FOOTNOTE), signalling "this is physics; the verdicts
+    are policy". qf_label names the quality-factor model behind `score` (both the
+    flood headline and the thin-wall fold run on ICRP-60 Q(L), so the quantity does
+    not flip across the ~19 g/cm2 crossover); cmp_line carries the NASA/Cucinotta Q
+    conservative cross-check as a band.
     size_note, when present, is a (colour, text) advisory that the design is
     oversized and its dose extrapolates past the validated size envelope."""
-    colour = VERDICT_COLOUR.get(verdict, METRIC)
     style = dict(CARD)
-    style.update({"borderLeft": f"4px solid {colour}", "background": "#161d27",
+    style.update({"borderLeft": f"4px solid {METRIC}", "background": "#161d27",
                   "padding": "18px"})
+    caption = "annual effective dose" + (f" · {qf_label}" if qf_label else "")
     children = [
         html.Div("RADIATION PROTECTION SCORE", style={
             "color": MUTED, "fontSize": "11px", "letterSpacing": "0.8px",
             "fontWeight": 700, "marginBottom": "8px"}),
         html.Div(style={"display": "flex", "alignItems": "baseline", "gap": "8px"},
                  children=[
-            html.Span(f"{score:.1f}", style={"color": colour, "fontSize": "42px",
+            html.Span(f"{score:.1f}", style={"color": INK, "fontSize": "42px",
                                              "fontWeight": 900, "lineHeight": "1"}),
             html.Span(f"mSv/yr{rel_txt}", style={"color": INK, "fontSize": "14px"})]),
-        html.Div(f"{verdict} · {frac:.0f}% of {limit_label}"
-                 + (f" · {qf_label}" if qf_label else ""), style={
-            "color": colour, "fontSize": "12px", "fontWeight": 700, "marginTop": "10px"}),
+        html.Div(caption, style={
+            "color": MUTED, "fontSize": "11px", "marginTop": "6px"}),
     ]
+    children += [_standard_row(assessment, k, n, note) for k, n, note in standards]
+    children.append(html.Div(_SCORE_FOOTNOTE, style={
+        "color": MUTED, "fontSize": "11px", "lineHeight": "1.5", "marginTop": "16px",
+        "paddingTop": "13px", "borderTop": f"1px solid {BORDER}"}))
     if cmp_line:
         children.append(html.Div(cmp_line, style={
             "color": MUTED, "fontSize": "11px", "marginTop": "6px"}))
@@ -1675,10 +1733,8 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
     # phantom and gives a number two teams can be compared on. Fall back to the
     # phantom only if the lining scorer is unavailable.
     if head is not None:
+        card_assess = head
         score = head.annual_msv
-        s_head = head.summary("career")
-        verdict = s_head["verdict"]
-        frac = s_head["fraction_of_limit"] * 100
         skin_rel = getattr(job.result, "skin_dose_rel_err", None)
         rel_txt = f" ± {skin_rel:.0%}" if skin_rel else ""
         qf_label = "ICRP-60 Q(L)"
@@ -1686,8 +1742,9 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
                     f"{cmp_nasa.annual_msv:.1f} mSv/yr"
                     if cmp_nasa is not None else None)
     else:
-        score, verdict = ab.annual_msv, s["verdict"]
-        frac, rel_txt, qf_label, cmp_line = s["fraction_of_limit"] * 100, "", None, None
+        card_assess = ab
+        score = ab.annual_msv
+        rel_txt, qf_label, cmp_line = "", None, None
     eq_sub = (f"ISS baseline = 0.70 mSv/day | ratio: {ratio:.2f}×"
               + (f" | NASA Q: {cmp_nasa.equiv_rate_msv_day:.3f}" if cmp_nasa is not None else ""))
     phantom_pt = (f"{a.annual_msv:.1f} mSv/year" if a is not None else "n/a")
@@ -1698,9 +1755,8 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
     size_note = _size_note(job.result.spec) if job.result is not None else None
     banner = _footprint_banner(job.result.spec) if job.result is not None else None
     return ([banner] if banner else []) + [
-        _score_card(score, rel_txt, verdict, frac, qf_label=qf_label,
-                    cmp_line=cmp_line, size_note=size_note,
-                    limit_label="career limit"),
+        _score_card(score, rel_txt, card_assess, qf_label=qf_label,
+                    cmp_line=cmp_line, size_note=size_note),
         metric_card("Absorbed dose",
                     f"{ab.dose_rate_ugy_day / 1000:.3f} mGy/day",
                     f"= {ab.annual_mgy:.1f} mGy/year"),
@@ -1831,7 +1887,6 @@ def _thinwall_note(calibrated):
 
 
 def _thinwall_metric_cards(a, job, calibrated):
-    s = a.summary("career")
     rel_txt = f" ± {a.rel_err:.0%}" if a.rel_err else ""
     banner = _footprint_banner(job.spec)
     # The regime is explained in the Analysis footnote, so the card stays clean.
@@ -1852,11 +1907,10 @@ def _thinwall_metric_cards(a, job, calibrated):
     else:
         size_note = None
     return ([banner] if banner else []) + [
-        _score_card(a.annual_msv, rel_txt, s["verdict"], s["fraction_of_limit"] * 100,
+        _score_card(a.annual_msv, rel_txt, a,
                     qf_label="ICRP-60 Q(L) · thin-wall phantom-matched",
                     cmp_line=None,
-                    size_note=size_note,
-                    limit_label="career limit"),
+                    size_note=size_note),
         metric_card("Absorbed dose", f"{a.dose_rate_ugy_day / 1000:.3f} mGy/day",
                     f"= {a.annual_mgy:.1f} mGy/year"),
         metric_card("Dose equivalent", f"{a.equiv_rate_msv_day:.3f} mSv/day",
