@@ -1066,15 +1066,10 @@ def _eva_warning(spec):
     if not any(w.material in SUIT_MATERIALS for w in spec.walls):
         return ""
     if _gcr_thinwall_calibrated(spec):
-        return html.Div(style={
-            "background": "#12301c", "border": "1px solid #4ac06a",
-            "borderRadius": "8px", "padding": "10px 12px", "margin": "8px 0 0",
-            "color": "#7fe0a0", "fontSize": "12px", "lineHeight": "1.5"}, children=[
-            html.B("✓ EVA / spacesuit regime — suit-calibrated. "),
-            "The GCR dose folds against a thin-wall kernel measured through the "
-            "EVA pressure-garment laminate itself (validated against the aluminium "
-            "kernel to 0.9–1.25× in this regime), so this is a calibrated suit dose, "
-            "not a proxy. Heavy-ion partials remain Monte-Carlo-limited at the tail."])
+        # Calibrated suit dose: the "suit-calibrated" reassurance lives in the GCR
+        # results tab (see _thinwall_metric_cards), not on the always-visible design
+        # screen -- only the uncalibrated caution needs to be up-front here.
+        return ""
     return html.Div(style={
         "background": "#3a2a12", "border": "1px solid #e8b04a",
         "borderRadius": "8px", "padding": "10px 12px", "margin": "8px 0 0",
@@ -1832,13 +1827,28 @@ def _thinwall_metric_cards(a, job, calibrated):
     s = a.summary("career")
     rel_txt = f" ± {a.rel_err:.0%}" if a.rel_err else ""
     banner = _footprint_banner(job.spec)
+    # The regime is explained in the Analysis footnote, so the card stays clean.
+    # For an uncalibrated wall the amber "indicative" caveat rides here; for a
+    # suit-calibrated EVA design the green "suit-calibrated" note lives here too
+    # (moved off the always-visible design screen -- see _eva_warning).
+    is_suit = any(w.material in SUIT_MATERIALS for w in job.spec.walls)
+    if not calibrated:
+        size_note = _thinwall_note(calibrated)
+    elif is_suit:
+        size_note = ("#3fb950",
+                     "EVA / spacesuit — suit-calibrated: GCR dose folds against a "
+                     "thin-wall kernel measured through the EVA pressure-garment "
+                     "laminate itself (validated against the aluminium kernel to "
+                     "0.9–1.25× in this regime), so this is a calibrated suit dose, "
+                     "not a proxy. Heavy-ion partials remain Monte-Carlo-limited at "
+                     "the tail.")
+    else:
+        size_note = None
     return ([banner] if banner else []) + [
         _score_card(a.annual_msv, rel_txt, s["verdict"], s["fraction_of_limit"] * 100,
                     qf_label="ICRP-60 Q(L) · thin-wall phantom-matched",
                     cmp_line=None,
-                    # The regime is explained in the Analysis footnote, so the card
-                    # stays clean; only the non-Al "indicative" caveat rides here.
-                    size_note=(None if calibrated else _thinwall_note(calibrated)),
+                    size_note=size_note,
                     limit_label="career limit"),
         metric_card("Absorbed dose", f"{a.dose_rate_ugy_day / 1000:.3f} mGy/day",
                     f"= {a.annual_mgy:.1f} mGy/year"),
