@@ -546,9 +546,14 @@ def _cross_buried(spec: HabitatSpec, dose=None) -> go.Figure:
     fig.add_annotation(x=-span * 0.96, y=surface, text="lunar surface",
                        showarrow=False, xanchor="left", yanchor="bottom",
                        font=dict(color=MUTED, size=10))
-    fig.add_annotation(x=0, y=(H + ceiling + surface) / 2.0,
-                       text=f"regolith overburden<br>{spec.burial_depth_cm:g} cm",
-                       showarrow=False, font=dict(color="#f0e2cf", size=10))
+    if spec.burial_depth_cm > 0.0:
+        fig.add_annotation(x=0, y=(H + ceiling + surface) / 2.0,
+                           text=f"regolith overburden<br>{spec.burial_depth_cm:g} cm",
+                           showarrow=False, font=dict(color="#f0e2cf", size=10))
+    else:
+        fig.add_annotation(x=0, y=surface, text="ceiling flush with surface",
+                           showarrow=False, yanchor="bottom",
+                           font=dict(color="#f0e2cf", size=10))
     cz, pr = spec.crew_height_cm, spec.phantom_radius_cm   # matches geometry.py
     _add_scorers(fig, spec, dose, cz, pr, lining_r=inner,
                  label_x=inner * 0.55, lining_y=H * 0.80)
@@ -675,8 +680,8 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
     # Regolith overburden above the ceiling — buried shape only (see _length_control).
     html.Div(id="burial-field", style={"display": "none"}, children=[
         slider_field("Burial depth (m of regolith)", "burial-val",
-                     dcc.Slider(id="burial-slider", min=0.5, max=5.0, step=0.1,
-                                value=1.0, marks=_marks([1, 2, 3, 4, 5]),
+                     dcc.Slider(id="burial-slider", min=0.0, max=5.0, step=0.1,
+                                value=1.0, marks=_marks([0, 1, 2, 3, 4, 5]),
                                 tooltip=None))]),
 
     html.Div("Wall Layers", id="layers-title", style=SECTION),

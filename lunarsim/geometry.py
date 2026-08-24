@@ -313,11 +313,16 @@ def _buried(spec: HabitatSpec) -> tuple[str, list[str]]:
 
     # Regolith overburden heaped on the ceiling: a full disc (out to the berm rim)
     # of the user-set depth, sitting on top of the engineered ceiling. This is the
-    # dominant, variable shield.
-    lines.append(f"# regolith overburden ({spec.burial_depth_cm:.0f} cm)")
-    over_z = H + ceiling_total + spec.burial_depth_cm / 2.0
-    lines.append(_cyl_block("Overburden", "World", reg, 0.0, inner + side,
-                            spec.burial_depth_cm / 2.0, over_z, reg_col))
+    # dominant, variable shield. At depth 0 the engineered ceiling sits FLUSH with
+    # the surface (sides/floor still native regolith) -- emit no slab, since a
+    # zero-half-height solid is degenerate in TOPAS.
+    if spec.burial_depth_cm > 0.0:
+        lines.append(f"# regolith overburden ({spec.burial_depth_cm:.0f} cm)")
+        over_z = H + ceiling_total + spec.burial_depth_cm / 2.0
+        lines.append(_cyl_block("Overburden", "World", reg, 0.0, inner + side,
+                                spec.burial_depth_cm / 2.0, over_z, reg_col))
+    else:
+        lines.append("# ceiling flush with lunar surface (no regolith overburden)")
 
     # fluence scorer shells (thin air cylinders just inside the barrel)
     lines.append("# fluence scorer shells (air)")
