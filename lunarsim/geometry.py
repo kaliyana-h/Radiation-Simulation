@@ -447,6 +447,21 @@ def build_geometry(spec: HabitatSpec) -> str:
     return geom
 
 
+def wall_component_names(spec: HabitatSpec) -> list[str]:
+    """Names of the engineered shielding components this design actually builds.
+
+    Shape-dependent: a dome/cylinder emits `Wall{i}` barrels (cylinder adds `Cap{i}`
+    roof discs); a buried design has NO barrels -- only `Cap{i}` ceiling discs. The
+    cascade viz scores a PhaseSpace on each, so it must ask for the real names rather
+    than assume `Wall{i}` (which does not exist for the buried shape)."""
+    spec.validate()
+    builder = _BUILDERS.get(spec.shape)
+    if builder is None:
+        raise NotImplementedError(f"shape {spec.shape!r} not generated yet")
+    _geom, wall_names = builder(spec)
+    return wall_names
+
+
 def build_scorers(spec: HabitatSpec, ion_z: int = 0, ion_a: int = 0) -> str:
     """Fluence-in / fluence-out / phantom-dose scorers.
 

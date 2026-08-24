@@ -286,18 +286,36 @@ def _phasespace(tag: str, surface: str) -> str:
 
 def _tracking_radii(spec) -> list[float]:
     """Concentric sampling radii: a few inside, a few outside, skipping the
-    phantom band so a tracking shell never overlaps the crew sphere."""
-    inner, outer = spec.inner_radius_cm, spec.outer_radius_cm
+    phantom band so a tracking shell never overlaps the crew sphere.
+
+    The OUTER shells are placed beyond the design's full enclosing radius -- the
+    farthest solid corner of the whole structure -- not merely past the thin inner
+    wall (`outer_radius_cm`). This matters for the buried shape, whose thick regolith
+    side berm + overburden fill the space out to ~8 m: a shell sized off the 3.5 cm
+    ceiling alone would land INSIDE that regolith and TOPAS aborts on the overlap.
+    Sizing off the enclosing radius (the same invariant the outer dose gauge already
+    respects) keeps every outer shell in vacuum for all shapes. For a dome the
+    enclosing radius IS outer_radius_cm, so dome behaviour is unchanged."""
+    from . import geometry
+    inner = spec.inner_radius_cm
+    enclose = geometry._enclosing_radius_cm(spec)   # full solid extent, not thin wall
     pz, pr = spec.crew_height_cm, spec.phantom_radius_cm + 15.0
     radii: list[float] = []
     for frac in (0.30, 0.55, 0.80):
         r = frac * inner
         if abs(r - pz) > pr:                 # clear of the phantom
             radii.append(r)
-    sky = max(900.0, outer * 2.0)
-    for frac in (0.07, 0.45, 0.85):          # outer: just past wall -> near sky
-        radii.append(outer + frac * (sky - outer))
+    sky = _cascade_sky_radius(spec)
+    for frac in (0.07, 0.45, 0.85):          # outer: just past the solid -> near sky
+        radii.append(enclose + frac * (sky - enclose))
     return radii
+
+
+def _cascade_sky_radius(spec) -> float:
+    """Radius of the sky-source shell: outside the design's full enclosing extent so
+    the source surface never intersects the (possibly buried) structure."""
+    from . import geometry
+    return max(900.0, geometry._enclosing_radius_cm(spec) * 2.0)
 
 
 def build_cascade_run(spec, run_dir, n_histories: int = 120,
@@ -319,7 +337,7 @@ def build_cascade_run(spec, run_dir, n_histories: int = 120,
     energies, weights = ms.gcr_spectrum(phi_mv)
     spectrum = "\n".join(ms._spectrum_block("Sky", energies, weights)).replace("    ", "")
 
-    sky = max(900.0, spec.outer_radius_cm * 2.0)
+    sky = _cascade_sky_radius(spec)          # clears the full (possibly buried) extent
     world_hl = sky + 250.0
     radii = _tracking_radii(spec)
 
@@ -359,8 +377,8 @@ def build_cascade_run(spec, run_dir, n_histories: int = 120,
     parts.append("\n# --- PhaseSpace scorers (tracking shells + wall layers) ---")
     for i in range(len(radii)):
         parts.append(_phasespace(f"T{i}", f"T{i}/AnySurface"))
-    for i in range(len(spec.walls)):
-        parts.append(_phasespace(f"W{i}", f"Wall{i}/AnySurface"))
+    for i, wname in enumerate(geometry.wall_component_names(spec)):
+        parts.append(_phasespace(f"W{i}", f"{wname}/AnySurface"))
     parts.append("\nincludeFile = lunar_environment.txt\n")
 
     param_file = run_dir / "cascade.txt"
