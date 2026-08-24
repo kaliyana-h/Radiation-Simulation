@@ -1345,7 +1345,9 @@ def _poll(_n, jid):
         kind = "SPE+GCR"          # one MC (GCR); the SPE gate is a fold, no phase
     else:
         kind = "SPE" if job.spe is not None else "GCR"
-    status = (f"[{job.status.value}] {kind} · {job.spec.name} — batch "
+    label = ("EVA suit" if any(w.material in SUIT_MATERIALS for w in job.spec.walls)
+             else job.spec.name)
+    status = (f"[{job.status.value}] {kind} · {label} — batch "
               f"{job.batches_done}/{cap}{err} — {job.elapsed:.0f}s")
 
     terminal = job.status in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED)
