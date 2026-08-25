@@ -18,14 +18,25 @@ from .spec import HabitatSpec, MATERIALS
 # Standoff (cm) between an oversized habitat's enclosing radius and the outer gauge.
 _GAUGE_STANDOFF_CM = 20.0
 
-# Lateral regolith berm (cm) around a buried habitat's side wall. The buried shape
-# sinks a vertical cylinder into the surface: only the flat ceiling takes the user's
-# engineered wall stack, while the sides are native regolith. This fixed, deep berm
-# (~356 g/cm^2 at rho 1.78) makes the lateral path effectively opaque, so the DEPTH
-# of overburden above the ceiling is the single dominant, pedagogically-meaningful
-# shielding knob -- not the side thickness. It is in-situ regolith, so it costs no
+# Minimum lateral regolith berm (cm) around a buried habitat's side wall. The buried
+# shape sinks a vertical cylinder into the surface: only the flat ceiling takes the
+# user's engineered wall stack, while the sides are native regolith. A real excavated
+# habitat has effectively infinite regolith laterally, so the side berm should never
+# be THINNER than the overburden the user heaps on the ceiling -- otherwise deepening
+# the burial would leave a thin lateral path that the crew still sees through the
+# upper hemisphere, and a "deeply buried" design could read a HIGHER dose than a
+# shallower walled cylinder. So the effective berm is max(this floor, burial depth):
+# the burial-depth slider thickens the sides in lockstep with the ceiling, and this
+# constant is only the shallow-burial default. It is in-situ regolith, so it costs no
 # launched mass (see spec.shell_mass_kg, which counts only the ceiling).
 _BURIED_SIDE_REGOLITH_CM = 200.0
+
+
+def _buried_side_cm(spec: HabitatSpec) -> float:
+    """Effective native-regolith side berm (cm) for a buried habitat: at least the
+    default floor, but never thinner than the ceiling overburden, so a deeper burial
+    shields the sides as much as the top (see _BURIED_SIDE_REGOLITH_CM)."""
+    return max(_BURIED_SIDE_REGOLITH_CM, spec.burial_depth_cm)
 
 # Fixed outer-gauge radius (cm), IDENTICAL for every design. Chosen to clear the
 # core workshop envelope (inner_radius up to ~3.5 m, all three shapes) while staying
@@ -90,7 +101,7 @@ def _enclosing_radius_cm(spec: HabitatSpec) -> float:
     if spec.shape == "buried":
         # farthest = top rim of the regolith overburden cap: it spans radially out to
         # the side berm (r = inner + side) and up to z = H + ceiling + burial_depth.
-        r = spec.inner_radius_cm + _BURIED_SIDE_REGOLITH_CM
+        r = spec.inner_radius_cm + _buried_side_cm(spec)
         z = spec.effective_height_cm + wall_total + spec.burial_depth_cm
         return math.hypot(r, z)
     # quonset: arch of radius `outer`, half-length HL; end caps at Y=HL+wall
@@ -284,7 +295,7 @@ def _buried(spec: HabitatSpec) -> tuple[str, list[str]]:
     H = spec.effective_height_cm
     inner = spec.inner_radius_cm
     ceiling_total = spec.total_wall_cm
-    side = _BURIED_SIDE_REGOLITH_CM
+    side = _buried_side_cm(spec)
     reg = MATERIALS["regolith"]["topas"]
     reg_col = MATERIALS["regolith"]["colour"]
 
