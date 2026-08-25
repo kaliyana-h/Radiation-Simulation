@@ -256,12 +256,38 @@ def generate(outdir: Path, histories: int, seeds: int, threads: int) -> None:
         "species": [s[0] for s in species], "runs": runs,
     }
     (outdir / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    lines = ["#!/usr/bin/env bash",
-             "# Regolith dose-vs-depth sweep -- run on the PC (24 cores).",
-             "# export TOPAS_G4_DATA_DIR=~/G4Data first.",
-             "set -e", f'cd "$(dirname "$0")"', ""]
-    for rn in runs:
-        lines.append(f'( cd {rn} && ~/topas/bin/topas {rn}.txt )')
+    lines = [
+        "#!/usr/bin/env bash",
+        "# Regolith dose-vs-depth sweep -- run on the PC (24 cores).",
+        "# Resumable: each finished run drops a .done marker; a re-launch skips it,",
+        "# so after a disconnect/crash only the unfinished runs re-execute. Run under",
+        "# tmux (tmux new -s regsweep) so a dropped SSH session can't SIGHUP the batch.",
+        "# Fails loud if the Geant4 data dir is unset (else TOPAS segfaults per-run).",
+        ': "${TOPAS_G4_DATA_DIR:?set it first, e.g. export TOPAS_G4_DATA_DIR=~/G4Data}"',
+        'cd "$(dirname "$0")"',
+        "",
+        "runs=(",
+    ]
+    lines += [f"  {rn}" for rn in runs]
+    lines += [
+        ")",
+        'total=${#runs[@]}; done=0; ran=0; failed=0',
+        'for i in "${!runs[@]}"; do',
+        '  rn="${runs[$i]}"; n=$((i + 1))',
+        '  if [ -f "$rn/.done" ]; then',
+        '    echo "[$n/$total] skip  $rn (already done)"; done=$((done + 1)); continue',
+        "  fi",
+        '  echo "[$n/$total] run   $rn"',
+        '  if ( cd "$rn" && ~/topas/bin/topas "$rn.txt" ); then',
+        '    touch "$rn/.done"; ran=$((ran + 1))',
+        "  else",
+        '    echo "[$n/$total] FAIL  $rn (exit $?) -- left unmarked, retries next launch" >&2',
+        "    failed=$((failed + 1))",
+        "  fi",
+        "done",
+        'echo "sweep done: $ran ran, $done skipped, $failed failed, of $total total"',
+        '[ "$failed" -eq 0 ]',
+    ]
     (outdir / "run.sh").write_text("\n".join(lines) + "\n")
     print(f"generated {len(runs)} runs ({len(DEPTHS_M)} depths x {len(species)} "
           f"species x {seeds} seed(s)) in {outdir}")
