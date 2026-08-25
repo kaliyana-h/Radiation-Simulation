@@ -15,6 +15,7 @@ No TOPAS, no G4 data, no network -- pure Python, sub-second. Physics validation
 file only asserts the interface computes what it claims.
 """
 
+import json
 import math
 import re
 import sys
@@ -966,6 +967,86 @@ class TestArealDensityConfidence(unittest.TestCase):
         for ad in (5.0, 19.0, 60.0):
             b = dosimetry.areal_density_confidence(ad)
             self.assertTrue(b["label"] and b["message"])
+
+
+class TestRegolithSweep(unittest.TestCase):
+    """Thick-regolith dose-vs-depth sweep harness (regolith_sweep.py): the
+    geometry/normalisation invariants a silent edit could break without ever
+    running TOPAS. Physics validation (the actual curve vs Akisheva) is a PC/MC
+    job, not asserted here."""
+
+    def setUp(self):
+        from lunarsim import regolith_sweep as rs
+        self.rs = rs
+
+    def test_areal_density_hand_values(self):
+        # REDMoon column: 22 cm @1.76, 27 cm @2.11, rest @1.78 (below surface).
+        cases = {0.0: 0.0, 0.30: 22 * 1.76 + 8 * 2.11,
+                 0.50: 22 * 1.76 + 27 * 2.11 + 1 * 1.78,
+                 3.00: 22 * 1.76 + 27 * 2.11 + 251 * 1.78}
+        for depth_m, expect in cases.items():
+            _, areal = self.rs.column_for_depth(depth_m * 100)
+            self.assertAlmostEqual(areal, expect, places=3, msg=f"depth={depth_m}")
+
+    def test_areal_density_monotonic(self):
+        areals = [self.rs.column_for_depth(d * 100)[1] for d in self.rs.DEPTHS_M]
+        self.assertEqual(areals, sorted(areals))
+
+    def test_bare_reference_has_no_slab(self):
+        slabs, areal = self.rs.column_for_depth(0.0)
+        self.assertEqual(slabs, [])
+        self.assertEqual(areal, 0.0)
+
+    def test_surface_layer_sits_on_top_deep_layer_against_phantom(self):
+        # 3 m: densest packing order is surface(1.76) highest z, deep(1.78) lowest.
+        slabs, _ = self.rs.column_for_depth(300.0)
+        # slab tuples: (material, density, hlz, centre_z); sort by centre_z.
+        by_z = sorted(slabs, key=lambda s: s[3])
+        self.assertEqual(by_z[0][0], "LunarReg178")   # deepest, against phantom
+        self.assertEqual(by_z[-1][0], "LunarReg176")  # surface, top of column
+        # bottom face of the lowest slab sits on the phantom north pole (RMIN).
+        low = by_z[0]
+        self.assertAlmostEqual(low[3] - low[2], self.rs.config.WALL_RMIN_CM, places=3)
+
+    def test_phi_ff_scales_with_primaries_and_matches_kernel(self):
+        # phi_ff = rings*az*hist/(pi*spot^2); independent of stand-off / slab size.
+        base = self.rs.config.PHI_FF_CM2  # kernel at 4 hist
+        self.assertAlmostEqual(self.rs.phi_ff_cm2(self.rs.config.HISTORIES), base,
+                               places=6)
+        self.assertAlmostEqual(self.rs.phi_ff_cm2(8) / self.rs.phi_ff_cm2(4), 2.0,
+                               places=6)
+
+    def test_grazing_ray_stays_inside_slab(self):
+        # thickest slab: grazing ring must enter the top face within SLAB_HL.
+        theta = max(t for _, t in self.rs.templates._ring_directions())
+        z_top = self.rs.config.WALL_RMIN_CM + 300.0
+        reach = z_top * math.tan(math.radians(theta))
+        self.assertLess(reach + self.rs.BEAM_SPOT_CM, self.rs.SLAB_HL_CM)
+
+    def test_param_file_emits_species_ceiling_and_scorers(self):
+        fe = next(s for s in dosimetry.GCR_COMPOSITION if s[0] == "Fe")
+        txt = self.rs.build_param_file(3.0, fe, histories=8, seed=1)
+        self.assertIn('BeamParticle = "GenericIon(26,56)"', txt)  # full string, no crash
+        self.assertIn("542.5 g/cm^2", txt)
+        # 100 GeV/n ceiling -> top TOTAL energy = 1e5 * A.
+        self.assertIn(f"{self.rs.EMAX_PER_NUC_MEV * 56:g} MeV", txt)
+        for organ in ("skin", "core"):
+            self.assertIn(f'Sc/Shell_{organ}_I/Quantity   = "DoseEquivalent_ICRP"', txt)
+            self.assertIn(f'Sc/Shell_{organ}_D/Quantity   = "DoseToMedium"', txt)
+        self.assertIn(f'Ph/Default/Type = "{self.rs.config.PHYSICS}"', txt)
+
+    def test_generate_then_collect_roundtrips_incomplete(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            self.rs.generate(out, histories=4, seeds=1, threads=0)
+            manifest = json.loads((out / "manifest.json").read_text())
+            self.assertEqual(manifest["phi_MV"], self.rs.PHI_MV)
+            self.assertEqual(len(manifest["runs"]),
+                             len(self.rs.DEPTHS_M) * len(dosimetry.GCR_COMPOSITION))
+            self.assertTrue((out / "run.sh").exists())
+            # No CSVs yet -> collect must mark every point incomplete, not crash.
+            res = self.rs.collect(out)
+            self.assertTrue(all(not r["usable"] for r in res["rows"]))
 
 
 if __name__ == "__main__":
