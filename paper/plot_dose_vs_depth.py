@@ -78,12 +78,15 @@ def main():
              label="Core  D (mGy/yr)", alpha=0.75)
 
     ax.set_xlabel("Regolith overburden depth  (m)")
-    ax.set_ylabel("Dose equivalent  H  (mSv / yr)")
-    axd.set_ylabel("Absorbed dose  D  (mGy / yr)")
-    ax.set_xlim(left=0)
-    ax.set_ylim(bottom=0)
-    axd.set_ylim(bottom=0)
-    ax.grid(True, alpha=0.25, zorder=0)
+    ax.set_ylabel("Dose equivalent  H  (mSv / yr, log)")
+    axd.set_ylabel("Absorbed dose  D  (mGy / yr, log)")
+    # H spans ~3 orders of magnitude across the depth range (surface -> 3 m),
+    # so both dose axes are logarithmic; keep them locked to the same decades
+    # so the H/D curves stay visually comparable.
+    ax.set_yscale("log")
+    axd.set_yscale("log")
+    ax.set_xlim(left=-0.05)
+    ax.grid(True, which="both", alpha=0.22, zorder=0)
 
     # Secondary top axis: areal density (g/cm^2), sharing the depth mapping.
     def d2a(d):
