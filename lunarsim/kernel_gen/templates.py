@@ -89,10 +89,11 @@ def scorer_csv_names(shell_name: str) -> tuple[str, str]:
 
 
 def build_param_file(material: str, wall_gcm2: float, species_name: str,
-                     node_index: int, seed: int, threads: int = 0) -> str:
+                     node_index: int, seed: int, threads: int = 0,
+                     composition: str = "reference") -> str:
     """Full text of one runnable TOPAS kernel-generation file."""
     mat = config.MATERIALS[material]
-    species = config.species_from_reference()[species_name]
+    species = config.species_for(composition)[species_name]
     nodes = species["nodes_pernuc_mev"]
     e_pernuc = nodes[node_index]
     a = species["a"]

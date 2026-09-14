@@ -146,6 +146,62 @@ EVA_GRID_GCM2 = [0.0, 0.5, 1.0]
 # Output kernel file names (Al path stays byte-for-byte: we never overwrite it).
 AL_VALIDATION_OUT = "gcr_thinwall_kernel_al_regen.json"   # compare-only artefact
 EVA_OUT = "gcr_thinwall_kernel_eva.json"                  # the shipped EVA kernel
+SI_OUT = "gcr_thinwall_kernel_si.json"                    # corrected-composition Al kernel
+
+
+# --------------------------------------------------------------------------
+# Composition selector.
+# --------------------------------------------------------------------------
+# Two composition schemes are available to the harness:
+#
+#   "reference" -- H/He/C/O/Fe, read VERBATIM from the committed Al kernel
+#       (species_from_reference). This is the composition the shipped kernel was
+#       built with. Used to VALIDATE that the reconstructed MC pipeline still
+#       reproduces the committed R values before trusting a new run.
+#
+#   "corrected" -- H/He/C/Si/Fe, matching dosimetry.GCR_COMPOSITION and the
+#       methodology-doc section 2.3 table (species_corrected). This resolves the
+#       flood-vs-kernel composition mismatch: the flood engine transports Si
+#       (Z=14, the Z=10-20 Ne-Ca group representative) with lumped-group
+#       abundances, but the committed kernel transports O (a second CNO member,
+#       no Z=10-20 representative) with per-element abundances. See the memory
+#       note gcr-composition-engine-mismatch and the docx "Open items" section.
+#
+# IMPORTANT -- why only Si needs new Monte Carlo: a species' response R = D/phi_ff
+# is a pure single-species transport quantity; the abundance never enters the MC,
+# only the free-field flux fold downstream. So H/He/C/Fe carry IDENTICAL node
+# grids to the committed kernel and reproduce it exactly under --validate; only
+# the new Si species is physically new, and only the four abundances change (a
+# fold-time metadata update). Keeping the H/He/C/Fe grids byte-identical is what
+# lets the corrected-composition --validate positionally align the common species
+# against the committed kernel.
+
+# Per-nucleon energy nodes shared with the committed kernel (do NOT change these
+# for H/He/C/Fe or the corrected-composition --validate loses positional
+# alignment with the committed R arrays).
+_NODES_LIGHT = [80.0, 150.0, 300.0, 600.0, 1200.0, 2500.0, 6000.0]   # H, He
+_NODES_C = [180.0, 350.0, 700.0, 1500.0, 3000.0, 5000.0]             # C
+_NODES_FE = [400.0, 600.0, 1000.0]                                   # Fe
+# Si is new. It reuses C's 6-node MeV/n grid rather than the committed O grid
+# (5 nodes) -- denser and spanning the same range, which also lifts the
+# single-low-node dominance flagged for the old O sampling (thin-shield Bragg
+# limit). Si represents the Ne-Ca (Z=10-20) group; energy per nucleon, not total.
+_NODES_SI = list(_NODES_C)
+
+# Corrected composition == dosimetry.GCR_COMPOSITION (name, particle, z, a,
+# abundance rel. H, group) plus each species' per-nucleon node grid.
+CORRECTED_COMPOSITION = {
+    "H":  {"z": 1,  "a": 1,  "abundance": 1.0,    "particle": "proton",
+           "group": "Z=1, protons",              "nodes_pernuc_mev": list(_NODES_LIGHT)},
+    "He": {"z": 2,  "a": 4,  "abundance": 0.105,  "particle": "alpha",
+           "group": "Z=2, alpha particles",       "nodes_pernuc_mev": list(_NODES_LIGHT)},
+    "C":  {"z": 6,  "a": 12, "abundance": 0.033,  "particle": "GenericIon(6,12)",
+           "group": "Z=3-9 (CNO + light)",        "nodes_pernuc_mev": list(_NODES_C)},
+    "Si": {"z": 14, "a": 28, "abundance": 0.012,  "particle": "GenericIon(14,28)",
+           "group": "Z=10-20 (Ne-Ca)",            "nodes_pernuc_mev": list(_NODES_SI)},
+    "Fe": {"z": 26, "a": 56, "abundance": 0.0020, "particle": "GenericIon(26,56)",
+           "group": "Z=21-28 (Fe peak)",          "nodes_pernuc_mev": list(_NODES_FE)},
+}
 
 
 def organs_from_reference() -> list:
@@ -165,3 +221,27 @@ def species_from_reference() -> dict:
             "nodes_pernuc_mev": list(s["nodes_pernuc_mev"]),
         }
     return out
+
+
+def species_corrected() -> dict:
+    """The H/He/C/Si/Fe composition matching dosimetry.GCR_COMPOSITION (doc 2.3),
+    same dict shape as species_from_reference(). Deep-copied so callers cannot
+    mutate the module constant."""
+    return {
+        name: {"z": s["z"], "a": s["a"], "abundance": s["abundance"],
+               "particle": s["particle"], "group": s["group"],
+               "nodes_pernuc_mev": list(s["nodes_pernuc_mev"])}
+        for name, s in CORRECTED_COMPOSITION.items()
+    }
+
+
+COMPOSITIONS = ("reference", "corrected")
+
+
+def species_for(composition: str = "reference") -> dict:
+    """Resolve a composition name to its {name: meta} species table."""
+    if composition == "reference":
+        return species_from_reference()
+    if composition == "corrected":
+        return species_corrected()
+    raise ValueError(f"unknown composition {composition!r}; expected one of {COMPOSITIONS}")
