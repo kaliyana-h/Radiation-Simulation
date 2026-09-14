@@ -43,6 +43,7 @@ re-anchor is a post-hoc geometric constant tied to a measured surface dose.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import subprocess
@@ -143,7 +144,7 @@ def cmd_compare(_args) -> None:
 # ----------------------------------------------------------------------
 # anchor  (MC -- run on the PC)
 # ----------------------------------------------------------------------
-def _run_anchor_mc(lis_var: str, run_dir: Path):
+def _run_anchor_mc(lis_var: str, run_dir: Path, tier):
     """One Chang'E-4-dome flood MC under the chosen LIS form. Returns the
     parsed DoseAssessment-derived absorbed rates. HEAVY (invokes TOPAS)."""
     from lunarsim.spec import HabitatSpec, WallLayer
@@ -155,8 +156,9 @@ def _run_anchor_mc(lis_var: str, run_dir: Path):
                        inner_radius_cm=ANCHOR_INNER_R_CM,
                        walls=[WallLayer(m, t) for m, t in ANCHOR_WALLS])
     print(f"  [{lis_var}] running flood MC ({spec.areal_density_gcm2():.1f} g/cm^2, "
-          f"tier=full) ... this takes a while", flush=True)
-    res = bridge.run_design(spec, tier=bridge.FULL_RUN, run_dir=run_dir, keep=True)
+          f"tier={tier.name}, {tier.total_primaries} primaries) ... this takes a while",
+          flush=True)
+    res = bridge.run_design(spec, tier=tier, run_dir=run_dir, keep=True)
     if not res.ok:
         raise SystemExit(f"[{lis_var}] MC run failed (rc={res.returncode}); "
                          f"see {run_dir}/topas_stdout.log")
@@ -170,18 +172,28 @@ def _run_anchor_mc(lis_var: str, run_dir: Path):
 
 
 def cmd_anchor(args) -> None:
-    from lunarsim import dosimetry
+    from lunarsim import bridge, dosimetry
     outdir = Path(args.outdir).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     cal_old = dosimetry.OUTER_GAUGE_ANCHOR_CAL
+
+    # The absorbed skin dose behind ~22 g/cm^2 is dominated by rare Fe/Si
+    # surface hits; FULL_RUN (10,080 primaries) gives ~120 Si / ~20 Fe and the
+    # skin rate is noise-limited. --mult scales histories/source so the heavy-ion
+    # tail converges before any CAL is derived. mult=20 ~= 200k primaries/form.
+    mult = max(1, int(args.mult))
+    base = bridge.FULL_RUN
+    tier = dataclasses.replace(base, name=f"anchor{mult}x",
+                               histories=base.histories * mult)
 
     print("Chang'E-4 re-anchor MC (Zhang et al. 2020, target "
           f"{ANCHOR_TARGET_UGY_H} uGy/h absorbed)")
     print(f"  anchor design: {ANCHOR_SHAPE}, inner_r={ANCHOR_INNER_R_CM:.0f} cm, "
           f"walls={ANCHOR_WALLS}")
+    print(f"  statistics: {mult}x FULL_RUN = {tier.total_primaries} primaries/form")
     print(f"  current OUTER_GAUGE_ANCHOR_CAL = {cal_old:.5f}\n")
 
-    results = {v: _run_anchor_mc(v, outdir / f"lis_{v}") for v in LIS_FORMS}
+    results = {v: _run_anchor_mc(v, outdir / f"lis_{v}", tier) for v in LIS_FORMS}
 
     print("\n  absorbed dose rate (uGy/h), CAL_old applied:")
     print("  form        skin      phantom")
@@ -209,7 +221,8 @@ def cmd_anchor(args) -> None:
     print("  Stage-4 line: LIS rigidity fix re-anchor). Then re-run the test suite.")
 
     summary = {"cal_old": cal_old, "basis": basis, "results": results,
-               "cal_new": cal_new, "target_ugy_h": ANCHOR_TARGET_UGY_H}
+               "cal_new": cal_new, "target_ugy_h": ANCHOR_TARGET_UGY_H,
+               "mult": mult, "primaries_per_form": tier.total_primaries}
     (outdir / "anchor_summary.json").write_text(json.dumps(summary, indent=2))
     print(f"\n  wrote {outdir / 'anchor_summary.json'}")
 
@@ -278,6 +291,9 @@ def main(argv=None) -> None:
     sub.add_parser("compare", help="offline before/after fold table (no MC)")
     a = sub.add_parser("anchor", help="MC: Chang'E-4 re-anchor (heavy)")
     a.add_argument("outdir")
+    a.add_argument("--mult", type=int, default=1,
+                   help="statistics multiplier on FULL_RUN histories "
+                        "(20 ~= 200k primaries/form; needed for the Fe/Si skin tail)")
     g = sub.add_parser("regolith", help="MC: set up the depth sweep (heavy)")
     g.add_argument("outdir")
     sub.add_parser("runbook", help="print the ordered step list")
