@@ -662,7 +662,12 @@ def fold_gcr_thinwall(spec, phi_MV: float = 400.0, material: Optional[str] = Non
     material = material or _gcr_calibration_material(spec)
     K = _load_gcr_thinwall_kernel(material)
     organs = K["meta"]["organs"]
-    pts = K["points"]
+    # Interpolation below assumes anchors are in ascending areal density. Kernels
+    # do not all store them sorted -- the EVA kernel puts the 0.0 bare-phantom
+    # anchor first, the Si-corrected Al kernel appends it last -- so sort here
+    # rather than trust the file order. (An unsorted grid made every design clamp
+    # to grid[-1]=0.0 and read the UNSHIELDED anchor at all depths.)
+    pts = sorted(K["points"], key=lambda p: p["wall_gcm2"])
     grid = [p["wall_gcm2"] for p in pts]
     ad = spec.areal_density_gcm2()
     folded = [_thinwall_fold_point(p, phi_MV, organs) for p in pts]
