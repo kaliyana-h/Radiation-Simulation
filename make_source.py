@@ -22,8 +22,10 @@ Two source modes, answering the "justify your particle directions" critique:
          solar particle event.
 
 Energy spectrum (GCR): force-field-modulated local interstellar spectrum.
-  LIS (protons), Usoskin et al. (2005):
-      J_LIS(T) = 1.9e4 * T^-2.78 / (1 + 0.4866 * T^-2.51)   [/(m^2 s sr GeV)]
+  LIS (protons), Burger et al. (2000) as parameterised by Usoskin et al. (2005).
+  The parameterisation is a function of magnetic RIGIDITY P (GV), NOT kinetic
+  energy; for a proton P = sqrt(T(T+2 m_p)) with T the per-nucleon kinetic energy:
+      J_LIS = 1.9e4 * P^-2.78 / (1 + 0.4866 * P^-2.51)      [/(m^2 s sr GeV)]
   Force-field modulation at potential phi (MV), per-nucleon kinetic T (MeV):
       Phi  = (Z/A) * phi
       J(T) = J_LIS(T+Phi) * [T(T+2E0)] / [(T+Phi)(T+Phi+2E0)]
@@ -116,13 +118,39 @@ GCR_EMAX_PER_NUC = float(os.environ.get("LUNARSIM_GCR_EMAX_PER_NUC", 2.0e4))  # 
 # "cannot drift" rule is intentionally relaxed here (flux is pinned by hand).
 GCR_SHAPE = os.environ.get("LUNARSIM_GCR_SHAPE", "pernuc")
 
+# LIS variable knob (reproducibility, NOT a physics choice). The Burger/Usoskin
+# parameterisation is a function of magnetic RIGIDITY P (GV); "rigidity" (default,
+# correct) converts kinetic energy T -> P before evaluating it. "energy" reproduces
+# the legacy pre-fix behaviour that evaluated the form AT kinetic energy directly --
+# kept ONLY so the LIS-fix before/after (paper/rerun harness) can regenerate the old
+# spectrum for an apples-to-apples MC comparison. Leave it at "rigidity" for all real
+# runs. Read here AND by dosimetry (via _load_make_source), so the sampled spectrum
+# and the flux normalisation stay on the same form and cannot drift.
+GCR_LIS_VAR = os.environ.get("LUNARSIM_GCR_LIS", "rigidity")
+
 
 # --------------------------------------------------------------------------
 # Energy spectra
 # --------------------------------------------------------------------------
 def lis_proton(T_GeV):
-    """Local interstellar proton spectrum, Usoskin et al. (2005)."""
-    return 1.9e4 * T_GeV ** (-2.78) / (1.0 + 0.4866 * T_GeV ** (-2.51))
+    """Local interstellar proton spectrum J_LIS at per-nucleon kinetic energy
+    T (GeV), from the Burger et al. (2000) parameterisation given by Usoskin
+    et al. (2005). That form is a function of magnetic RIGIDITY P (GV): for a
+    proton P = sqrt(T(T + 2 m_p)), m_p = 0.938272 GeV. Evaluating it at kinetic
+    energy directly (as earlier revisions did) over-weights the sub-GeV flux
+    because P > T there; converting T -> P here makes the code match the cited
+    source. Returns the differential intensity in /(m^2 s sr GeV). Both the
+    source generator and dosimetry._raw_gcr_integral call this one function, so
+    the sampled spectrum and the flux normalisation move together and cannot
+    drift. The LUNARSIM_GCR_LIS knob selects "rigidity" (default, correct) or
+    "energy" (legacy reproduction only). See paper/CODE_REFERENCES.md
+    (LIS-variable verification)."""
+    mp_GeV = E0_PROTON / 1000.0
+    if GCR_LIS_VAR == "energy":                # legacy pre-fix form: evaluate AT T
+        P_GV = T_GeV
+    else:                                      # "rigidity" (default, correct): T -> P
+        P_GV = math.sqrt(T_GeV * (T_GeV + 2.0 * mp_GeV))      # rigidity, GV
+    return 1.9e4 * P_GV ** (-2.78) / (1.0 + 0.4866 * P_GV ** (-2.51))
 
 
 def _rigidity_equiv_proton_MeV(Tm, z, a):
