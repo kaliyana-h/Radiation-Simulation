@@ -167,21 +167,31 @@ SI_OUT = "gcr_thinwall_kernel_si.json"                    # corrected-compositio
 #       no Z=10-20 representative) with per-element abundances. See the memory
 #       note gcr-composition-engine-mismatch and the docx "Open items" section.
 #
-# IMPORTANT -- why only Si needs new Monte Carlo: a species' response R = D/phi_ff
-# is a pure single-species transport quantity; the abundance never enters the MC,
-# only the free-field flux fold downstream. So H/He/C/Fe carry IDENTICAL node
-# grids to the committed kernel and reproduce it exactly under --validate; only
-# the new Si species is physically new, and only the four abundances change (a
-# fold-time metadata update). Keeping the H/He/C/Fe grids byte-identical is what
-# lets the corrected-composition --validate positionally align the common species
-# against the committed kernel.
+# IMPORTANT -- what needs new Monte Carlo under "corrected": a species' response
+# R = D/phi_ff is a pure single-species transport quantity; the abundance never
+# enters the MC, only the free-field flux fold downstream. H/He/C keep IDENTICAL
+# node grids to the committed kernel, so they reproduce it exactly under --validate
+# and positionally anchor the reconstruction. TWO species are physically new MC:
+#   * Si (Z=14) replaces the committed O (Z=8) as the Ne-Ca group representative.
+#   * Fe is REGRIDDED from the committed 3 nodes [400,600,1000] MeV/n to the 6-node
+#     C/Si grid [180..5000]. The old grid folded only ~31% of the Fe GCR fluence
+#     (it integrates strictly between its outer edges, 400-1000 MeV/n): it omitted
+#     ~31% below 400 (the high-LET, high-Q stopping region) and ~38% above 1000
+#     (the relativistic tail). That truncation -- NOT a Si over-weight -- is what
+#     suppressed Fe to ~1/3.7 of the Ne-Ca band when Z^2 x abundance predicts
+#     ~1/1.7; extending Fe to [180..5000] restores ~2.6x of its fluence coverage.
+# Because Si and Fe carry new grids they have no positional committed baseline;
+# --validate reports them separately (MC-only) and scores reproduction on H/He/C.
 
 # Per-nucleon energy nodes shared with the committed kernel (do NOT change these
 # for H/He/C/Fe or the corrected-composition --validate loses positional
 # alignment with the committed R arrays).
 _NODES_LIGHT = [80.0, 150.0, 300.0, 600.0, 1200.0, 2500.0, 6000.0]   # H, He
 _NODES_C = [180.0, 350.0, 700.0, 1500.0, 3000.0, 5000.0]             # C
-_NODES_FE = [400.0, 600.0, 1000.0]                                   # Fe
+# Fe REGRIDDED to the C/Si 6-node grid (was the committed [400,600,1000], which
+# folded only ~31% of the Fe GCR fluence -- see the composition note above). Fe is
+# now new MC and no longer positionally validates against the committed 3-node Fe.
+_NODES_FE = list(_NODES_C)                                           # Fe (regridded)
 # Si is new. It reuses C's 6-node MeV/n grid rather than the committed O grid
 # (5 nodes) -- denser and spanning the same range, which also lifts the
 # single-low-node dominance flagged for the old O sampling (thin-shield Bragg

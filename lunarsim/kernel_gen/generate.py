@@ -185,9 +185,11 @@ def collect(out: Path) -> dict:
     if composition == "corrected":
         note = ("COMPOSITION=corrected: H/He/C/Si/Fe matching dosimetry."
                 "GCR_COMPOSITION (doc 2.3). Si (Z=14) is the Z=10-20 (Ne-Ca) group "
-                "representative, replacing the committed kernel's O; abundances are "
-                "the lumped-group values. H/He/C/Fe transport is identical to the "
-                "committed kernel (--validate confirms). " + note).strip()
+                "representative, replacing the committed kernel's O. Fe is regridded "
+                "to the 6-node C/Si grid [180-5000 MeV/n] from the committed 3-node "
+                "[400-1000], which folded only ~31% of the Fe GCR fluence. H/He/C "
+                "transport is identical to the committed kernel (--validate confirms); "
+                "Si and Fe are new MC. " + note).strip()
     kernel = {
         "meta": {
             "description": f"Thin-wall GCR response kernel R=D_organ/Phi_ff, "
@@ -453,15 +455,33 @@ def validate(out: Path) -> None:
     # separately; dropped species (O) are noted so the swap is explicit.
     ref_species = set(ref["points"][-1]["species"])
     regen_species = set(regen["points"][-1]["species"])
+    # A species is positionally comparable only if its node grid is UNCHANGED.
+    # Under composition=corrected, Fe is regridded (committed [400,600,1000] -> the
+    # C/Si grid) and Si replaces O -- both carry new grids, so route them to the
+    # MC-only report instead of a mis-aligned positional zip. H/He/C keep the
+    # committed grids and anchor the reproduction score.
+    ref_last = ref["points"][-1]["species"]
+    regen_last = regen["points"][-1]["species"]
+
+    def _same_grid(name):
+        return (name in ref_last and name in regen_last and
+                list(regen_last[name]["nodes_pernuc_mev"])
+                == list(ref_last[name]["nodes_pernuc_mev"]))
+
+    regridded = sorted(s for s in (ref_species & regen_species) if not _same_grid(s))
     common = [s for s in ["H", "He", "C", "O", "Si", "Fe"]
-              if s in ref_species and s in regen_species]
-    new_species = sorted(regen_species - ref_species)
+              if s in ref_species and s in regen_species and s not in regridded]
+    new_species = sorted((regen_species - ref_species) | set(regridded))
     dropped_species = sorted(ref_species - regen_species)
     if composition == "corrected":
         print(f"\n  composition=corrected: comparing common species {common} "
               f"against the committed kernel.")
-        if new_species:
-            print(f"  new species (no committed baseline, MC-only): {new_species}")
+        truly_new = [s for s in new_species if s not in regridded]
+        if truly_new:
+            print(f"  new species (no committed baseline, MC-only): {truly_new}")
+        if regridded:
+            print(f"  regridded species (new node grid, not positionally "
+                  f"comparable, MC-only): {regridded}")
         if dropped_species:
             print(f"  dropped from committed: {dropped_species}")
 
@@ -472,6 +492,8 @@ def validate(out: Path) -> None:
         for sname, cs in cp["species"].items():
             if sname not in rp["species"]:
                 continue          # species dropped in this composition (e.g. O)
+            if sname in regridded:
+                continue          # node grid changed (e.g. Fe) -- not comparable
             rs = rp["species"][sname]
             for o in organs:
                 for q in ("D", "I"):
