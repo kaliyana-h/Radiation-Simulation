@@ -248,6 +248,48 @@ def _grouped(records, keyfn):
 # is meaningless for detecting a real reconstruction bias.
 _SNR_MIN = 5.0
 
+# --------------------------------------------------------------------------
+# In-domain gate: reproduction where the kernel is actually the trusted engine.
+# --------------------------------------------------------------------------
+# The thin-wall kernel is trustworthy ONLY below the ~19 g/cm^2 crossover (above
+# it the broad wall-bred secondary shower dominates and the flood MC path takes
+# over -- meta.crossover_gcm2, memory crossover-discontinuity) AND only on the
+# response PLATEAU. A "range-threshold" cell -- a primary that barely reaches the
+# shell, on the steep sub-plateau rising edge where the committed R has collapsed
+# to a small fraction of the same series' peak -- is where CSDA-range gating
+# dominates, the committed value is a tiny noisy number, the 3-anchor log-interp
+# is least reliable, AND the folded-dose contribution is negligible. Those cells
+# drive the raw geo-mean high (node-0 blow-ups) but are never trusted for a real
+# number. The gate re-scores reproduction over the trusted domain only -- this is
+# the number that decides shippability.
+_RANGE_FLOOR = 0.5   # keep a cell only if committed R >= this x its series plateau max
+
+
+def _domain_gate(records, crossover, range_floor=_RANGE_FLOOR):
+    """Split records into (in-domain kept, {reason: n_dropped}). In-domain =
+    wall <= crossover AND high-SNR AND on-plateau (committed R >= range_floor x
+    the max committed R over energy for that same (wall,species,organ,q) series)."""
+    series_max = {}
+    for t in records:
+        k = (t["w"], t["s"], t["o"], t["q"])
+        if t["c"] > series_max.get(k, 0.0):
+            series_max[k] = t["c"]
+    kept = []
+    dropped = {"wall": 0, "snr": 0, "range": 0}
+    for t in records:
+        if t["w"] > crossover:
+            dropped["wall"] += 1
+            continue
+        if t["snr"] < _SNR_MIN:
+            dropped["snr"] += 1
+            continue
+        smax = series_max[(t["w"], t["s"], t["o"], t["q"])]
+        if smax > 0 and t["c"] < range_floor * smax:
+            dropped["range"] += 1
+            continue
+        kept.append(t)
+    return kept, dropped
+
 
 # --------------------------------------------------------------------------
 # First-principles normalization check (bare-phantom / wall=0 point)
@@ -440,7 +482,8 @@ def validate(out: Path) -> None:
                             continue
                         sem = csem[j] if csem[j] > 0 else 0.0
                         records.append({"w": w, "s": sname, "o": o, "q": q,
-                                        "j": j, "c": c, "r": r, "sem": sem,
+                                        "j": j, "e": cs["nodes_pernuc_mev"][j],
+                                        "c": c, "r": r, "sem": sem,
                                         "ratio": r / c,
                                         "snr": (c / sem) if sem > 0 else float("inf")})
     if not records:
@@ -469,6 +512,52 @@ def validate(out: Path) -> None:
     else:
         print("  (none -- committed kernel has no Rsem, or all points are noise-limited)")
     src = hi if hi else records
+
+    # ---- IN-DOMAIN GATE: reproduction where the kernel is the trusted engine ----
+    # The raw/high-SNR geo-means above are inflated by regimes the kernel is NEVER
+    # used in: walls above the ~19 g/cm^2 crossover (flood MC takes over there) and
+    # range-threshold cells on the sub-plateau rising edge (tiny committed R, near-
+    # zero folded dose, worst log-interp). This block re-scores over the trusted
+    # domain only -- the number that actually decides shippability of the Si swap.
+    crossover = ref["meta"].get("crossover_gcm2", 19.0)
+    organs_wt = {n: w for n, w in config.organs_from_reference()}
+    kept, dropped = _domain_gate(records, crossover)
+    print(f"\n=== IN-DOMAIN GATE (wall <= {crossover:g} g/cm^2, high-SNR, "
+          f"on-plateau R >= {_RANGE_FLOOR:g}x series max) ===")
+    print(f"  dropped: {dropped['wall']} above-crossover, {dropped['snr']} low-SNR, "
+          f"{dropped['range']} range-threshold")
+    if not kept:
+        print("  (no cells survive the gate -- cannot score in-domain reproduction)")
+    else:
+        kr = sorted(t["ratio"] for t in kept)
+        kgm = _geomean(kr)
+        kwithin = sum(1 for x in kr if 0.8 <= x <= 1.25) / len(kr)
+        print(f"  n in-domain       : {len(kept)} of {len(records)}")
+        print(f"  median ratio      : {kr[len(kr)//2]:.3f}")
+        print(f"  geo-mean ratio    : {kgm:.3f}   (1.0 = faithful reconstruction)")
+        print(f"  within 0.8-1.25x  : {kwithin*100:.0f}%")
+        # organ-wT-weighted geo-mean: the effective-dose-relevant reproduction
+        # factor -- weights each cell's log-ratio by ICRP tissue wT so deep/core
+        # shells (which dominate E) count more than the thin skin shell.
+        num = sum(organs_wt.get(t["o"], 0.0) * math.log(t["ratio"])
+                  for t in kept if t["ratio"] > 0)
+        den = sum(organs_wt.get(t["o"], 0.0) for t in kept if t["ratio"] > 0)
+        if den > 0:
+            print(f"  wT-weighted geo-mean: {math.exp(num/den):.3f}   "
+                  f"<-- effective-dose reproduction factor")
+        gsp = _grouped(kept, lambda t: t["s"])
+        print("  in-domain geo-mean by species:")
+        for k in [s for s in common if s in gsp]:
+            gmv, n = gsp[k]
+            print(f"    {k:<3} x{gmv:.2f}   (n={n})")
+        gwl = _grouped(kept, lambda t: t["w"])
+        print("  in-domain geo-mean by wall g/cm^2:")
+        for k in sorted(gwl):
+            gmv, n = gwl[k]
+            print(f"    {k:<6g} x{gmv:.2f}   (n={n})")
+        print("  READ: >=~0.8-1.25x => ship gcr_thinwall_kernel_si.json with a "
+              f"<={crossover:g} g/cm^2 validity caveat;")
+        print("        >~1.4x => defer the swap / treat as documentation-only.")
 
     # ---- structure: is the bias flat (normalization) or trending (geometry)? ----
     def _show(title, keyfn, order=None):
