@@ -1,0 +1,7 @@
+areal_gcm2,al_cm,flood_eff_mSv_yr,flood_skin_mSv_yr,note
+19,7.04,,,gate; flood takes over at/above here
+25,9.26,,,
+30,11.11,,,matched to OLTARIS Al dish minimum
+40,14.81,,,
+50,18.52,,,PRE-LIS-FIX reference (crossover memory): skin-ICRP 287.7 (1.09x OLT 264) VALIDATED; phantom-ICRP 259.1 (0.98x). Re-run post-LIS-fix on PC.
+54,20.00,,,

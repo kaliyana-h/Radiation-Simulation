@@ -1,0 +1,6 @@
+areal_gcm2,al_cm,oltaris_eff_mSv_yr,note
+0,0.00,283,unshielded free-field; OLTARIS Al-sphere Effective Dose Equivalent (BON-2020 2010 solar min ICRP-60 Q)
+10,3.70,254,
+30,11.11,246,minimum of the Al dish (secondary buildup turns the curve back up past here)
+50,18.52,261,
+54,20.00,264,
