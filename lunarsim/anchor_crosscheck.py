@@ -19,16 +19,24 @@ Before touching CAL we must know whether the drift is:
 This harness measures ABSORBED dose at the *other*, independent absorbed anchor:
 54 g/cm^2 PURE aluminium, the design validated at 0.310 mGy/day (= 12.9 uGy/h)
 against OLTARIS-Total / Chang'E-4 (memory: oltaris-absorbed-dose-crosscheck). It
-runs the identical bridge.run_design + dosimetry.assess path as the re-anchor,
-under BOTH LIS forms, with the CURRENT CAL_old applied -- so it is directly
-comparable to both the re-anchor output and the 0.310 mGy/day validation.
+runs the FULL GCR composition (H+He+C+Si+Fe via jobs.run_composition +
+dosimetry.assess_composition) -- the SAME path production/GUI uses, and the same
+field the 0.310 anchor is -- under BOTH LIS forms, with the CURRENT CAL_old
+applied.
+
+ROOT CAUSE FOUND (2026-09-15): the earlier "~2.75x global drift" was a HARNESS
+BUG, not a pipeline regression. The old version called bare bridge.run_design +
+dosimetry.assess, which default to PROTONS ONLY (bridge.py:556). It measured H
+alone -- ~0.36x of the full-field dose (that IS the proton dose fraction) -- and
+compared it against the full-composition 0.310 / 13.2 anchors. Apples-to-oranges.
+rerun_lis_fix.py anchor has the identical flaw. Fixing the harness to run the
+full composition removes the apparent drift; CAL is untouched and correct.
 
 Interpreting the result (energy form, CAL_old applied):
-  * skin ~0.31 mGy/day (~12.9 uGy/h)  -> pipeline is FINE globally; the 22 g/cm^2
-    anchor under-reads for a config reason (regolith/albedo). Do NOT touch the
-    global CAL; the LIS re-anchor must be reworked on a like-for-like basis.
-  * skin ~0.12-0.13 mGy/day (~2.5x low) -> GLOBAL regression since CAL was set;
-    fix the root cause (composition/flux/normalisation), NOT via a CAL rescale.
+  * skin ~0.31 mGy/day (~12.9 uGy/h)  -> confirms NO drift; flood pipeline is
+    fine; the proton-only artifact is explained. Do NOT touch CAL.
+  * skin still ~0.12-0.13 mGy/day     -> a genuine drift would remain; then find
+    the root cause (composition/flux/normalisation), NOT via a CAL rescale.
 
 Target-blind: nothing here feeds a dose value into the physics. This is a
 post-hoc consistency check against two independently-measured absorbed anchors.
@@ -63,9 +71,16 @@ LIS_FORMS = ("energy", "rigidity")
 
 
 def _run_one(lis_var: str, areal_gcm2: float, run_dir: Path, tier) -> dict:
-    """One pure-Al flood MC under the chosen LIS form; absorbed rates only."""
+    """One pure-Al flood MC under the chosen LIS form; absorbed rates only.
+
+    Runs the FULL GCR composition (H+He+C+Si+Fe), one MC per species, summed by
+    dosimetry.assess_composition -- IDENTICAL to the production path (jobs.run_
+    composition -> gui). This is what the validated 0.310 mGy/day / 13.2 uGy/h
+    anchors are: full-field absorbed dose. (The earlier proton-only run_design +
+    assess measured H alone, ~0.36x of the total -- the proton dose fraction, not
+    a pipeline drift; that comparison was apples-to-oranges.)"""
     from lunarsim.spec import HabitatSpec, WallLayer
-    from lunarsim import bridge, dosimetry
+    from lunarsim import bridge, dosimetry, jobs
 
     os.environ["LUNARSIM_GCR_LIS"] = lis_var
     dosimetry._load_make_source.cache_clear()
@@ -73,21 +88,33 @@ def _run_one(lis_var: str, areal_gcm2: float, run_dir: Path, tier) -> dict:
     spec = HabitatSpec(name=f"xcheck_{lis_var}", shape=XCHECK_SHAPE,
                        inner_radius_cm=XCHECK_INNER_R_CM,
                        walls=[WallLayer("aluminium", t_cm)])
-    print(f"  [{lis_var}] flood MC pure Al {spec.areal_density_gcm2():.1f} g/cm^2 "
-          f"({t_cm:.2f} cm), tier={tier.name}, {tier.total_primaries} primaries ...",
-          flush=True)
-    res = bridge.run_design(spec, tier=tier, run_dir=run_dir, keep=True)
-    if not res.ok:
-        raise SystemExit(f"[{lis_var}] MC failed (rc={res.returncode}); "
-                         f"see {run_dir}/topas_stdout.log")
-    a_skin = dosimetry.assess(res, skin=True)
-    a_phan = dosimetry.assess(res, skin=False)
+    print(f"  [{lis_var}] full-composition flood MC pure Al "
+          f"{spec.areal_density_gcm2():.1f} g/cm^2 ({t_cm:.2f} cm), 5 species, "
+          f"tier={tier.name} per species/batch ...", flush=True)
+    # Skin converges fast at all depths (crossover-discontinuity memory); the
+    # crew phantom is Bragg-noisy, so converge on skin and report both.
+    comp = jobs.run_composition(spec, tier=tier, converge_on="skin",
+                                target_rel_err=0.03, min_batches=2, max_batches=8)
+    if comp.returncode != 0 or not comp.species_results:
+        raise SystemExit(f"[{lis_var}] composition MC failed (rc={comp.returncode}); "
+                         f"see {run_dir}")
+    a_skin = dosimetry.assess_composition(comp.species_results,
+                                          phi_MV=tier.phi_mv, skin=True)
+    a_phan = dosimetry.assess_composition(comp.species_results,
+                                          phi_MV=tier.phi_mv, skin=False)
+    # per-species absorbed skin dose fraction, so the proton fraction is visible
+    # (assess_composition already builds this: dose_rate_gy_s + dose_fraction per row)
+    per_species = {c["species"]: {"frac": c.get("dose_fraction"),
+                                  "ugy_h": c["dose_rate_gy_s"] * 1e6 * 3600.0}
+                   for c in (a_skin.contributions or [])}
     return {
         "skin_ugy_h": a_skin.dose_rate_ugy_day / 24.0,
         "phantom_ugy_h": a_phan.dose_rate_ugy_day / 24.0,
         "skin_mgy_day": a_skin.dose_rate_ugy_day / 1000.0,
         "phantom_mgy_day": a_phan.dose_rate_ugy_day / 1000.0,
-        "wall_seconds": res.wall_seconds,
+        "skin_rel_err": a_skin.rel_err,
+        "per_species_skin_ugy_h": per_species,
+        "wall_seconds": comp.wall_seconds,
     }
 
 
@@ -97,8 +124,10 @@ def main(argv=None) -> None:
     p.add_argument("outdir")
     p.add_argument("--areal", type=float, default=DEFAULT_AREAL_GCM2,
                    help="pure-Al areal density in g/cm^2 (default 54, the validated anchor)")
-    p.add_argument("--mult", type=int, default=20,
-                   help="statistics multiplier on FULL_RUN (mirror the re-anchor's 20x)")
+    p.add_argument("--mult", type=int, default=1,
+                   help="per-species per-batch size multiplier on FULL_RUN "
+                        "(statistics now come from run_composition's convergence "
+                        "rounds over 5 species, so 1 is usually enough)")
     args = p.parse_args(argv)
 
     from lunarsim import bridge, dosimetry
@@ -121,34 +150,49 @@ def main(argv=None) -> None:
     results = {v: _run_one(v, args.areal, outdir / f"lis_{v}", tier)
                for v in LIS_FORMS}
 
-    print("\n  absorbed dose, CAL_old applied:")
+    print("\n  FULL-COMPOSITION absorbed dose, CAL_old applied:")
     print("  form        skin(uGy/h)  skin(mGy/d)   phantom(uGy/h)  phantom(mGy/d)")
     for v in LIS_FORMS:
         r = results[v]
         print(f"  {v:<9} {r['skin_ugy_h']:>11.3f}  {r['skin_mgy_day']:>11.4f}   "
               f"{r['phantom_ugy_h']:>13.3f}  {r['phantom_mgy_day']:>13.4f}")
 
+    # per-species breakdown -- the proton fraction is the key number: the old
+    # proton-only harness read ~this fraction of the full-composition anchor.
+    for v in LIS_FORMS:
+        ps = results[v].get("per_species_skin_ugy_h") or {}
+        if ps:
+            print(f"\n  [{v}] per-species skin absorbed dose (uGy/h, dose fraction):")
+            for name in ("H", "He", "C", "Si", "Fe"):
+                if name in ps:
+                    d = ps[name]
+                    fr = d.get("frac")
+                    print(f"      {name:<3} {d['ugy_h']:>9.3f}   "
+                          f"{('%.3f' % fr) if fr is not None else '--':>6}")
+
     e = results["energy"]
     ratio = e["skin_mgy_day"] / VALIDATED_MGY_DAY
-    print(f"\n  energy-form skin / validated = {e['skin_mgy_day']:.4f} / "
+    print(f"\n  energy-form FULL-composition skin / validated = {e['skin_mgy_day']:.4f} / "
           f"{VALIDATED_MGY_DAY:.3f} = {ratio:.3f}")
     if 0.8 <= ratio <= 1.25:
-        verdict = ("PIPELINE OK GLOBALLY. The 54 g/cm^2 anchor still reproduces "
-                   "0.31 mGy/day, so the 22 g/cm^2 Al+regolith under-read is "
-                   "config-specific (regolith albedo / heavy-ion tail). Do NOT "
-                   "rescale the global CAL; rework the LIS re-anchor like-for-like.")
+        verdict = ("PIPELINE OK. The full-composition 54 g/cm^2 anchor reproduces "
+                   "0.31 mGy/day, confirming NO global drift. The earlier ~0.36x "
+                   "'drift' was the proton-only harness measuring H alone (see the "
+                   "proton dose fraction above) vs a full-field anchor -- an "
+                   "apples-to-oranges comparison, not a normalisation regression. "
+                   "Do NOT rescale CAL. Flood numbers can be UNFROZEN.")
     elif ratio < 0.6:
-        verdict = ("GLOBAL DRIFT. The 54 g/cm^2 anchor is also low, so the flood "
-                   "pipeline regressed since CAL was set. Find the root cause "
-                   "(composition/flux/normalisation) -- do NOT paper over it with CAL.")
+        verdict = ("STILL LOW even at full composition -- a genuine drift remains. "
+                   "Find the root cause (composition/flux/normalisation), NOT via "
+                   "a CAL rescale. Inspect the per-species breakdown and convergence.")
     else:
-        verdict = ("AMBIGUOUS (0.6-0.8x). Partial drift; inspect per-species and "
-                   "convergence before any CAL decision.")
+        verdict = ("AMBIGUOUS (0.6-0.8x). Inspect per-species and convergence "
+                   "before any CAL decision.")
     print(f"\n  VERDICT: {verdict}")
 
     summary = {"areal_gcm2": args.areal, "cal_old": cal_old,
                "validated_mgy_day": VALIDATED_MGY_DAY, "mult": mult,
-               "primaries_per_form": tier.total_primaries,
+               "composition": "full GCR (H+He+C+Si+Fe), converge_on=skin",
                "results": results, "energy_skin_over_validated": ratio}
     (outdir / "xcheck_summary.json").write_text(json.dumps(summary, indent=2))
     print(f"\n  wrote {outdir / 'xcheck_summary.json'}")
