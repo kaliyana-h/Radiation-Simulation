@@ -1,6 +1,12 @@
 areal_gcm2,al_cm,oltaris_eff_mSv_yr,note
 0,0.00,283,unshielded free-field; OLTARIS Al-sphere Effective Dose Equivalent (BON-2020 2010 solar min ICRP-60 Q)
-10,3.70,254,
-30,11.11,246,minimum of the Al dish (secondary buildup turns the curve back up past here)
-50,18.52,261,
+2.03,0.75,268,Al2 sphere; Total EDE 2.682E+02 mSv/yr (absorbed 0.2635 mGy/day Total)
+5,1.85,256,Al5 sphere; Total EDE 2.557E+02 mSv/yr (absorbed 0.2619 mGy/day Total)
+10,3.70,241,Al10 sphere 2026-09-16 batch; Total EDE 2.412E+02 mSv/yr (absorbed 0.2617 mGy/day). SUPERSEDES old 254 (2026-08-13 run, diff config: ~5% offset -- re-collect 0/30/50/54 in this batch's config)
+15,5.56,232,Al15 sphere 2026-09-16 batch; Total EDE 2.324E+02 mSv/yr (absorbed 0.2638 mGy/day Total)
+19,7.04,228,Al19 sphere 2026-09-16 batch = kernel->flood GATE; Total EDE 2.283E+02 mSv/yr (absorbed 0.2666 mGy/day Total)
+25,9.26,226,Al25 sphere 2026-09-16 batch; Total EDE 2.256E+02 mSv/yr (absorbed 0.2721 mGy/day Total)
+30,11.11,226,Al30 sphere 2026-09-16 batch; Total EDE 2.257E+02 mSv/yr (absorbed 0.2775 mGy/day Total). SUPERSEDES old 246 (2026-08-13 config) -- dish minimum, essentially flat with 25
+40,14.81,230,Al40 sphere 2026-09-16 batch; Total EDE 2.301E+02 mSv/yr (absorbed 0.2895 mGy/day Total). Rising limb -- secondary buildup past the dish minimum
+50,18.52,238,Al50 sphere 2026-09-16 batch; Total EDE 2.379E+02 mSv/yr (absorbed 0.3021 mGy/day Total). SUPERSEDES old 261 (2026-08-13 config) -- rising limb
 54,20.00,264,
