@@ -31,6 +31,7 @@ import functools
 import importlib.util
 import json
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -291,6 +292,43 @@ def _gcr_integral(z: int = 1, a: int = 1, phi_MV: float = 400.0,
     """Calibrated upper-hemisphere scalar fluence rate of ONE GCR species at
     abundance 1.0 (/cm^2/s). Raw LIS integral times the absolute flux calibration."""
     return _calibration_factor() * _raw_gcr_integral(z, a, phi_MV, emin_mev, emax_mev, n)
+
+
+# ----------------------------------------------------------------------
+# LIS spectral form -- per-engine pinning (see make_source.GCR_LIS_VAR)
+# ----------------------------------------------------------------------
+# make_source evaluates the Usoskin-2005 proton LIS two ways, and the two dose
+# engines are validated on DIFFERENT ones -- so each pins its own form rather
+# than inheriting the process/env default (which f1348d8 flipped to rigidity):
+#   FLOOD  -> "energy"   : the basis OUTER_GAUGE_ANCHOR_CAL and the 0.310 mGy/day
+#                          (= 13.2 uGy/h) absorbed anchors were validated on
+#                          (baseline 9cb6129); reproduces Chang'E-4 / OLTARIS-Total.
+#                          Rigidity reads ~0.48x here (PC 2026-09-16: 0.150 vs 0.302).
+#   KERNEL -> "rigidity" : the basis the thin-wall R=D/phi kernel was regenerated
+#                          and validated on (f1348d8, gcr-composition-engine-mismatch).
+# make_source reads the form once at import (module global GCR_LIS_VAR); both
+# _load_make_source AND _calibration_factor are lru_cached, so a switch must set
+# the env var and drop BOTH caches -- otherwise the flux integral moves to the new
+# form while its absolute calibration stays on the old one. The beam-generation
+# subprocess inherits os.environ, so sampled spectrum and flux normalisation always
+# move together and cannot drift.
+FLOOD_LIS_FORM = "energy"
+KERNEL_LIS_FORM = "rigidity"
+
+
+def set_lis_form(form: str) -> None:
+    """Pin the GCR LIS spectral form for every subsequent LIS read in this process
+    -- and in make_source subprocesses, which inherit os.environ. Drops the two
+    caches that captured the previous form so the flux integral and its absolute
+    calibration are recomputed together. Called once at each engine's entry
+    (run_composition -> FLOOD_LIS_FORM, fold_gcr_thinwall -> KERNEL_LIS_FORM), so
+    the two engines stay on their validated forms regardless of run order or env."""
+    if form not in (FLOOD_LIS_FORM, KERNEL_LIS_FORM):
+        raise ValueError(f"unknown LIS form {form!r} "
+                         f"(expected {FLOOD_LIS_FORM!r} or {KERNEL_LIS_FORM!r})")
+    os.environ["LUNARSIM_GCR_LIS"] = form
+    _load_make_source.cache_clear()
+    _calibration_factor.cache_clear()
 
 
 def gcr_scalar_fluence_rate(phi_MV: float = 400.0,
@@ -659,6 +697,7 @@ def fold_gcr_thinwall(spec, phi_MV: float = 400.0, material: Optional[str] = Non
     the measured band). Returns the whole-body effective absorbed rate (Gy/s),
     effective dose-eq rate (Sv/s) and its standard error, per-organ rows, and the
     per-species breakdown."""
+    set_lis_form(KERNEL_LIS_FORM)      # kernel was validated on the rigidity form
     material = material or _gcr_calibration_material(spec)
     K = _load_gcr_thinwall_kernel(material)
     organs = K["meta"]["organs"]

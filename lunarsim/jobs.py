@@ -28,7 +28,7 @@ from typing import Callable, Optional
 
 from .spec import HabitatSpec
 from .bridge import RunTier, RunResult, QUICK_LOOK, run_design, SPEScenario
-from .dosimetry import assess_composition, GCR_COMPOSITION
+from .dosimetry import assess_composition, GCR_COMPOSITION, set_lis_form, FLOOD_LIS_FORM
 
 
 # ----------------------------------------------------------------------
@@ -288,6 +288,7 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                     min_batches: int = 2, max_batches: int = 12,
                     converge_on: str = "both", phantom_slack: float = 1.0,
                     composition: list = GCR_COMPOSITION,
+                    lis: Optional[str] = None,
                     progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
                     cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedComposition:
     """Run every GCR species round-robin and converge on the COMBINED dose.
@@ -312,7 +313,14 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
 
     progress_cb(rounds_done, max_batches, rel) reports completed rounds; a round
     is one batch of every species, so the denominator is the round budget, not
-    the summed batch count."""
+    the summed batch count.
+
+    `lis` pins the GCR LIS spectral form for BOTH the beam generation (make_source
+    subprocess) and the in-process flux normalisation, so they cannot drift apart.
+    Defaults to FLOOD_LIS_FORM ("energy") -- the form the flood CAL and the 0.310
+    mGy/day / Chang'E-4 / OLTARIS-Total anchors were validated on. Diagnostics that
+    compare forms (anchor_crosscheck) pass an explicit form."""
+    set_lis_form(lis or FLOOD_LIS_FORM)
     sp_tiers = [(sp, _species_tier(tier, sp[3])) for sp in composition]
     batches: dict[str, list] = {sp[0]: [] for sp in composition}
 

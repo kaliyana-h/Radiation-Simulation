@@ -53,7 +53,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -82,8 +81,12 @@ def _run_one(lis_var: str, areal_gcm2: float, run_dir: Path, tier) -> dict:
     from lunarsim.spec import HabitatSpec, WallLayer
     from lunarsim import bridge, dosimetry, jobs
 
-    os.environ["LUNARSIM_GCR_LIS"] = lis_var
-    dosimetry._load_make_source.cache_clear()
+    # set_lis_form drops BOTH the make_source AND the _calibration_factor cache, so
+    # each form's number uses its own consistent flux normalisation (clearing only
+    # _load_make_source, as this harness used to, left the calibration on whichever
+    # form ran first). run_composition below is also handed lis=lis_var so its own
+    # entry pin does not override this form with the flood default (energy).
+    dosimetry.set_lis_form(lis_var)
     t_cm = areal_gcm2 / AL_RHO_G_CM3
     spec = HabitatSpec(name=f"xcheck_{lis_var}", shape=XCHECK_SHAPE,
                        inner_radius_cm=XCHECK_INNER_R_CM,
@@ -94,7 +97,8 @@ def _run_one(lis_var: str, areal_gcm2: float, run_dir: Path, tier) -> dict:
     # Skin converges fast at all depths (crossover-discontinuity memory); the
     # crew phantom is Bragg-noisy, so converge on skin and report both.
     comp = jobs.run_composition(spec, tier=tier, converge_on="skin",
-                                target_rel_err=0.03, min_batches=2, max_batches=8)
+                                target_rel_err=0.03, min_batches=2, max_batches=8,
+                                lis=lis_var)
     if comp.returncode != 0 or not comp.species_results:
         raise SystemExit(f"[{lis_var}] composition MC failed (rc={comp.returncode}); "
                          f"see {run_dir}")

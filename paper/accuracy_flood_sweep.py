@@ -91,7 +91,13 @@ def _write_csv(rows: dict[float, dict]) -> None:
 
 
 def _run_depth(gcm2: float, run_dir: Path, tier, args) -> dict:
-    """One full-composition flood MC at this Al areal density; effective doses."""
+    """One full-composition flood MC at this Al areal density; effective doses.
+
+    LIS form is pinned to ENERGY (see main()): the flood CAL (OUTER_GAUGE_ANCHOR_
+    CAL) and the 0.310/13.2 absorbed anchors were validated on the energy/legacy
+    form (baseline 9cb6129); the rigidity default introduced by f1348d8 reads
+    ~0.48x at 54 g/cm^2 and would put every flood point ~2x below OLTARIS-Total.
+    Confirmed on PC 2026-09-16: energy 0.302 vs rigidity 0.150 mGy/day."""
     from lunarsim.spec import HabitatSpec, WallLayer
     from lunarsim import dosimetry, jobs
 
@@ -138,7 +144,14 @@ def main(argv=None) -> None:
                    help="max convergence batches per species (default 12)")
     args = p.parse_args(argv)
 
-    from lunarsim import bridge
+    # Pin the flood LIS form explicitly. run_composition now defaults to
+    # FLOOD_LIS_FORM ("energy") on its own, but set it here too so the
+    # assess_composition calls in _run_depth (after the MC) are unambiguously on
+    # the flood CAL basis -- the form the 0.310/13.2 absorbed anchors and OLTARIS-
+    # Total agreement were validated on (rigidity, the old default, reads ~0.48x).
+    from lunarsim import bridge, dosimetry
+    dosimetry.set_lis_form(dosimetry.FLOOD_LIS_FORM)
+    print(f"  LIS form pinned: {dosimetry.FLOOD_LIS_FORM} (flood CAL basis)\n")
     outdir = Path(args.outdir).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     tier = bridge.FULL_RUN
