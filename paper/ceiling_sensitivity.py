@@ -77,7 +77,7 @@ def main(argv=None) -> None:
     # test must ride on the same spectral form the flood column was validated on.
     from lunarsim.spec import HabitatSpec, WallLayer
     from lunarsim import bridge, dosimetry, jobs
-    from lunarsim import make_source as ms
+    import make_source as ms          # root-level script; REPO_ROOT is on sys.path above
     dosimetry.set_lis_form(dosimetry.FLOOD_LIS_FORM)
 
     emax = ms.GCR_EMAX_PER_NUC                       # the ceiling ACTUALLY in effect
