@@ -90,8 +90,25 @@ def scorer_csv_names(shell_name: str) -> tuple[str, str]:
 
 def build_param_file(material: str, wall_gcm2: float, species_name: str,
                      node_index: int, seed: int, threads: int = 0,
-                     composition: str = "reference") -> str:
-    """Full text of one runnable TOPAS kernel-generation file."""
+                     composition: str = "reference",
+                     wall_geometry: str = "slab") -> str:
+    """Full text of one runnable TOPAS kernel-generation file.
+
+    wall_geometry selects how the areal-density shield is placed:
+      "slab"  (default, PRODUCTION) -- horizontal TsBox above the phantom; every
+              ring crosses t/cos(theta). This is the committed kernel geometry.
+      "shell" (DIAGNOSTIC ONLY)     -- concentric TsSphere shell wrapping the
+              phantom (r in [WALL_RMIN, WALL_RMIN+t]); centre-aimed rings cross
+              it near-radially, so it is the ZERO-obliquity bracket. This is the
+              geometry config.py "WHY A SLAB, NOT A SHELL" recorded as biased HIGH
+              (2.025->1.32, 10->1.57, 50->3.21x). It exists here so a single anchor
+              can be re-measured as an absorbed-dose bracket against the trusted
+              flood (see paper/wall_geometry_probe.py). NEVER ship a kernel built
+              with it.
+    """
+    if wall_geometry not in config.WALL_GEOMETRIES:
+        raise ValueError(f"wall_geometry must be one of {config.WALL_GEOMETRIES}, "
+                         f"got {wall_geometry!r}")
     mat = config.MATERIALS[material]
     species = config.species_for(composition)[species_name]
     nodes = species["nodes_pernuc_mev"]
@@ -134,10 +151,11 @@ def build_param_file(material: str, wall_gcm2: float, species_name: str,
         L.append(f"# --- {material} material definition (from lunar_environment.txt) ---")
         L.extend(mat["defn"])
         L.append("")
-    # Flat areal-density shield slab (skip at the 0 g/cm^2 bare-phantom anchor).
-    # Horizontal TsBox of thickness t = areal/rho sitting on the phantom north
-    # pole; every upper-hemisphere ring at zenith theta crosses it at t/cos(theta).
-    if wall_gcm2 > 0:
+    # Areal-density shield (skip at the 0 g/cm^2 bare-phantom anchor).
+    if wall_gcm2 > 0 and wall_geometry == "slab":
+        # Flat areal-density shield slab: horizontal TsBox of thickness t = areal/rho
+        # sitting on the phantom north pole; every upper-hemisphere ring at zenith
+        # theta crosses it at t/cos(theta).
         slab_hlz = wall_thick / 2.0
         slab_z = config.WALL_RMIN_CM + slab_hlz   # box centre -> spans [RMIN, RMIN+t]
         L.append('s:Ge/Wall/Type     = "TsBox"')
@@ -147,6 +165,19 @@ def build_param_file(material: str, wall_gcm2: float, species_name: str,
         L.append(f"d:Ge/Wall/HLY      = {config.WALL_SLAB_HL_CM:.1f} cm")
         L.append(f"d:Ge/Wall/HLZ      = {slab_hlz:.4f} cm")
         L.append(f"d:Ge/Wall/TransZ   = {slab_z:.4f} cm")
+        L.append('b:Ge/Wall/Invisible = "true"')
+        L.append("")
+    elif wall_gcm2 > 0 and wall_geometry == "shell":
+        # DIAGNOSTIC zero-obliquity bracket: concentric TsSphere shell of thickness
+        # t = areal/rho wrapping the phantom (r in [WALL_RMIN, WALL_RMIN+t]). A
+        # centre-aimed ring ray crosses it near-radially (path ~ t, theta-independent),
+        # so this removes the slab's t/cos(theta) slant. config.py records this reads
+        # HIGH (up to 3.21x at 50 g/cm^2). Used only by wall_geometry_probe.py.
+        L.append('s:Ge/Wall/Type     = "TsSphere"')
+        L.append('s:Ge/Wall/Parent   = "World"')
+        L.append(f's:Ge/Wall/Material = "{mat["topas"]}"')
+        L.append(f"d:Ge/Wall/RMin     = {config.WALL_RMIN_CM:.4f} cm")
+        L.append(f"d:Ge/Wall/RMax     = {config.WALL_RMIN_CM + wall_thick:.4f} cm")
         L.append('b:Ge/Wall/Invisible = "true"')
         L.append("")
     # Concentric water organ shells + their two scorers.

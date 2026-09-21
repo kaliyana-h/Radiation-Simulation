@@ -105,6 +105,13 @@ WALL_RMIN_CM = PHANTOM_R_CM   # slab bottom face z (sits on the phantom north po
 # (half = BEAM_RADIUS + 50).
 WALL_SLAB_HL_CM = 200.0
 
+# Wall placement modes build_param_file understands. "slab" is the PRODUCTION
+# geometry (the flat t/cos(theta) slant shield above). "shell" is a DIAGNOSTIC-ONLY
+# concentric-shell wall (zero obliquity) used by paper/wall_geometry_probe.py to
+# re-measure the shell-vs-slab absorbed-dose bracket documented just above; a kernel
+# must NEVER be shipped with it.
+WALL_GEOMETRIES = ("slab", "shell")
+
 # --------------------------------------------------------------------------
 # Calibration materials -- TOPAS name, density, and (for non-builtins) the
 # composition block, copied verbatim from lunar_environment.txt so transport and
