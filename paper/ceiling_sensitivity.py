@@ -155,9 +155,30 @@ def main(argv=None) -> None:
         hi = max(same_areal, key=lambda r: float(r["emax_per_nuc_mev"]))
         if float(hi["emax_per_nuc_mev"]) > float(lo["emax_per_nuc_mev"]):
             rs = float(hi["skin_mgy_day"]) / float(lo["skin_mgy_day"])
-            print(f"\n   skin absorbed ratio (high/low ceiling) = {rs:.3f}")
-            print("   >1 by more than the ~1.06 seen at 22 g/cm^2 => deep dropoff is a")
-            print("   truncation artifact (the missing >ceiling tail grows with depth).")
+            # Reference: the ~20 GeV/nuc ceiling under-reports skin absorbed by
+            # ~1.06 (5.6%) at the shallow ~22 g/cm^2 config (make_source:70-74).
+            # Truncation is a DEPTH-GROWING artifact only if this deep-shield ratio
+            # materially EXCEEDS that shallow ~1.06 -- i.e. the missing >ceiling tail
+            # carries progressively more of the surviving deep dose. A ratio ~= 1.06
+            # means the ceiling costs the SAME modest fraction at depth as it does
+            # shallow -> the flood is NOT truncation-limited at depth, and a steep
+            # deep dropoff seen elsewhere (e.g. the kernel) is that engine's own
+            # defect, not a shared source-ceiling truncation. Skin rel_err ~0.5% =>
+            # ratio uncertainty ~0.7%, so require a clear margin (>= ~1.12) before
+            # calling truncation depth-growing.
+            REF_SHALLOW = 1.06        # ~22 g/cm^2 ceiling under-report
+            MARGIN = 0.06             # ~10x the ~0.7% ratio noise floor
+            print(f"\n   skin absorbed ratio (high/low ceiling) = {rs:.3f}  "
+                  f"(shallow ~22 g/cm^2 reference ~{REF_SHALLOW:.2f})")
+            if rs >= REF_SHALLOW + MARGIN:
+                print(f"   >> materially above the shallow ~{REF_SHALLOW:.2f} => TRUNCATION IS")
+                print("   DEPTH-GROWING: the missing >ceiling tail carries more of the deep")
+                print("   dose -> raise the source ceiling (and any folded-kernel ceiling).")
+            else:
+                print(f"   ~= the shallow ~{REF_SHALLOW:.2f} (within noise) => the ceiling costs")
+                print("   the SAME modest fraction at depth as shallow. The flood is NOT")
+                print("   truncation-limited at depth; a steep deep dropoff in the kernel is")
+                print("   that engine's own R-table wall (~6 GeV/nuc), not a shared artifact.")
 
 
 if __name__ == "__main__":
