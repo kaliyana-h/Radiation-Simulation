@@ -77,12 +77,6 @@ SCORE_STANDARDS = (
 _PILL_LABEL = {"SAFE": "SAFE", "MARGINAL": "MARGINAL", "EXCEEDS LIMIT": "EXCEEDS"}
 _PILL_BG = {"SAFE": "rgba(63,185,80,0.14)", "MARGINAL": "rgba(210,153,34,0.16)",
             "EXCEEDS LIMIT": "rgba(242,79,61,0.16)"}
-_SCORE_FOOTNOTE = (
-    "Career limits are risk-policy thresholds, not physical constants. NASA moved "
-    "to a flat 600 mSv in 2021 (from age/sex-varying 600–1200); ESA/Roscosmos use "
-    "1000; exploration-class limits are under review. The mSv/yr above is the "
-    "model's physical result and does not depend on which limit it is compared "
-    "against.")
 
 # --- Fixed scoring preset --------------------------------------------------
 # Every evaluation uses THESE settings, hidden from the student, so that two
@@ -1573,11 +1567,11 @@ def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
 
     The big number is neutral-coloured -- it is the model's physical result and
     carries no pass/fail. Verdict colour lives on the per-standard rows (see
-    SCORE_STANDARDS / _SCORE_FOOTNOTE), signalling "this is physics; the verdicts
-    are policy". qf_label names the quality-factor model behind `score` (both the
-    flood headline and the thin-wall fold run on ICRP-60 Q(L), so the quantity does
-    not flip across the ~19 g/cm2 crossover); cmp_line carries the NASA/Cucinotta Q
-    conservative cross-check as a band.
+    SCORE_STANDARDS), signalling "this is physics; the verdicts are policy".
+    qf_label names the quality-factor model behind `score` (both the flood headline
+    and the thin-wall fold run on ICRP-60 Q(L), so the quantity does not flip across
+    the ~19 g/cm2 crossover). cmp_line is accepted for signature compatibility but
+    no longer rendered on the card.
     size_note, when present, is a (colour, text) advisory that the design is
     oversized and its dose extrapolates past the validated size envelope."""
     style = dict(CARD)
@@ -1597,12 +1591,6 @@ def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
             "color": MUTED, "fontSize": "11px", "marginTop": "6px"}),
     ]
     children += [_standard_row(assessment, k, n, note) for k, n, note in standards]
-    children.append(html.Div(_SCORE_FOOTNOTE, style={
-        "color": MUTED, "fontSize": "11px", "lineHeight": "1.5", "marginTop": "16px",
-        "paddingTop": "13px", "borderTop": f"1px solid {BORDER}"}))
-    if cmp_line:
-        children.append(html.Div(cmp_line, style={
-            "color": MUTED, "fontSize": "11px", "marginTop": "6px"}))
     if size_note:
         note_colour, note_text = size_note
         children.append(html.Div("⚠ " + note_text, style={
