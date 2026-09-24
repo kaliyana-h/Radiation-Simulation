@@ -24,9 +24,15 @@ a post-hoc external reference for reporting a tolerance, never a fit target.
 
 Usage
 -----
-    python3 paper/accuracy_vs_depth.py                 # table only
+    python3 paper/accuracy_vs_depth.py                 # table only (flood=skin)
     python3 paper/accuracy_vs_depth.py --plot          # + F13 figure
+    python3 paper/accuracy_vs_depth.py --flood-col eff  # phantom diagnostic instead
     python3 paper/accuracy_vs_depth.py --write-kernel   # also dump kernel CSV
+
+The flood column above the ~19 g/cm^2 gate defaults to the wall-lining (skin)
+scorer -- the OLTARIS-validated basis and production headline, rel_err ~0.5%,
+smooth/monotonic. Use --flood-col eff for the crew-phantom effective dose, which
+is a Bragg-noisy diagnostic (rel_err 9-16%, non-monotonic) not fit for the figure.
 """
 from __future__ import annotations
 
@@ -97,6 +103,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--oltaris", default=str(HERE / "accuracy_al_oltaris.csv"))
     ap.add_argument("--flood", default=str(HERE / "accuracy_al_flood.csv"))
+    ap.add_argument("--flood-col", choices=["skin", "eff"], default="skin",
+                    help="which flood scorer to plot above the gate: "
+                         "'skin' = wall-lining dose equiv (OLTARIS-validated basis, "
+                         "rel_err ~0.5%, smooth/monotonic; the production headline) "
+                         "or 'eff' = crew-phantom effective dose (Bragg-noisy, "
+                         "rel_err 9-16%, non-monotonic diagnostic). Default: skin.")
     ap.add_argument("--plot", action="store_true", help="write F13 figure")
     ap.add_argument("--write-kernel", action="store_true",
                     help="dump computed kernel column to accuracy_al_kernel.csv")
@@ -104,13 +116,16 @@ def main() -> None:
     args = ap.parse_args()
 
     olt = load_ref(Path(args.oltaris), "oltaris_eff_mSv_yr")
-    flood_eff = load_ref(Path(args.flood), "flood_eff_mSv_yr")
+    flood_col = f"flood_{args.flood_col}_mSv_yr"      # flood_skin_mSv_yr | flood_eff_mSv_yr
+    flood_vals = load_ref(Path(args.flood), flood_col)
+    flood_label = ("flood skin (wall-lining)" if args.flood_col == "skin"
+                   else "flood phantom (effective)")
 
     rows = []
     for g in GRID_GCM2:
         k = compute_kernel(g)
         o = nearest(olt, g)
-        f = nearest(flood_eff, g)
+        f = nearest(flood_vals, g)
         prod = (k["eff_mSv_yr"] if k else None) if g < GATE_GCM2 else f
         prod_engine = "kernel" if g < GATE_GCM2 else "flood"
         rows.append({"g": g, "al_cm": al_cm(g), "k": k, "olt": o,
@@ -120,7 +135,8 @@ def main() -> None:
     hdr = (f"{'Al g/cm2':>9} {'Al cm':>6} {'OLTARIS':>8} {'kernel':>8} "
            f"{'k/OLT':>6} {'Q_kern':>6} {'flood':>8} {'PROD':>8} "
            f"{'prod/OLT':>8}  engine")
-    print("\nTool vs OLTARIS-Al  --  effective dose equivalent (mSv/yr)\n")
+    print("\nTool vs OLTARIS-Al  --  effective dose equivalent (mSv/yr)")
+    print(f"flood column above gate: {flood_label}\n")
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
@@ -162,10 +178,10 @@ def main() -> None:
         print(f"wrote {kp}")
 
     if args.plot:
-        make_plot(rows, Path(args.out))
+        make_plot(rows, Path(args.out), flood_label)
 
 
-def make_plot(rows, out: Path) -> None:
+def make_plot(rows, out: Path, flood_label: str = "tool flood MC") -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -194,7 +210,7 @@ def make_plot(rows, out: Path) -> None:
     fx, fy = series("flood")
     if fx:
         ax.plot(fx, fy, "^", color=C_FLOOD, ms=8, mfc="white", zorder=6,
-                label="tool flood MC")
+                label=f"tool flood MC ({flood_label.split('(')[0].strip()})")
     px, py = series("prod")
     if px:
         ax.plot(px, py, "-", color=C_PROD, lw=2.6, alpha=0.55, zorder=4,
