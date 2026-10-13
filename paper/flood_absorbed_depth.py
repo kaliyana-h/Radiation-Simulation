@@ -187,12 +187,23 @@ def main(argv=None) -> None:
                    help="per-species target relative error (default 0.05)")
     p.add_argument("--max-batches", type=int, default=12,
                    help="max convergence batches per species (default 12)")
+    p.add_argument("--refold", action="store_true",
+                   help="NO MC: recompute only the kernel_dabs/kernel_over_flood "
+                        "columns against the CURRENT production kernel, reusing the "
+                        "cached flood rows. Re-diagnoses the deep plunge on today's "
+                        "(e.g. tail-extended) kernel instantly; writes the refreshed "
+                        "ratio back to the CSV and prints the trend.")
     args = p.parse_args(argv)
 
     from lunarsim import bridge, dosimetry
     outdir = Path(args.outdir).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     tier = bridge.FULL_RUN
+
+    if args.refold:                       # no-MC re-diagnosis against today's kernel
+        _refold(tier.phi_mv)
+        return
+
     depths = args.depths if args.depths else list(DEFAULT_DEPTHS_GCM2)
 
     # Kernel absorbed is a free deterministic fold: compute ALL depths up front
@@ -229,19 +240,63 @@ def main(argv=None) -> None:
         _write_csv(rows)             # checkpoint after every depth (resumable)
         print(f"  [{g:g}] written.\n")
 
-    # Trend summary: does kernel/flood FALL with depth (depth-growing over-attenuation)?
+    _print_trend(rows)
+
+
+def _print_trend(rows: dict[float, dict]) -> None:
+    """Does kernel/flood FALL with depth (depth-growing over-attenuation)?"""
     filled = [r for r in sorted(rows.values(), key=lambda r: float(r["areal_gcm2"]))
               if (r.get("flood_skin_mgy_day") or "").strip()]
-    if filled:
-        print("  === absorbed-dose ground truth (kernel must reproduce flood) ===")
-        print(f"  {'g/cm2':>6} {'flood_Dabs':>10} {'kernel_Dabs':>11} {'kern/flood':>10} "
-              f"{'OLTARIS':>8}")
-        for r in filled:
-            print(f"  {float(r['areal_gcm2']):>6g} {r['flood_skin_mgy_day']:>10} "
-                  f"{r['kernel_dabs_mgy_day']:>11} {r['kernel_over_flood']:>10} "
-                  f"{(r.get('oltaris_dabs_mgy_day') or '--'):>8}")
-        print("\n  kern/flood FALLING with depth => kernel_gen slant over-attenuation is\n"
-              "  depth-growing (the fix target). FLAT => a scale offset, not a slope defect.")
+    if not filled:
+        return
+    print("  === absorbed-dose ground truth (kernel must reproduce flood) ===")
+    print(f"  {'g/cm2':>6} {'flood_Dabs':>10} {'kernel_Dabs':>11} {'kern/flood':>10} "
+          f"{'OLTARIS':>8}")
+    for r in filled:
+        print(f"  {float(r['areal_gcm2']):>6g} {r['flood_skin_mgy_day']:>10} "
+              f"{r['kernel_dabs_mgy_day']:>11} {r['kernel_over_flood']:>10} "
+              f"{(r.get('oltaris_dabs_mgy_day') or '--'):>8}")
+    print("\n  kern/flood FALLING with depth => kernel_gen slant over-attenuation is\n"
+          "  depth-growing (the fix target). FLAT => a scale offset, not a slope defect.")
+
+
+def _refold(phi_mv: float) -> None:
+    """NO-MC re-diagnosis: recompute kernel_dabs/kernel_over_flood for every cached
+    flood row against the CURRENT production kernel. Confirms whether the deep plunge
+    persists on today's (tail-extended) kernel without re-running any flood MC.
+    Target-blind: reads only what the deterministic kernel fold already returns."""
+    rows = _load_csv()
+    if not rows:
+        raise SystemExit(f"no cached flood CSV at {CSV_PATH} -- run the MC sweep first "
+                         f"(nothing to refold against).")
+    touched = 0
+    print(f"  refolding kernel absorbed vs CURRENT production kernel (no MC); "
+          f"phi={phi_mv:g} MV\n  {CSV_PATH}\n")
+    for r in sorted(rows.values(), key=lambda r: float(r["areal_gcm2"])):
+        flood = (r.get("flood_skin_mgy_day") or "").strip()
+        if not flood:
+            continue
+        g = float(r["areal_gcm2"])
+        kd = _kernel_dabs(g, phi_mv)          # live deterministic fold, today's kernel
+        fd = float(flood)
+        old = (r.get("kernel_over_flood") or "--").strip()
+        ratio = kd / fd if fd else float("nan")
+        r["kernel_dabs_mgy_day"] = f"{kd:.4f}"
+        r["kernel_over_flood"] = f"{ratio:.3f}"
+        note, stamp = (r.get("note") or "").strip(), "refold vs current kernel"
+        if stamp not in note:
+            r["note"] = (note + " | " if note else "") + stamp
+        print(f"    {g:>5g} g/cm^2  kernel_Dabs {kd:.4f} mGy/day  "
+              f"kern/flood {old} -> {ratio:.3f}")
+        touched += 1
+    if not touched:
+        raise SystemExit("CSV has no filled flood rows to refold -- run the MC sweep first.")
+    _write_csv(rows)
+    print()
+    _print_trend(rows)
+    print(f"\n  refolded {touched} row(s). If kern/flood still FALLS with depth, the deep "
+          f"slab\n  over-attenuation survives the tail extension => the wall-geometry fix "
+          f"is still\n  the open item (run paper/wall_geometry_probe.py at all anchors next).")
 
 
 if __name__ == "__main__":
