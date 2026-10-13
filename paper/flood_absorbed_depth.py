@@ -114,6 +114,26 @@ def _write_csv(rows: dict[float, dict]) -> None:
             w.writerow({k: r.get(k, "") for k in CSV_FIELDS})
 
 
+def _use_candidate_kernel(dosimetry, path: str) -> None:
+    """Repoint the ALUMINIUM thin-wall kernel at a candidate JSON (e.g. a shell
+    regen) and drop the load cache, so the kernel column folds the candidate
+    WITHOUT overwriting the shipped data/gcr_thinwall_kernel.json. Target-blind:
+    a pure read-path swap, no dose value is involved."""
+    kp = Path(path).resolve()
+    if not kp.exists():
+        raise SystemExit(f"--kernel {kp} does not exist")
+    dosimetry._GCR_THINWALL_KERNELS["aluminium"] = kp
+    dosimetry._load_gcr_thinwall_kernel.cache_clear()
+    geom = "?"
+    try:
+        import json as _json
+        geom = _json.loads(kp.read_text()).get("meta", {}).get("wall_geometry", "?")
+    except Exception:
+        pass
+    print(f"  CANDIDATE KERNEL: folding against {kp}\n"
+          f"                    (meta.wall_geometry = {geom}); shipped kernel untouched.\n")
+
+
 def _spec(gcm2: float):
     from lunarsim.spec import HabitatSpec, WallLayer
     return HabitatSpec(name=f"floodabs_al{gcm2:g}", shape="dome",
@@ -193,9 +213,16 @@ def main(argv=None) -> None:
                         "cached flood rows. Re-diagnoses the deep plunge on today's "
                         "(e.g. tail-extended) kernel instantly; writes the refreshed "
                         "ratio back to the CSV and prints the trend.")
+    p.add_argument("--kernel", metavar="PATH",
+                   help="fold the kernel column against THIS aluminium kernel JSON "
+                        "instead of the shipped lunarsim/data/gcr_thinwall_kernel.json. "
+                        "Lets a CANDIDATE (e.g. a shell regen) be gated against the "
+                        "flood ground truth before it ships -- pair with --refold.")
     args = p.parse_args(argv)
 
     from lunarsim import bridge, dosimetry
+    if args.kernel:
+        _use_candidate_kernel(dosimetry, args.kernel)
     outdir = Path(args.outdir).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     tier = bridge.FULL_RUN
