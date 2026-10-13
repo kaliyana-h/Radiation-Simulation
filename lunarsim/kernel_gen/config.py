@@ -114,12 +114,23 @@ WALL_RMIN_CM = PHANTOM_R_CM   # slab bottom face z (sits on the phantom north po
 # (half = BEAM_RADIUS + 50).
 WALL_SLAB_HL_CM = 200.0
 
-# Wall placement modes build_param_file understands. "slab" is the PRODUCTION
-# geometry (the flat t/cos(theta) slant shield above). "shell" is a DIAGNOSTIC-ONLY
-# concentric-shell wall (zero obliquity) used by paper/wall_geometry_probe.py to
-# re-measure the shell-vs-slab absorbed-dose bracket documented just above; a kernel
-# must NEVER be shipped with it.
+# Wall placement modes build_param_file understands. "slab" is the flat
+# t/cos(theta) slant shield documented above; "shell" is the concentric-shell
+# (near-radial, zero-obliquity) wall. wall_geometry_probe.py (2026-10-13) showed
+# the slab OVER-attenuates absorbed dose at depth (kernel/flood fell 0.71->0.60
+# over 19->50 g/cm^2) while a shell @50 reproduces the same-physics flood/OLTARIS
+# absorbed (0.302) -- so the slab, not cross-code physics, is the deep-slope
+# defect. See WALL_GEOMETRY below for which one production uses.
 WALL_GEOMETRIES = ("slab", "shell")
+
+# PRODUCTION wall geometry -- the default emit/tail/collect use when a caller does
+# not override it. Stays "slab" until the shell regen clears its target-blind
+# acceptance gate (kernel absorbed reproduces the flood across 19-50 g/cm^2;
+# paper/KERNEL_SLAB_RUNBOOK.md). Flip to "shell" ONLY as the ship step, together
+# with the "WHY A SLAB, NOT A SHELL" docstring above (that 2026-08-23 rationale is
+# overturned -- it measured a shell regen against the slab-tuned kernel, a circular
+# test; the correct yardstick is the same-physics flood, which the shell matches).
+WALL_GEOMETRY = "slab"
 
 # --------------------------------------------------------------------------
 # Calibration materials -- TOPAS name, density, and (for non-builtins) the

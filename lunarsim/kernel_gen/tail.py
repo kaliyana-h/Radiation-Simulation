@@ -65,9 +65,11 @@ from . import config, generate
 # --------------------------------------------------------------------------
 # EMIT (thin wrapper over generate.emit with composition="tail")
 # --------------------------------------------------------------------------
-def emit(out: Path, seeds: int, threads: int, material: str = "aluminium") -> None:
+def emit(out: Path, seeds: int, threads: int, material: str = "aluminium",
+         wall_geometry: str = config.WALL_GEOMETRY) -> None:
     _check_ceiling()
-    generate.emit(material, out, seeds, threads, composition="tail")
+    generate.emit(material, out, seeds, threads, composition="tail",
+                  wall_geometry=wall_geometry)
 
 
 def _check_ceiling() -> None:
@@ -245,6 +247,10 @@ def main(argv=None):
     pe.add_argument("--seeds", type=int, default=config.SEEDS)
     pe.add_argument("--threads", type=int, default=1)
     pe.add_argument("--material", default="aluminium", choices=sorted(config.MATERIALS))
+    pe.add_argument("--wall-geometry", choices=config.WALL_GEOMETRIES,
+                    default=config.WALL_GEOMETRY,
+                    help="MUST match the base kernel's geometry being merged onto "
+                         f"(default {config.WALL_GEOMETRY})")
 
     pm = sub.add_parser("merge", help="append tail responses onto the committed kernel")
     pm.add_argument("--out", required=True, type=Path)
@@ -260,7 +266,7 @@ def main(argv=None):
     if args.cmd == "plan":
         _plan(args.seeds, args.material)
     elif args.cmd == "emit":
-        emit(args.out, args.seeds, args.threads, args.material)
+        emit(args.out, args.seeds, args.threads, args.material, args.wall_geometry)
     elif args.cmd == "merge":
         merge(args.out, args.base, args.dest)
     elif args.cmd == "delta":

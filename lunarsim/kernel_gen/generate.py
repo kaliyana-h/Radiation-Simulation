@@ -61,11 +61,12 @@ def enumerate_runs(material: str, seeds: int, composition: str = "reference"):
 # EMIT
 # --------------------------------------------------------------------------
 def emit(material: str, out: Path, seeds: int, threads: int,
-         composition: str = "reference") -> None:
+         composition: str = "reference",
+         wall_geometry: str = config.WALL_GEOMETRY) -> None:
     runs_dir = out / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     manifest = {"material": material, "seeds": seeds, "threads": threads,
-                "composition": composition,
+                "composition": composition, "wall_geometry": wall_geometry,
                 "grid_gcm2": _grid_for(material), "phi_ff_cm2": config.PHI_FF_CM2,
                 "runs": []}
     n = 0
@@ -74,14 +75,15 @@ def emit(material: str, out: Path, seeds: int, threads: int,
         rdir = runs_dir / rn
         rdir.mkdir(exist_ok=True)
         text = templates.build_param_file(material, wall, sname, node, seed, threads,
-                                          composition)
+                                          composition, wall_geometry)
         (rdir / "run.txt").write_text(text)
         manifest["runs"].append({"name": rn, "wall_gcm2": wall, "species": sname,
                                  "node": node, "seed": seed})
         n += 1
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     _write_runner(out)
-    print(f"emitted {n} runs for material={material} (composition={composition}) into {out}")
+    print(f"emitted {n} runs for material={material} (composition={composition}, "
+          f"wall_geometry={wall_geometry}) into {out}")
     print(f"  grid={_grid_for(material)} g/cm^2, seeds={seeds}, threads/run={threads}")
     print(f"  species={list(config.species_for(composition))}")
     print(f"  next: export TOPAS_G4_DATA_DIR=~/G4Data && bash {out}/run_all.sh")
@@ -164,6 +166,8 @@ def collect(out: Path) -> dict:
     material = manifest["material"]
     seeds = manifest["seeds"]
     composition = manifest.get("composition", "reference")
+    # Geometry actually emitted (older manifests predate the field -> flat slab).
+    wall_geometry = manifest.get("wall_geometry", "slab")
     runs_dir = out / "runs"
     ref_meta = config.load_reference()["meta"]
     points = [_collect_point(runs_dir, material, w, seeds, composition)
@@ -206,7 +210,10 @@ def collect(out: Path) -> dict:
             "organs": [list(o) for o in config.organs_from_reference()],
             "note": note,
             "phantom_shells_cm": [list(s) for s in config.SHELLS],
-            "wall_geometry": "flat_slab",   # areal-density slab crossed at t/cos(theta)
+            # "slab" = areal-density box crossed at t/cos(theta); "shell" =
+            # concentric near-radial wall (the deep-slope fix). Stamped from the
+            # emit manifest, not assumed.
+            "wall_geometry": wall_geometry,
             "wall_slab_bottom_z_cm": config.WALL_RMIN_CM,
             "wall_slab_half_extent_cm": config.WALL_SLAB_HL_CM,
         },
@@ -642,6 +649,11 @@ def main(argv=None):
     pe.add_argument("--composition", choices=config.COMPOSITIONS, default="reference",
                     help="'reference' = committed H/He/C/O/Fe; 'corrected' = "
                          "H/He/C/Si/Fe matching dosimetry.GCR_COMPOSITION (doc 2.3)")
+    pe.add_argument("--wall-geometry", choices=config.WALL_GEOMETRIES,
+                    default=config.WALL_GEOMETRY,
+                    help=f"wall placement (default {config.WALL_GEOMETRY}). 'shell' = "
+                         "concentric near-radial wall (the deep-slope fix); must clear "
+                         "the flood acceptance gate before it ships (KERNEL_SLAB_RUNBOOK.md)")
 
     pc = sub.add_parser("collect", help="parse CSVs into a kernel JSON")
     pc.add_argument("--out", required=True, type=Path)
@@ -653,10 +665,13 @@ def main(argv=None):
     pp.add_argument("--material", required=True, choices=sorted(config.MATERIALS))
     pp.add_argument("--seeds", type=int, default=config.SEEDS)
     pp.add_argument("--composition", choices=config.COMPOSITIONS, default="reference")
+    pp.add_argument("--wall-geometry", choices=config.WALL_GEOMETRIES,
+                    default=config.WALL_GEOMETRY)
 
     args = p.parse_args(argv)
     if args.cmd == "emit":
-        emit(args.material, args.out, args.seeds, args.threads, args.composition)
+        emit(args.material, args.out, args.seeds, args.threads, args.composition,
+             args.wall_geometry)
     elif args.cmd == "collect":
         collect(args.out)
     elif args.cmd == "validate":
@@ -666,7 +681,7 @@ def main(argv=None):
         species = config.species_for(args.composition)
         nodes = sum(len(s["nodes_pernuc_mev"]) for s in species.values())
         print(f"material={args.material}  composition={args.composition}"
-              f"  grid={_grid_for(args.material)}")
+              f"  wall_geometry={args.wall_geometry}  grid={_grid_for(args.material)}")
         print(f"  species={list(species)}")
         print(f"  species-nodes total = {nodes}, seeds={args.seeds}")
         print(f"  total runs = {len(runs)}  (each {config.RINGS*config.AZIMUTH*config.HISTORIES} primaries)")
