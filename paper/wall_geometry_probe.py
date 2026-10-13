@@ -136,11 +136,26 @@ def report(outdir: Path) -> None:
     # difference between the two numbers is then the wall geometry).
     dosimetry.set_lis_form(dosimetry.KERNEL_LIS_FORM)
 
-    K = json.loads((REPO_ROOT / "lunarsim" / "data" / "gcr_thinwall_kernel.json").read_text())
+    # APPLES-TO-APPLES: the shell batch is the 6-node `corrected` grid, so the slab it is
+    # compared against MUST also be the 6-node grid -- i.e. the pre-tail BASE kernel, not
+    # the tail-extended production kernel. Otherwise shell/slab folds in the tail lever and
+    # no longer isolates the pure WALL-GEOMETRY lever this probe exists to measure.
+    data_dir = REPO_ROOT / "lunarsim" / "data"
+    base_path = data_dir / "gcr_thinwall_kernel.base.json"
+    prod_path = data_dir / "gcr_thinwall_kernel.json"
+    if base_path.exists():
+        slab_path = base_path
+        slab_src = "base (6-node, pre-tail) -- matches the shell grid"
+    else:
+        slab_path = prod_path
+        slab_src = ("PRODUCTION (tail-extended) -- base.json absent; shell/slab will "
+                    "UNDER-read the true geometry lever by the tail factor")
+    K = json.loads(slab_path.read_text())
     organs = K["meta"]["organs"]
 
     print(f"\n=== wall-geometry EFFECTIVE absorbed bracket vs depth "
           f"({COMPOSITION} comp, phi={PHI_MV:g} MV) ===")
+    print(f"    slab kernel: {slab_path.name} -- {slab_src}")
     print("    slab = committed kernel (<1/cos>=2.0);  shell = this run (zero obliquity)")
     print("    'ref' = target-blind OLTARIS effective absorbed where a point exists\n")
     header = f"  {'g/cm^2':>7}  {'slab':>8}  {'shell':>8}  {'shell/slab':>10}  {'ref':>7}  {'shell/ref':>9}"

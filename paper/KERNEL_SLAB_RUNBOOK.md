@@ -86,6 +86,23 @@ Read the probe's own VERDICT block:
 
 ---
 
+### Reading Step 2 — the tail and geometry levers are NOT additive
+
+Two cautions, both learned from the 2026-10-13 refold:
+
+1. **Anchor at 50 g/cm² only.** In the 19–40 band the FLOOD yardstick itself
+   over-reads (flood@19 = 0.40 vs OLTARIS@19 = 0.267); flood lands on OLTARIS only
+   at 50 (0.3065 ≈ 0.302). Read 19–40 as *trend*, decide on the 50 anchor. Add a
+   fresh 50 row (`--depths 50`) if the CSV lacks one.
+2. **Do not stack shell-regen on top of the tail.** `wall_geometry_probe` folds the
+   6-node `corrected` grid, and pre-tail a shell @50 already folded to 0.302 =
+   OLTARIS *with the band truncated*. The tail band adds ~+27% absorbed at 50 to
+   EITHER geometry, so shell + tail would overshoot OLTARIS by ~27%. Measure the two
+   levers jointly: compare the shell bracket against the **6-node base** slab
+   (`gcr_thinwall_kernel.base.json`) to isolate the *pure geometry* lift, then model
+   geometry × tail together before committing a regen. The post-tail residual the
+   fix must close is ~24% at 50 (kern/flood ≈ 0.76), **not** the old ~40%.
+
 ## Acceptance (target-blind)
 
 The fix is accepted when, after regen, the **kernel absorbed reproduces the flood
