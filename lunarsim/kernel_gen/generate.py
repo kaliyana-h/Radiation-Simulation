@@ -219,20 +219,26 @@ def collect(out: Path) -> dict:
         },
         "points": points,
     }
-    if composition == "corrected":
-        fname = config.SI_OUT
-    elif material != "aluminium":
+    # Filename is keyed on MATERIAL first: a non-Al kernel always lands in its own
+    # per-material file (EVA_OUT) whatever its composition, so an EVA regen on the
+    # corrected H/He/C/Si/Fe composition (the one that matches the shipped Al
+    # kernel) cannot collide with the Al corrected output. Only for aluminium does
+    # composition pick the file: corrected -> SI_OUT (ships to the headline kernel),
+    # reference -> the compare-only Al regen artefact.
+    if material != "aluminium":
         fname = config.EVA_OUT
+    elif composition == "corrected":
+        fname = config.SI_OUT
     else:
         fname = config.AL_VALIDATION_OUT
     dest = out / fname
     dest.write_text(json.dumps(kernel, indent=2))
     print(f"collected {material} kernel (composition={composition}) -> {dest}")
-    if composition == "corrected":
+    if material != "aluminium":
+        print(f"  to ship: copy to lunarsim/data/{config.EVA_OUT}")
+    elif composition == "corrected":
         print(f"  to ship (AFTER validate passes): copy to "
               f"lunarsim/data/gcr_thinwall_kernel.json")
-    elif material != "aluminium":
-        print(f"  to ship: copy to lunarsim/data/{config.EVA_OUT}")
     return kernel
 
 
