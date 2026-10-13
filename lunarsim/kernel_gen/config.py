@@ -252,7 +252,50 @@ def species_corrected() -> dict:
     }
 
 
-COMPOSITIONS = ("reference", "corrected")
+# --------------------------------------------------------------------------
+# High-energy TAIL extension (heavy-ion penetration tail / energy-ceiling run).
+# --------------------------------------------------------------------------
+# The committed kernel's top per-nucleon nodes are 6000 (H/He) and 5000 (C/Si/Fe)
+# MeV/n, but the free-field GCR flux make_source emits runs up to
+# make_source.GCR_EMAX_PER_NUC = 20000 MeV/n (20 GeV/n). dosimetry._thinwall_fold_point
+# integrates the spectrum only between the lowest and HIGHEST node (edges = [nd[0]]
+# ... [nd[-1]]): all flux ABOVE the top node is HARD-TRUNCATED, not extrapolated.
+# That dropped 5-20 GeV/n band carries ~4-7% of each species' fluence (measured
+# target-blind, laptop arithmetic) and a larger share of DOSE for the penetrating,
+# high-Q heavy ions -- it is exactly the "energy-ceiling caveat" (memories
+# [[compute-scaling-priorities]], [[effective-dose-option-c]] i7/i9).
+#
+# These TAIL nodes extend each species' grid UP TO the free-field ceiling so the
+# fold's top edge coincides with GCR_EMAX_PER_NUC and nothing is dropped. They are
+# APPENDED to -- never replace -- the committed grid, so the base R values stay
+# byte-identical and the Al --validate gate is unaffected (the tail batch is run
+# and MERGED in by kernel_gen.tail; it is NOT part of the validate path). The top
+# node is pinned to 20000 MeV/n == GCR_EMAX_PER_NUC so zero residual flux is lost.
+TAIL_CEILING_PERNUC_MEV = 20000.0   # == make_source.GCR_EMAX_PER_NUC (verify before a run)
+TAIL_NODES_PERNUC_MEV = {
+    "H":  [12000.0, TAIL_CEILING_PERNUC_MEV],   # total KE 12 / 20 GeV
+    "He": [12000.0, TAIL_CEILING_PERNUC_MEV],   # total KE 48 / 80 GeV
+    "C":  [10000.0, TAIL_CEILING_PERNUC_MEV],   # total KE 120 / 240 GeV
+    "Si": [10000.0, TAIL_CEILING_PERNUC_MEV],   # total KE 280 / 560 GeV
+    "Fe": [10000.0, TAIL_CEILING_PERNUC_MEV],   # total KE 560 / 1120 GeV (the long pole)
+}
+
+
+def species_corrected_tail() -> dict:
+    """The corrected H/He/C/Si/Fe table carrying ONLY the high-energy TAIL nodes
+    (TAIL_NODES_PERNUC_MEV). Same dict shape as species_corrected(); used by
+    kernel_gen.tail to emit a focused tail batch whose responses are then merged
+    onto the committed kernel's existing nodes. Node energies here are the APPEND
+    set, not the full grid."""
+    return {
+        name: {"z": s["z"], "a": s["a"], "abundance": s["abundance"],
+               "particle": s["particle"], "group": s["group"],
+               "nodes_pernuc_mev": list(TAIL_NODES_PERNUC_MEV[name])}
+        for name, s in CORRECTED_COMPOSITION.items()
+    }
+
+
+COMPOSITIONS = ("reference", "corrected", "tail")
 
 
 def species_for(composition: str = "reference") -> dict:
@@ -261,4 +304,6 @@ def species_for(composition: str = "reference") -> dict:
         return species_from_reference()
     if composition == "corrected":
         return species_corrected()
+    if composition == "tail":
+        return species_corrected_tail()
     raise ValueError(f"unknown composition {composition!r}; expected one of {COMPOSITIONS}")
