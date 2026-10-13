@@ -33,12 +33,21 @@ from pathlib import Path
 
 # --- committed Al kernel: the single source of truth for species/nodes/organs --
 _REPO_KERNEL = Path(__file__).resolve().parents[1] / "data" / "gcr_thinwall_kernel.json"
+# Reproduction-gate reference. Once the deployed kernel is TAIL-EXTENDED (its fold
+# runs to the free-field ceiling, so species carry extra high-energy nodes the base
+# regen does not), the shipped file is no longer a clean base-grid baseline for
+# --validate. If a pre-tail snapshot exists, validate against THAT so the gate keeps
+# comparing like node grids; otherwise fall back to the deployed kernel.
+_REPO_KERNEL_BASE = _REPO_KERNEL.with_suffix(".base.json")
 
 
 def load_reference() -> dict:
     """The committed aluminium kernel -- species table, energy nodes, organ
-    weights and meta are copied FROM here so a regenerated kernel stays aligned."""
-    with open(_REPO_KERNEL) as fh:
+    weights and meta are copied FROM here so a regenerated kernel stays aligned.
+    Prefers the base-grid snapshot (gcr_thinwall_kernel.base.json) when present, so
+    the reproduction gate stays meaningful after the deployed kernel is tail-extended."""
+    ref = _REPO_KERNEL_BASE if _REPO_KERNEL_BASE.exists() else _REPO_KERNEL
+    with open(ref) as fh:
         return json.load(fh)
 
 
