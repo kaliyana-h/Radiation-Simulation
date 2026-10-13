@@ -12,12 +12,14 @@ the true continuous-hemisphere <1/cos(theta)> = 2.0, which four discrete midpoin
 angles under-sample to 1.70 (pinned by the Al --validate; see _ring_directions).
 
 Geometry: concentric water organ-shell spheres (config.SHELLS) shielded by a
-FLAT areal-density slab of the wall material (horizontal TsBox, thickness =
-areal_density / rho) sitting directly above the phantom -- the OLTARIS-style
-slant-path shield, so each upper-hemisphere ring crosses t/cos(theta) (see
-config.py "WHY A SLAB, NOT A SHELL"). Each shell carries two whole-volume
-scorers -- DoseToMedium (absorbed, -> R["D"]) and DoseEquivalent_ICRP
-(ICRP-60 dose-eq, -> R["I"]).
+concentric SHELL of the wall material (TsSphere, RMin=PHANTOM_R, RMax=RMin+t,
+t = areal_density / rho) -- the near-radial, zero-obliquity wall that reproduces
+the same-physics flood's deep absorbed dose (shipped 2026-10-13; see config.py
+"WHY A SHELL, NOT A SLAB"). The alternative FLAT slab (horizontal TsBox, rings
+cross t/cos(theta)) stays selectable via config.WALL_GEOMETRIES for regression
+only -- it over-attenuates absorbed dose at depth. Each shell carries two
+whole-volume scorers -- DoseToMedium (absorbed, -> R["D"]) and
+DoseEquivalent_ICRP (ICRP-60 dose-eq, -> R["I"]).
 """
 from __future__ import annotations
 
@@ -91,20 +93,20 @@ def scorer_csv_names(shell_name: str) -> tuple[str, str]:
 def build_param_file(material: str, wall_gcm2: float, species_name: str,
                      node_index: int, seed: int, threads: int = 0,
                      composition: str = "reference",
-                     wall_geometry: str = "slab") -> str:
+                     wall_geometry: str = "shell") -> str:
     """Full text of one runnable TOPAS kernel-generation file.
 
     wall_geometry selects how the areal-density shield is placed:
-      "slab"  (default, PRODUCTION) -- horizontal TsBox above the phantom; every
-              ring crosses t/cos(theta). This is the committed kernel geometry.
-      "shell" (DIAGNOSTIC ONLY)     -- concentric TsSphere shell wrapping the
-              phantom (r in [WALL_RMIN, WALL_RMIN+t]); centre-aimed rings cross
-              it near-radially, so it is the ZERO-obliquity bracket. This is the
-              geometry config.py "WHY A SLAB, NOT A SHELL" recorded as biased HIGH
-              (2.025->1.32, 10->1.57, 50->3.21x). It exists here so a single anchor
-              can be re-measured as an absorbed-dose bracket against the trusted
-              flood (see paper/wall_geometry_probe.py). NEVER ship a kernel built
-              with it.
+      "shell" (default, PRODUCTION) -- concentric TsSphere shell wrapping the
+              phantom (r in [WALL_RMIN, WALL_RMIN+t]); rings cross it near-radially,
+              so the shielded areal density is ~ the nominal t (zero obliquity).
+              Shipped 2026-10-13: reproduces the same-physics flood's deep absorbed
+              dose (kern/flood FLAT 0.915->0.977 over 19->50 g/cm^2; @50 = 0.988x
+              OLTARIS 0.302). See config.py "WHY A SHELL, NOT A SLAB".
+      "slab"  (regression/reproduction only) -- horizontal TsBox above the phantom;
+              every ring crosses t/cos(theta), a ~1.70x constant slant that
+              over-attenuates absorbed dose at depth (the deep-slope defect this
+              ship fixed). Retained so the old committed kernel can be reproduced.
     """
     if wall_geometry not in config.WALL_GEOMETRIES:
         raise ValueError(f"wall_geometry must be one of {config.WALL_GEOMETRIES}, "

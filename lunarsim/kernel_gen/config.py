@@ -89,21 +89,28 @@ SHELLS = [
 # --------------------------------------------------------------------------
 # Wall shield -- RECONSTRUCTED, pinned by --validate.
 # --------------------------------------------------------------------------
-# A FLAT areal-density slab (the OLTARIS/HZETRN shielding convention this kernel
-# is cross-checked against), NOT a concentric shell. A horizontal TsBox of
-# thickness t = areal_density / density sits directly above the phantom
-# (z in [WALL_RMIN, WALL_RMIN + t]). Every upper-hemisphere ring at zenith theta
-# crosses it at slant path t/cos(theta), so the effective shielding is the
-# flux-weighted <1/cos(theta)> ~ 1.70x the radial areal density.
+# A concentric SHELL of thickness t = areal_density / density wrapping the phantom
+# (a TsSphere, RMin=PHANTOM_R, RMax=RMin+t). Every upper-hemisphere ring crosses it
+# near-radially, so the shielded areal density is ~ the nominal t (zero obliquity).
+# The alternative "slab" mode (selectable, see WALL_GEOMETRIES) is a horizontal TsBox
+# whose rings cross at slant path t/cos(theta), giving a flux-weighted <1/cos(theta)>
+# ~ 1.70x slant -- that mode is retained only for regression/reproduction, NOT shipped.
 #
-# WHY A SLAB, NOT A SHELL (pinned by the Al --validate on 2026-08-23): a
-# spherically-symmetric shell is theta-independent -- every ring crosses the same
-# radial t -- so it CANNOT produce a 1/cos(theta) attenuation pattern. The Al
-# regeneration with a shell wall came out biased HIGH by a factor that was flat
-# across organ / quantity / species but grew with wall thickness (2.025->1.32,
-# 10->1.57, 50->3.21 g/cm^2), and whose high-SNR geo-mean was 1.717 -- almost
-# exactly mean(1/cos(theta)) over the four ring angles (1.70). That is the
-# fingerprint of a planar slant-path shield the shell was missing.
+# WHY A SHELL, NOT A SLAB (flipped 2026-10-13; supersedes the 2026-08-23 slab pin):
+# the slab's constant ~1.70x slant OVER-attenuates absorbed dose at depth, and the
+# over-attenuation GROWS with thickness (true obliquity is 1.32/1.57/3.21 at
+# 2.025/10/50 g/cm^2, not one geo-mean), so the slab kernel's deep absorbed fell
+# away from the same-physics flood (kern/flood 0.83->0.78 over 19->40). A shell
+# removes the slant: the target-blind flood gate (paper/flood_absorbed_depth.py
+# --refold) has the shell base reproducing flood/OLTARIS absorbed FLAT across
+# 19->50 g/cm^2 (kern/flood 0.915/0.963/0.966/0.977; @50 = 0.988x OLTARIS 0.302).
+# The 2026-08-23 "shell biased HIGH 1.32/1.57/3.21" finding was a CIRCULAR test --
+# it measured a shell regen against the slab-TUNED kernel, i.e. that 1.70x slant IS
+# the slab's own over-attenuation seen in reverse, not a shell bias. The correct
+# yardstick is the same-physics flood, which the shell matches and the slab does not.
+# NOTE: we ship the shell BASE (no ceiling tail). On the corrected geometry the tail
+# over-read OLTARIS by ~21% at depth (it was a compensator for the slab defect, now
+# removed), so tail.py's extension is NOT merged into the production kernel.
 WALL_RMIN_CM = PHANTOM_R_CM   # slab bottom face z (sits on the phantom north pole)
 # Lateral half-extent of the shield slab. Must exceed the horizontal footprint a
 # grazing ring ray sweeps while inside the slab so the ray enters the top face and
@@ -124,13 +131,13 @@ WALL_SLAB_HL_CM = 200.0
 WALL_GEOMETRIES = ("slab", "shell")
 
 # PRODUCTION wall geometry -- the default emit/tail/collect use when a caller does
-# not override it. Stays "slab" until the shell regen clears its target-blind
-# acceptance gate (kernel absorbed reproduces the flood across 19-50 g/cm^2;
-# paper/KERNEL_SLAB_RUNBOOK.md). Flip to "shell" ONLY as the ship step, together
-# with the "WHY A SLAB, NOT A SHELL" docstring above (that 2026-08-23 rationale is
-# overturned -- it measured a shell regen against the slab-tuned kernel, a circular
-# test; the correct yardstick is the same-physics flood, which the shell matches).
-WALL_GEOMETRY = "slab"
+# not override it. SHIPPED "shell" on 2026-10-13: the shell base cleared the
+# target-blind flood acceptance gate (paper/flood_absorbed_depth.py --refold),
+# with kernel absorbed reproducing the same-physics flood FLAT across 19->50 g/cm^2
+# (kern/flood 0.915/0.963/0.966/0.977; @50 = 0.988x OLTARIS 0.302), whereas the
+# slab fell away at depth (0.83->0.78 over 19->40). "slab" stays selectable via
+# WALL_GEOMETRIES for regression/reproduction only. See paper/KERNEL_SLAB_RUNBOOK.md.
+WALL_GEOMETRY = "shell"
 
 # --------------------------------------------------------------------------
 # Calibration materials -- TOPAS name, density, and (for non-builtins) the
