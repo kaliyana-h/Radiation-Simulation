@@ -35,6 +35,7 @@
 #include "G4Step.hh"
 #include "G4ParticleDefinition.hh"
 #include "G4SystemOfUnits.hh"
+#include "G4UnitsTable.hh"
 
 #include <cmath>
 
@@ -44,6 +45,16 @@ LETSpectrumWater::LETSpectrumWater(TsParameterManager* pM, TsMaterialManager* mM
 	: TsVNtupleScorer(pM, mM, gM, scM, eM, scorerName, quantity, outFileName, isSubScorer),
 	  fLet(0.), fEdep(0.), fStepLen(0.), fCharge(0)
 {
+	// "keV/um" is NOT a built-in Geant4 unit -- the units table has keV, MeV, um,
+	// mm but no energy/length composite and no LET category. RegisterColumnD resolves
+	// the unit string via G4UnitDefinition::GetValueOf(), which aborts the session on
+	// an unknown unit. Register it once (keV/micrometer == MeV/mm == 1.0 in G4 internal
+	// units, so the written number equals the native MeV/mm value we store, which is
+	// numerically keV/um). Thread-local units table => register per worker; guard so a
+	// second scorer construction in the same thread doesn't double-register.
+	if (!G4UnitDefinition::IsUnitDefined("keV/um"))
+		new G4UnitDefinition("keV/um", "keV/um", "LET", keV / micrometer);
+
 	fNtuple->RegisterColumnD(&fLet,     "LETWater",      "keV/um");
 	fNtuple->RegisterColumnD(&fEdep,    "EnergyDeposit", "MeV");
 	fNtuple->RegisterColumnD(&fStepLen, "StepLength",    "um");
