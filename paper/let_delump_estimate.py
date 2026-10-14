@@ -153,10 +153,10 @@ def report_point(wall, species_split, qbar_total):
     for name, D, qb, D_new, qb_new, f_D in rows:
         print(f"    {name:>4} {100*D/tot:7.1f} {100*D_new/tot_new:8.1f} "
               f"{qb:7.2f} {qb_new:8.2f} {f_D:6.3f}")
-    closed = (qbar_total - qb_corr)
+    closed = (qbar_total - qb_corr)        # +ve = toward arbiter, -ve = away
     gap = (qbar_total - arb)
-    print(f"    de-lumping moves <Q> by -{closed:.2f} of the {gap:.2f} gap to "
-          f"arbiter ({100*closed/gap:.0f}% of the gap)")
+    print(f"    de-lumping shifts <Q> by {qb_corr - qbar_total:+.2f} "
+          f"(gap to arbiter = {gap:.2f}); closes {100*closed/gap:+.0f}% of the gap")
     return qb_corr
 
 
