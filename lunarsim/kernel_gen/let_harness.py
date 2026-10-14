@@ -216,7 +216,9 @@ def build_let_param_file(material: str, wall_gcm2: float, species_name: str,
     L.append(f's:Sc/{SC_LET}/Quantity   = "LETSpectrum_Water"')
     L.append(f's:Sc/{SC_LET}/Component  = "{DET_COMP}"')
     L.append(f's:Sc/{SC_LET}/OutputFile = "{SC_LET}"')
-    L.append(f's:Sc/{SC_LET}/OutputType = "csv"')
+    # ntuple/phase-space scorers accept only ASCII or Binary (NOT csv, which is
+    # binned-scorer-only per the TOPAS guide); ASCII writes Det_LET.phsp + .header
+    L.append(f's:Sc/{SC_LET}/OutputType = "ASCII"')
     L.append(f's:Sc/{SC_LET}/IfOutputFileAlreadyExists = "Overwrite"')
     L.append("")
     # Native scalar twins -- run with the stock binary, no extension required.
@@ -327,7 +329,9 @@ def _read_scalar_csv(path: Path):
 
 def _iter_ntuple_rows(path: Path):
     """Yield (let_kev_um, edep_mev, steplen_um, charge) from a LETSpectrum_Water
-    ntuple CSV, skipping the TOPAS column-header comment lines."""
+    ntuple ASCII .phsp (whitespace-separated columns in registration order; the
+    column key/units live in the companion .header, not here). Comma-tolerant so
+    an older csv dump still parses."""
     if not path.exists():
         return
     with path.open() as fh:
@@ -335,7 +339,7 @@ def _iter_ntuple_rows(path: Path):
             s = line.strip()
             if not s or s.startswith("#"):
                 continue
-            parts = s.split(",")
+            parts = s.replace(",", " ").split()
             if len(parts) < 4:
                 continue
             try:
@@ -406,13 +410,13 @@ def _collect_material(runs_dir: Path, material: str, grid, seeds: int,
                 n_seen_seeds = 0
                 for seed in range(1, seeds + 1):
                     rn = _run_name(material, wall, sname, j, seed)
-                    p = runs_dir / rn / f"{SC_LET}.csv"
+                    p = runs_dir / rn / f"{SC_LET}.phsp"
                     if not p.exists():
                         continue
                     n_seen_seeds += 1
                 for seed in range(1, seeds + 1):
                     rn = _run_name(material, wall, sname, j, seed)
-                    p = runs_dir / rn / f"{SC_LET}.csv"
+                    p = runs_dir / rn / f"{SC_LET}.phsp"
                     if not p.exists():
                         continue
                     have_ntuple = True
