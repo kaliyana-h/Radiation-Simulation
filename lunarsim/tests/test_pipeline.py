@@ -783,12 +783,19 @@ class TestGcrThinWallFold(unittest.TestCase):
                                    WallLayer("regolith", 70.0)])   # ~134 g/cm^2
         self.assertFalse(dosimetry._gcr_thinwall_applies(thick))
 
-    def test_non_aluminium_thin_wall_is_flagged_indicative(self):
+    def test_non_kernel_thin_wall_is_flagged_indicative(self):
+        # A material with no shipped thin-wall kernel of its own must fold on the
+        # aluminium kernel and be flagged indicative. Titanium is used because it
+        # has no material-specific kernel (and is not a hydrogen-moderation wall, so
+        # it never will) -- unlike polyethylene/EVA, which now ship their own.
         from lunarsim import dosimetry
-        poly = HabitatSpec(name="p", shape="dome", inner_radius_cm=750.0,
-                           walls=[WallLayer("polyethylene", 1.0)])
-        self.assertTrue(dosimetry._gcr_thinwall_applies(poly))
-        self.assertFalse(dosimetry._gcr_thinwall_calibrated(poly))  # not Al-dominated
+        if dosimetry._has_gcr_kernel("titanium"):
+            self.skipTest("titanium kernel unexpectedly present")
+        ti = HabitatSpec(name="ti", shape="dome", inner_radius_cm=750.0,
+                         walls=[WallLayer("titanium", 0.5)])   # ~2.26 g/cm^2, thin
+        self.assertTrue(dosimetry._gcr_thinwall_applies(ti))
+        self.assertEqual(dosimetry._gcr_calibration_material(ti), "aluminium")
+        self.assertFalse(dosimetry._gcr_thinwall_calibrated(ti))  # not Al-dominated
 
     def test_eva_suit_folds_against_its_own_kernel_when_shipped(self):
         """An EVA suit design must dispatch to the suit-calibrated kernel (not the
@@ -821,6 +828,43 @@ class TestGcrThinWallFold(unittest.TestCase):
             self.skipTest("EVA kernel present; fallback path not exercised")
         self.assertEqual(dosimetry._gcr_calibration_material(spec), "aluminium")
         self.assertFalse(dosimetry._gcr_thinwall_calibrated(spec))   # suit != aluminium
+        a = dosimetry.assess_gcr_thinwall(spec, phi_MV=400.0)
+        self.assertIsNotNone(a)
+
+    def test_polyethylene_folds_against_its_own_kernel_when_shipped(self):
+        """A polyethylene-walled design must dispatch to the poly-calibrated kernel
+        (not the aluminium one) and report a calibrated thin-wall dose. Skips until
+        the poly kernel JSON is present (the harness generates it offline)."""
+        from lunarsim import dosimetry
+        if not dosimetry._has_gcr_kernel("polyethylene"):
+            self.skipTest("polyethylene kernel not shipped on this machine yet")
+        # Sit exactly on the 2.025 g/cm^2 anchor (like the Al _thin_dome): the
+        # sum-to-headline invariant below is only exact at an anchor, because the
+        # log-log inter-anchor interpolation does not commute with the organ sum.
+        spec = HabitatSpec(name="poly", shape="dome", inner_radius_cm=750.0,
+                           walls=[WallLayer("polyethylene", 2.025 / 0.94)])  # = 2.025 g/cm^2
+        self.assertEqual(dosimetry._gcr_calibration_material(spec), "polyethylene")
+        self.assertTrue(dosimetry._gcr_thinwall_applies(spec))
+        self.assertTrue(dosimetry._gcr_thinwall_calibrated(spec))    # poly-dominated wall
+        a = dosimetry.assess_gcr_thinwall(spec, mission_days=365.0, phi_MV=400.0)
+        self.assertEqual(a.regime, "thinwall")
+        self.assertGreater(a.annual_msv, 0.0)
+        # per-species effective dose must sum to the headline (same invariant as Al)
+        yr = dosimetry.SECONDS_PER_DAY * dosimetry.DAYS_PER_YEAR * 1e3
+        esum = sum(c["doseeq_rate_sv_s"] for c in a.contributions) * yr
+        self.assertAlmostEqual(esum, a.annual_msv, delta=0.5)
+
+    def test_polyethylene_falls_back_to_aluminium_without_kernel(self):
+        """Before the poly kernel is shipped, a polyethylene design still folds
+        (against the Al kernel) but is flagged indicative -- the tool must never
+        crash on a missing material kernel."""
+        from lunarsim import dosimetry
+        spec = HabitatSpec(name="poly", shape="dome", inner_radius_cm=750.0,
+                           walls=[WallLayer("polyethylene", 5.0)])
+        if dosimetry._has_gcr_kernel("polyethylene"):
+            self.skipTest("polyethylene kernel present; fallback path not exercised")
+        self.assertEqual(dosimetry._gcr_calibration_material(spec), "aluminium")
+        self.assertFalse(dosimetry._gcr_thinwall_calibrated(spec))   # poly != aluminium
         a = dosimetry.assess_gcr_thinwall(spec, phi_MV=400.0)
         self.assertIsNotNone(a)
 
