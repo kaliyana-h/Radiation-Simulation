@@ -146,6 +146,10 @@ WALL_GEOMETRY = "shell"
 # --------------------------------------------------------------------------
 MATERIALS = {
     "aluminium": {"topas": "G4_Al", "density": 2.70, "defn": None},
+    # Polyethylene (CH2) -- the default/most-common habitat wall material and the
+    # most hydrogen-rich, so the least-defensible case for the aluminium fallback.
+    # G4_POLYETHYLENE is a Geant4 builtin (defn=None), rho=0.94 g/cm^3.
+    "polyethylene": {"topas": "G4_POLYETHYLENE", "density": 0.94, "defn": None},
     # EVA laminate, outboard layer of the two-layer suit. Using EVASuit alone as
     # the wall material for the EVA kernel (the thicker, dose-dominant layer);
     # LCVG is a thin skin-side liner folded in via areal density.
@@ -176,11 +180,35 @@ AL_GRID_GCM2 = [2.025, 10.0, 50.0, 0.0]
 # bracket a single suit ~0.28 and a doubled/patched suit). 0.0 means "no wall
 # shell" -- the free-field-on-bare-phantom response.
 EVA_GRID_GCM2 = [0.0, 0.5, 1.0]
+# Polyethylene: MIRRORS the Al grid. Areal density (g/cm^2) is material-agnostic,
+# so reusing Al's anchors keeps the poly-vs-Al comparison apples-to-apples at
+# identical shielding mass. poly rho=0.94 -> these are 2.15/10.6/53 cm thick.
+POLY_GRID_GCM2 = list(AL_GRID_GCM2)
 
 # Output kernel file names (Al path stays byte-for-byte: we never overwrite it).
 AL_VALIDATION_OUT = "gcr_thinwall_kernel_al_regen.json"   # compare-only artefact
 EVA_OUT = "gcr_thinwall_kernel_eva.json"                  # the shipped EVA kernel
 SI_OUT = "gcr_thinwall_kernel_si.json"                    # corrected-composition Al kernel
+POLY_OUT = "gcr_thinwall_kernel_poly.json"                # the shipped polyethylene kernel
+
+# --------------------------------------------------------------------------
+# Per-material anchor grid and shipped-kernel filename.
+# --------------------------------------------------------------------------
+# A material absent from GRID_FOR_MATERIAL falls back to the thin EVA grid (the
+# original two-material default). Aluminium is deliberately absent from
+# OUT_FOR_MATERIAL: its output is composition-keyed in collect() (corrected ->
+# SI_OUT, reference -> AL_VALIDATION_OUT), never a single fixed name.
+GRID_FOR_MATERIAL = {
+    "aluminium": AL_GRID_GCM2,
+    "polyethylene": POLY_GRID_GCM2,
+    "evasuit": EVA_GRID_GCM2,
+    "lcvg": EVA_GRID_GCM2,
+}
+OUT_FOR_MATERIAL = {
+    "polyethylene": POLY_OUT,
+    "evasuit": EVA_OUT,
+    "lcvg": EVA_OUT,
+}
 
 
 # --------------------------------------------------------------------------

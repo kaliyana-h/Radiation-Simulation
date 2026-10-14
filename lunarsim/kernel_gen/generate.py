@@ -40,7 +40,7 @@ from . import config, templates
 # run enumeration
 # --------------------------------------------------------------------------
 def _grid_for(material: str) -> list:
-    return config.AL_GRID_GCM2 if material == "aluminium" else config.EVA_GRID_GCM2
+    return config.GRID_FOR_MATERIAL.get(material, config.EVA_GRID_GCM2)
 
 
 def _run_name(material, wall_gcm2, species, node, seed) -> str:
@@ -173,7 +173,7 @@ def collect(out: Path) -> dict:
     points = [_collect_point(runs_dir, material, w, seeds, composition)
               for w in manifest["grid_gcm2"]]
     note = ref_meta.get("note", "")
-    if material != "aluminium":
+    if material in ("evasuit", "lcvg"):
         # Self-document the regime the Al validation gate actually cleared for this
         # reconstruction (locked 2026-08-23). The skin ladder (wall transport with
         # zero tissue overburden) reproduces the committed Al kernel to 0.9-1.25x
@@ -186,6 +186,20 @@ def collect(out: Path) -> dict:
                 "-- reproduces committed Al kernel to 0.9-1.25x. Not calibrated for "
                 "thick walls (>=10 g/cm^2) or range-threshold low-E cells; the EVA "
                 "grid lies entirely within the validated band. " + note).strip()
+    elif material == "polyethylene":
+        # Polyethylene spans the FULL Al areal grid (2.025/10/50 g/cm^2), thin AND
+        # thick -- so unlike the EVA suit it is NOT confined to the thin validated
+        # band. It is built through the same shell-geometry pipeline as the shipped
+        # corrected Al kernel (the deep-slope slab bug is fixed; shell absorbed is
+        # flat 19->50 g/cm^2). Validation is tool-vs-itself vs the Al kernel: same
+        # transport and areal grid, only the wall material differs (hydrogen-rich
+        # CH2, rho=0.94), so poly is expected to shield modestly better than Al per
+        # g/cm^2, not reproduce it byte-for-byte.
+        note = ("CAL_MATERIAL=polyethylene (G4_POLYETHYLENE, rho=0.94 g/cm^3): "
+                "hydrogen-rich wall kernel on the Al areal grid [2.025/10/50 g/cm^2], "
+                "shell geometry. Compared tool-vs-itself against the aluminium kernel "
+                "at identical areal density (target-blind); not confined to the thin "
+                "EVA band. " + note).strip()
     if composition == "corrected":
         note = ("COMPOSITION=corrected: H/He/C/Si/Fe matching dosimetry."
                 "GCR_COMPOSITION (doc 2.3). Si (Z=14) is the Z=10-20 (Ne-Ca) group "
@@ -219,23 +233,21 @@ def collect(out: Path) -> dict:
         },
         "points": points,
     }
-    # Filename is keyed on MATERIAL first: a non-Al kernel always lands in its own
-    # per-material file (EVA_OUT) whatever its composition, so an EVA regen on the
-    # corrected H/He/C/Si/Fe composition (the one that matches the shipped Al
-    # kernel) cannot collide with the Al corrected output. Only for aluminium does
-    # composition pick the file: corrected -> SI_OUT (ships to the headline kernel),
-    # reference -> the compare-only Al regen artefact.
-    if material != "aluminium":
-        fname = config.EVA_OUT
-    elif composition == "corrected":
-        fname = config.SI_OUT
+    # Filename is keyed on MATERIAL first: a non-Al kernel always lands in its OWN
+    # per-material file (OUT_FOR_MATERIAL) whatever its composition, so a poly or
+    # EVA regen on the corrected H/He/C/Si/Fe composition (the one that matches the
+    # shipped Al kernel) cannot collide with the Al corrected output or with each
+    # other. Only for aluminium does composition pick the file: corrected -> SI_OUT
+    # (ships to the headline kernel), reference -> the compare-only Al regen artefact.
+    if material == "aluminium":
+        fname = config.SI_OUT if composition == "corrected" else config.AL_VALIDATION_OUT
     else:
-        fname = config.AL_VALIDATION_OUT
+        fname = config.OUT_FOR_MATERIAL.get(material, config.EVA_OUT)
     dest = out / fname
     dest.write_text(json.dumps(kernel, indent=2))
     print(f"collected {material} kernel (composition={composition}) -> {dest}")
     if material != "aluminium":
-        print(f"  to ship: copy to lunarsim/data/{config.EVA_OUT}")
+        print(f"  to ship: copy to lunarsim/data/{config.OUT_FOR_MATERIAL.get(material, config.EVA_OUT)}")
     elif composition == "corrected":
         print(f"  to ship (AFTER validate passes): copy to "
               f"lunarsim/data/gcr_thinwall_kernel.json")

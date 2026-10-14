@@ -595,8 +595,9 @@ def assess_composition(species_results: list,
 # aluminium kernel and is flagged indicative (see _gcr_thinwall_calibrated), so the
 # tool runs correctly whether or not the EVA kernel has been shipped yet.
 _GCR_THINWALL_KERNELS = {
-    "aluminium": Path(__file__).with_name("data") / "gcr_thinwall_kernel.json",
-    "evasuit":   Path(__file__).with_name("data") / "gcr_thinwall_kernel_eva.json",
+    "aluminium":    Path(__file__).with_name("data") / "gcr_thinwall_kernel.json",
+    "evasuit":      Path(__file__).with_name("data") / "gcr_thinwall_kernel_eva.json",
+    "polyethylene": Path(__file__).with_name("data") / "gcr_thinwall_kernel_poly.json",
 }
 
 # Wall materials that fold against each material-specific kernel. The EVA kernel is
@@ -624,12 +625,16 @@ def _load_gcr_thinwall_kernel(material: str = "aluminium") -> dict:
 
 def _gcr_calibration_material(spec) -> str:
     """Which thin-wall kernel this design folds against. A suit-laminate wall uses the
-    EVA kernel once it is shipped; every other wall (and any suit design where the EVA
-    kernel is still absent) folds against the aluminium kernel."""
+    EVA kernel and a polyethylene wall the poly kernel, each once it is shipped; every
+    other wall (and any suit/poly design where that kernel is still absent) folds
+    against the aluminium kernel."""
     from .spec import SUIT_MATERIALS
     if (any(w.material in SUIT_MATERIALS for w in spec.walls)
             and _has_gcr_kernel("evasuit")):
         return "evasuit"
+    if (any(w.material == "polyethylene" for w in spec.walls)
+            and _has_gcr_kernel("polyethylene")):
+        return "polyethylene"
     return "aluminium"
 
 

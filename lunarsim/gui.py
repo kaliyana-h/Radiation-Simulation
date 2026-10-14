@@ -1882,6 +1882,7 @@ def _thinwall_metric_cards(a, job, calibrated):
     # suit-calibrated EVA design the green "suit-calibrated" note lives here too
     # (moved off the always-visible design screen -- see _eva_warning).
     is_suit = any(w.material in SUIT_MATERIALS for w in job.spec.walls)
+    is_poly = any(w.material == "polyethylene" for w in job.spec.walls)
     if not calibrated:
         size_note = _thinwall_note(calibrated)
     elif is_suit:
@@ -1892,6 +1893,13 @@ def _thinwall_metric_cards(a, job, calibrated):
                      "0.9–1.25× in this regime), so this is a calibrated suit dose, "
                      "not a proxy. Heavy-ion partials remain Monte-Carlo-limited at "
                      "the tail.")
+    elif is_poly:
+        size_note = ("#3fb950",
+                     "Polyethylene — material-calibrated: GCR dose folds against a "
+                     "thin-wall kernel measured through polyethylene (CH₂) itself, "
+                     "not the aluminium proxy, so the hydrogen-rich shielding is "
+                     "scored directly on its own areal grid. Heavy-ion partials "
+                     "remain Monte-Carlo-limited at the tail.")
     else:
         size_note = None
     return ([banner] if banner else []) + [
