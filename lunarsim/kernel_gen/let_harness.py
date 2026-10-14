@@ -269,7 +269,7 @@ def _write_runner(out: Path) -> None:
         'echo "running $(ls -d */ | wc -l) TOPAS jobs, $NPROC at a time..."\n'
         "ls -d */ | sed 's#/##' | xargs -P \"$NPROC\" -I{} bash -c '\n"
         '  cd "{}" && "'"$TOPAS"'" run.txt > topas.log 2>&1 \\\n'
-        '    && echo "ok  {}" || echo "FAIL {} (see runs/{}/topas.log)"\n'
+        '    && echo "ok  {}" || echo "FAIL {} (see $PWD/topas.log)"\n'
         "'\n"
         'echo "batch complete."\n'
     )
@@ -381,6 +381,12 @@ def _collect_material(runs_dir: Path, material: str, grid, seeds: int,
     for wall in grid:
         # Native scalar fold: <Q>_native = sum fw*R_I / sum fw*R_D.
         num_native = den_native = 0.0
+        # Per-species dose-equivalent / dose contribution to the water point, so a
+        # tiny-abundance high-Z group representative (Si for Ne-Ca, Fe for the Fe
+        # peak) that nonetheless dominates <Q> is visible. Pure re-split of the
+        # same native fold -- no extra MC.
+        spec_num = {s: 0.0 for s in species_meta}
+        spec_den = {s: 0.0 for s in species_meta}
         # Ntuple fold: dose-weighted <Q> + LET spectra, split HZE vs light.
         num_nt = den_nt = 0.0
         nbins = len(LET_BINS) - 1
@@ -406,6 +412,8 @@ def _collect_material(runs_dir: Path, material: str, grid, seeds: int,
                     R_I = statistics.fmean(ivals) / PHI_FF_LET_CM2
                     num_native += fw[j] * R_I
                     den_native += fw[j] * R_D
+                    spec_num[sname] += fw[j] * R_I
+                    spec_den[sname] += fw[j] * R_D
                 # --- ntuple (pool all seeds) ---
                 n_seen_seeds = 0
                 for seed in range(1, seeds + 1):
@@ -440,11 +448,21 @@ def _collect_material(runs_dir: Path, material: str, grid, seeds: int,
         qbar_native = (num_native / den_native) if den_native else None
         qbar_nt = (num_nt / den_nt) if den_nt else None
         hze_frac = (dose_hze / den_nt) if den_nt else None
+        # per-species: share of water-point dose-equivalent (H) and dose (D), and
+        # the species' own dose-averaged <Q> = (sum fw*R_I)/(sum fw*R_D).
+        species_split = None
+        if den_native:
+            species_split = {
+                s: {"H_share": (spec_num[s] / num_native) if num_native else None,
+                    "D_share": (spec_den[s] / den_native) if den_native else None,
+                    "qbar": (spec_num[s] / spec_den[s]) if spec_den[s] else None}
+                for s in species_meta}
         out_points.append({
             "wall_gcm2": wall,
             "qbar_waterpoint_native": qbar_native,
             "qbar_waterpoint_ntuple": qbar_nt if have_ntuple else None,
             "hze_dose_fraction": hze_frac if have_ntuple else None,
+            "species_split": species_split,
             "dose_let_spectrum": dose_spec if have_ntuple else None,
             "fluence_let_spectrum": flu_spec if have_ntuple else None,
         })
@@ -499,6 +517,21 @@ def _print_report(result: dict) -> None:
                   f"{(f'{qn:.2f}' if qn is not None else '   --'):>10} "
                   f"{(f'{qt:.2f}' if qt is not None else '   --'):>10} "
                   f"{(f'{100*hz:.1f}' if hz is not None else '  --'):>10}")
+        # per-species decomposition of the water-point <Q> -- which group
+        # representative carries the dose-equivalent despite its abundance.
+        for p in md["points"]:
+            ss = p.get("species_split")
+            if not ss:
+                continue
+            print(f"\n   species split @ {p['wall_gcm2']:g} g/cm^2  "
+                  f"(H%=share of dose-equiv, D%=share of dose, <Q>=species dose-avg):")
+            print(f"      {'species':>8} {'H%':>7} {'D%':>7} {'<Q>':>7}")
+            for s, sp in ss.items():
+                hs = sp["H_share"]; ds = sp["D_share"]; sq = sp["qbar"]
+                print(f"      {s:>8} "
+                      f"{(f'{100*hs:.1f}' if hs is not None else '  --'):>7} "
+                      f"{(f'{100*ds:.1f}' if ds is not None else '  --'):>7} "
+                      f"{(f'{sq:.1f}' if sq is not None else '  --'):>7}")
     print("\n  arbiter <Q>(depth) reference anchors (post-hoc, NOT fit targets):")
     for depth, q, label in sorted(result["reference_qbar_depth"]):
         print(f"    {depth:>6g} g/cm^2 Al : <Q>={q:.2f}  [{label}]")
