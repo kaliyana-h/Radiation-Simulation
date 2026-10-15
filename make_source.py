@@ -43,6 +43,7 @@ Usage:
 """
 
 import argparse
+import functools
 import math
 import os
 
@@ -128,6 +129,180 @@ GCR_SHAPE = os.environ.get("LUNARSIM_GCR_SHAPE", "pernuc")
 # and the flux normalisation stay on the same form and cannot drift.
 GCR_LIS_VAR = os.environ.get("LUNARSIM_GCR_LIS", "rigidity")
 
+# Per-element GCR LIS model selector -- the thin-wall <Q> over-read fix.
+#
+#   "none"        (default, shipped baseline): every species borrows the proton
+#                 LIS shape scaled per nucleon with species modulation
+#                 Phi=(Z/A)*phi (the "proton-clone" ansatz). Byte-for-byte the
+#                 validated behaviour. lis_proton + gcr_spectrum(shape=...) as before.
+#
+#   "matthia2013" (per-element fix): replace the proton-clone spectrum with the
+#                 Matthiae et al. 2013 DLR "modified ISO" per-element GCR model
+#                 (Adv. Space Res. 51(3) 329-338, doi:10.1016/j.asr.2012.09.022;
+#                 coefficients verbatim from ssc-maire/CosRayModifiedISO). Each
+#                 element Z=1-28 gets its OWN analytic spectrum; a single solar
+#                 parameter W carries the modulation (force-field-NATIVE, unlike
+#                 BON2020 which needs a Fokker-Planck solve -- see memory
+#                 let-scorer-thin-qbar-rootcause). W is mapped from the tool's phi
+#                 by matching the Matthiae proton SHAPE to the tool's own
+#                 Burger/Usoskin+force-field proton spectrum (flux<->flux, NOT a
+#                 dose target) so the switch is self-consistent at any phi.
+#
+# WHY this fixes the over-read (validated target-blind on the laptop,
+# paper/mattia2013_lis_fold.py): the proton-clone ansatz over-weights every
+# non-proton (modulation Phi=(Z/A)*phi under-modulates Z<A ions) AND carries
+# heavy abundances ~3x too high, driving <Q>(0)=11.3 vs the arbiter 5.6. The
+# Matthiae per-element LIS lands <Q>(0)=6.2, He/H=0.44 (measured 0.43), and the
+# H/He dose split inside the Hong-2019 bands -- because the per-element spectra
+# and relative abundances are physical, not proton-cloned.
+#
+# Read by BOTH make_source (beam shape + gcr_spectrum) AND dosimetry
+# (_raw_gcr_integral flux normalisation) via dosimetry.set_perelement_model, so
+# the sampled spectrum and the flux normalisation cannot drift (same discipline
+# as GCR_LIS_VAR). The proton ABSOLUTE calibration is untouched: dosimetry pins
+# H to the reference flux, and the per-element structure comes from the model's
+# own coefficients.
+GCR_PERELEMENT = os.environ.get("LUNARSIM_GCR_PERELEMENT", "none")
+
+
+# --------------------------------------------------------------------------
+# Matthiae et al. 2013 (DLR modified-ISO) per-element GCR LIS
+# --------------------------------------------------------------------------
+# Coefficients (Z-ordered, index Z-1) VERBATIM from the reference implementation
+# ssc-maire/CosRayModifiedISO internalFunctions/pythonModifiedISO.py (the paper's
+# Eq. set). Abundance is baked into C_I, so the per-element flux integrals ARE the
+# physical relative abundances.
+_MAT_AI = (1.0, 4.0, 6.9, 9.0, 10.8, 12.0, 14.0, 16.0, 19.0, 20.2,
+           23.0, 24.3, 27.0, 28.1, 31.0, 32.1, 35.4, 39.9, 39.1, 40.1,
+           44.9, 47.9, 50.9, 52.0, 54.9, 55.8, 58.9, 58.7)
+_MAT_CI = (1.85e4, 3.69e3, 19.5, 17.7, 49.2, 103.0, 36.7, 87.4, 3.19, 16.4,
+           4.43, 19.3, 4.17, 13.4, 1.15, 3.06, 1.30, 2.33, 1.87, 2.17,
+           0.74, 2.63, 1.23, 2.12, 1.14, 9.32, 0.10, 0.48)
+_MAT_GAMMAI = (2.74, 2.77, 2.82, 3.05, 2.96, 2.76, 2.89, 2.70, 2.82, 2.76,
+               2.84, 2.70, 2.77, 2.66, 2.89, 2.71, 3.00, 2.93, 3.05, 2.77,
+               2.97, 2.99, 2.94, 2.89, 2.74, 2.63, 2.63, 2.63)
+_MAT_ALPHAI = (2.85, 3.12, 3.41, 4.30, 3.93, 3.18, 3.77, 3.11, 4.05, 3.11,
+               3.14, 3.65, 3.46, 3.00, 4.04, 3.30, 4.40, 4.33, 4.49, 2.93,
+               3.78, 3.79, 3.50, 3.28, 3.29, 3.01, 4.25, 3.52)
+_MAT_EMIN = 10.0   # MeV/n -- model validity floor (ref impl raises below ~11)
+
+# Representative-ion -> member-Z map. The MC transports 5 representative ions
+# (H/He/C/Si/Fe); under Matthiae each representative carries the abundance-weighted
+# SUM of its member elements' per-element spectra and the group-summed abundance,
+# so the full 28-element model informs the beam shape and flux while the existing
+# 5-species transport/kernel infrastructure (node grids, anchors, R values) is
+# reused unchanged. A z not in this map is treated as the single element (z,).
+MATTHIA_GROUP_ZS = {
+    1:  (1,),
+    2:  (2,),
+    6:  tuple(range(3, 10)),    # Z=3-9  (CNO + light), rep C
+    14: tuple(range(10, 21)),   # Z=10-20 (Ne-Ca),      rep Si
+    26: tuple(range(21, 29)),   # Z=21-28 (Fe peak),    rep Fe
+}
+
+
+def mattia_flux(z, e_mevn, W):
+    """Matthiae-2013 differential flux [particles cm^-2 s^-1 sr^-1 (MeV/n)^-1] for
+    element z (1-28) at per-nucleon kinetic energy e_mevn (MeV/n) and solar
+    modulation W (0-200; low W ~ solar min ~ high GCR). Verbatim model."""
+    i = z - 1
+    A = _MAT_AI[i]
+    m = 0.938 if z == 1 else 0.939          # GeV/n per-nucleon rest mass
+    c = _MAT_CI[i]
+    alpha = _MAT_ALPHAI[i]
+    gamm = _MAT_GAMMAI[i]
+    x = 1e-3 * e_mevn                        # MeV/n -> GeV/n
+    s = math.sqrt(x * (x + 2.0 * m))
+    rigidity = (A / z) * s                   # GV
+    beta = s / (x + m)
+    R0 = 0.37 + 0.0003 * (W ** 1.45)
+    delta = 0.02 * W + 4.7
+    phi = c * (beta ** alpha) / (rigidity ** gamm) * (rigidity / (rigidity + R0)) ** delta
+    return 1e-4 * phi * (A / z) * 1e-3 / beta
+
+
+def _mattia_group_zs(rep_z):
+    return MATTHIA_GROUP_ZS.get(rep_z, (rep_z,))
+
+
+def mattia_group_flux(rep_z, e_mevn, W):
+    """Sum of member-element Matthiae fluxes for a representative ion (per-nucleon
+    energy e_mevn). For H/He this is the single element; for C/Si/Fe it is the
+    abundance-weighted member sum (abundance is in each element's C_I)."""
+    return sum(mattia_flux(z, e_mevn, W) for z in _mattia_group_zs(rep_z))
+
+
+@functools.lru_cache(maxsize=256)
+def _mattia_group_integral(rep_z, W, emin, emax, n):
+    """Trapezoidal integral of the group Matthiae flux over per-nucleon energy
+    [emin, emax] MeV/n (shape integral; relative units)."""
+    lo = max(emin, _MAT_EMIN)
+    if emax <= lo:
+        return 0.0
+    tot = 0.0
+    tp = fp = None
+    for k in range(n):
+        e = lo * (emax / lo) ** (k / (n - 1))
+        f = mattia_group_flux(rep_z, e, W)
+        if tp is not None:
+            tot += 0.5 * (f + fp) * (e - tp)
+        tp, fp = e, f
+    return tot
+
+
+@functools.lru_cache(maxsize=64)
+def matthia_W_for_phi(phi_MV):
+    """Map the tool's force-field modulation phi (MV) to the Matthiae solar
+    parameter W by matching the Matthiae proton spectral SHAPE to the tool's own
+    Burger/Usoskin + force-field proton spectrum at phi (flux<->flux over
+    100 MeV..10 GeV, NOT a dose target). Honours the active GCR_LIS_VAR form, so
+    the match stays self-consistent with whichever engine is running. Returns the
+    best-fit integer W in [0, 200]. (phi=400 MV -> W=4, consistent with phi=400
+    ~ solar min and the Matthiae W<->Oulu relation giving W~1-5 at solar min.)"""
+    es = [100.0 * (10000.0 / 100.0) ** (k / 20) for k in range(21)]
+    def tool_p(e):                            # proton Phi=(1/1)*phi
+        Tm = e + phi_MV
+        factor = (e * (e + 2.0 * E0_PROTON)) / (Tm * (Tm + 2.0 * E0_PROTON))
+        return lis_proton(Tm / 1000.0) * factor
+    ltp = [math.log(tool_p(e)) for e in es]
+    mtp = sum(ltp) / len(ltp)
+    best_err, best_W = float("inf"), 0
+    for Wi in range(201):
+        lm = [math.log(mattia_flux(1, e, float(Wi))) for e in es]
+        mm = sum(lm) / len(lm)
+        err = sum(((lm[i] - mm) - (ltp[i] - mtp)) ** 2 for i in range(len(es)))
+        if err < best_err:
+            best_err, best_W = err, Wi
+    return float(best_W)
+
+
+def mattia_norm_integral(rep_z, phi_MV, emin_mev, emax_mev, n=400):
+    """Matthiae group flux integral over [emin, emax] MeV/n, NORMALISED so that the
+    FULL-range (10 MeV/n .. GCR_EMAX_PER_NUC) integral equals the PROTON full-range
+    integral for every species. This preserves make_source/dosimetry's contract
+    `real_flux = abundance * calib * raw_integral`: with abundance = the Matthiae
+    group abundance rel. H, the per-species total lands at abundance*proton_flux and
+    the per-energy-bin fractions follow the element's own Matthiae shape. The proton
+    absolute calibration is therefore untouched; only the shape and relative
+    abundances change. See GCR_PERELEMENT."""
+    W = matthia_W_for_phi(phi_MV)
+    full_z = _mattia_group_integral(rep_z, W, _MAT_EMIN, GCR_EMAX_PER_NUC, 4000)
+    if full_z <= 0.0:
+        return 0.0
+    full_p = _mattia_group_integral(1, W, _MAT_EMIN, GCR_EMAX_PER_NUC, 4000)
+    frac = _mattia_group_integral(rep_z, W, emin_mev, emax_mev, n) / full_z
+    return frac * full_p
+
+
+def mattia_group_abundance(rep_z, phi_MV):
+    """Matthiae group abundance relative to H (ratio of full-range group flux
+    integrals). This is the physical relative abundance that replaces the
+    proton-clone GCR_COMPOSITION abundances when GCR_PERELEMENT='matthia2013'."""
+    W = matthia_W_for_phi(phi_MV)
+    full_z = _mattia_group_integral(rep_z, W, _MAT_EMIN, GCR_EMAX_PER_NUC, 4000)
+    full_p = _mattia_group_integral(1, W, _MAT_EMIN, GCR_EMAX_PER_NUC, 4000)
+    return full_z / full_p if full_p > 0 else 0.0
+
 
 # --------------------------------------------------------------------------
 # Energy spectra
@@ -171,6 +346,19 @@ def gcr_spectrum(phi_MV, z=1, a=1, emin=10.0, emax=GCR_EMAX_PER_NUC, n=28,
     (TOPAS normalises them internally)."""
     if shape is None:
         shape = GCR_SHAPE
+    # Per-element Matthiae model (GCR_PERELEMENT='matthia2013') OVERRIDES the
+    # proton-clone shape knob: each representative ion carries its group's summed
+    # Matthiae spectrum, with W mapped from phi. The force-field factor/rigidity
+    # path is bypassed -- Matthiae carries its own modulation (R0, delta via W).
+    if GCR_PERELEMENT == "matthia2013":
+        W = matthia_W_for_phi(phi_MV)
+        energies, weights = [], []
+        for k in range(n):
+            T = emin * (emax / emin) ** (k / (n - 1))     # per-nucleon KE, MeV
+            energies.append(T * a)        # TOPAS BeamEnergy = TOTAL kinetic energy
+            weights.append(mattia_group_flux(z, T, W))
+        wmax = max(weights)
+        return energies, [w / wmax for w in weights]
     Phi = (z / a) * phi_MV  # effective modulation in MeV for this species
     energies, weights = [], []
     for k in range(n):

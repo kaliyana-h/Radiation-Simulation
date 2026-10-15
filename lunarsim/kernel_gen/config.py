@@ -350,7 +350,31 @@ def species_corrected_tail() -> dict:
     }
 
 
-COMPOSITIONS = ("reference", "corrected", "tail")
+def species_matthia(phi_MV: float = 400.0) -> dict:
+    """The corrected H/He/C/Si/Fe table with Matthiae-2013 group ABUNDANCES in
+    place of the shipped representative values; identities, A, groupings and node
+    grids are unchanged. Same dict shape as species_corrected().
+
+    Abundances come from make_source.mattia_group_abundance (the ratio of each
+    group's full-range Matthiae LIS integral to protons', self-calibrated via W<->phi),
+    so a kernel generated from this table carries the physically-derived relative
+    fluxes the per-element model (dosimetry PERELEMENT_MODEL='matthia2013') folds with.
+    The abundance is baked into the kernel JSON at generation time and read back by
+    dosimetry._thinwall_fold_point, so a Matthiae kernel MUST be folded with the
+    matthia model active (its per-node SHAPE comes from _raw_gcr_integral, which only
+    returns the Matthiae spectrum when the env model is set). phi_MV should match the
+    fold's modulation (default 400 MV, the solar-minimum kernel fold)."""
+    import make_source as ms  # repo-root module (same import tail.py uses)
+    return {
+        name: {"z": s["z"], "a": s["a"],
+               "abundance": ms.mattia_group_abundance(s["z"], phi_MV),
+               "particle": s["particle"], "group": s["group"],
+               "nodes_pernuc_mev": list(s["nodes_pernuc_mev"])}
+        for name, s in CORRECTED_COMPOSITION.items()
+    }
+
+
+COMPOSITIONS = ("reference", "corrected", "tail", "matthia")
 
 
 def species_for(composition: str = "reference") -> dict:
@@ -361,4 +385,6 @@ def species_for(composition: str = "reference") -> dict:
         return species_corrected()
     if composition == "tail":
         return species_corrected_tail()
+    if composition == "matthia":
+        return species_matthia()
     raise ValueError(f"unknown composition {composition!r}; expected one of {COMPOSITIONS}")

@@ -28,7 +28,8 @@ from typing import Callable, Optional
 
 from .spec import HabitatSpec
 from .bridge import RunTier, RunResult, QUICK_LOOK, run_design, SPEScenario
-from .dosimetry import assess_composition, GCR_COMPOSITION, set_lis_form, FLOOD_LIS_FORM
+from .dosimetry import (assess_composition, GCR_COMPOSITION, set_lis_form,
+                        FLOOD_LIS_FORM, active_composition)
 
 
 # ----------------------------------------------------------------------
@@ -287,7 +288,7 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                     target_rel_err: float = 0.05,
                     min_batches: int = 2, max_batches: int = 12,
                     converge_on: str = "both", phantom_slack: float = 1.0,
-                    composition: list = GCR_COMPOSITION,
+                    composition: Optional[list] = None,
                     lis: Optional[str] = None,
                     progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
                     cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedComposition:
@@ -321,6 +322,12 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     mGy/day / Chang'E-4 / OLTARIS-Total anchors were validated on. Diagnostics that
     compare forms (anchor_crosscheck) pass an explicit form."""
     set_lis_form(lis or FLOOD_LIS_FORM)
+    # None -> the composition dictated by the active per-element model (Matthiae
+    # abundances when LUNARSIM_GCR_PERELEMENT=matthia2013, else the shipped
+    # GCR_COMPOSITION). An explicit composition always wins. Resolved AFTER
+    # set_lis_form so the abundance integrals read the pinned LIS form.
+    if composition is None:
+        composition = active_composition(tier.phi_mv)
     sp_tiers = [(sp, _species_tier(tier, sp[3])) for sp in composition]
     batches: dict[str, list] = {sp[0]: [] for sp in composition}
 

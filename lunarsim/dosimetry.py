@@ -255,6 +255,15 @@ def _raw_gcr_integral(z: int = 1, a: int = 1, phi_MV: float = 400.0,
     ms = _load_make_source()
     if emax_mev is None:
         emax_mev = ms.GCR_EMAX_PER_NUC   # shared per-nucleon ceiling (matches source)
+    # Per-element Matthiae model: when active, the raw integral for this species is
+    # its group's Matthiae spectrum, normalized so a proton (z=a=1) full-range read
+    # equals the proton-clone full-range read. That keeps the proton ABSOLUTE
+    # calibration (_calibration_factor, pinned on z=a=1) byte-for-byte unchanged,
+    # while every heavier species carries its own physically-derived LIS shape and
+    # abundance instead of the (Z/A)*phi proton clone. Mirrors make_source so the
+    # simulated beam spectrum and the flux normalization move together.
+    if getattr(ms, "GCR_PERELEMENT", "none") == "matthia2013":
+        return ms.mattia_norm_integral(z, phi_MV, emin_mev, emax_mev, n)
     integral_m2_sr = 0.0       # /(m^2 s sr)
     Phi = (z / a) * phi_MV     # effective modulation in MeV/nuc for this species
     T_prev = j_prev = None
@@ -329,6 +338,65 @@ def set_lis_form(form: str) -> None:
     os.environ["LUNARSIM_GCR_LIS"] = form
     _load_make_source.cache_clear()
     _calibration_factor.cache_clear()
+
+
+# ----------------------------------------------------------------------
+# Per-element GCR LIS model -- opt-in (see make_source.GCR_PERELEMENT)
+# ----------------------------------------------------------------------
+# The shipped baseline represents every non-proton species with the proton LIS
+# shape scaled per nucleon and modulated by Phi=(Z/A)*phi (the "proton-clone"
+# ansatz). That over-weights heavy ions at the input and inflates the thin-wall
+# <Q> (zero-shield water point reads ~11 vs the arXiv-2511.09040 arbiter ~5.6).
+# "matthia2013" replaces the shape AND abundance of each representative ion with
+# its group's Matthiae-2013 (DLR modified-ISO) analytic per-element LIS, with the
+# single modulation parameter W self-calibrated to phi by matching the Matthiae
+# proton SHAPE to the tool's own force-field proton spectrum (flux<->flux, no dose
+# target -- target-blind). Validated on the laptop (paper/mattia2013_lis_fold.py):
+# <Q>(0)=6.19, He/H dose 0.443, H/He/Z>=3 split 41.3/18.3/40.4 %.
+#
+# Like set_lis_form, switching the model must drop BOTH lru caches so the flux
+# integral and its absolute calibration recompute together; make_source reads the
+# env var once at import and subprocesses inherit os.environ, so the sampled beam
+# spectrum and the flux normalization cannot drift apart.
+PERELEMENT_MODEL = os.environ.get("LUNARSIM_GCR_PERELEMENT", "none")
+PERELEMENT_MODELS = ("none", "matthia2013")
+
+
+def set_perelement_model(model: str) -> None:
+    """Pin the per-element GCR LIS model for every subsequent LIS read in this
+    process -- and in make_source subprocesses, which inherit os.environ. Drops the
+    _load_make_source and _calibration_factor caches so the raw flux integral and
+    its absolute calibration are recomputed together on the new model."""
+    if model not in PERELEMENT_MODELS:
+        raise ValueError(f"unknown per-element model {model!r} "
+                         f"(expected one of {PERELEMENT_MODELS})")
+    os.environ["LUNARSIM_GCR_PERELEMENT"] = model
+    _load_make_source.cache_clear()
+    _calibration_factor.cache_clear()
+
+
+def matthia_composition(phi_MV: float = 400.0):
+    """Return the 5-representative-ion GCR composition with Matthiae-2013 group
+    abundances (relative to H=1) at the given modulation, in the same 6-tuple
+    layout as GCR_COMPOSITION. Species identities, A, and groupings are unchanged
+    from the shipped baseline -- only the abundances come from the integrated
+    Matthiae per-element LIS instead of the representative order-of-magnitude
+    values. Used when PERELEMENT_MODEL == 'matthia2013'."""
+    ms = _load_make_source()
+    comp = []
+    for name, particle, z, a, _ab, group in GCR_COMPOSITION:
+        ab = ms.mattia_group_abundance(z, phi_MV)
+        comp.append((name, particle, z, a, ab, group))
+    return comp
+
+
+def active_composition(phi_MV: float = 400.0):
+    """The GCR composition the active per-element model dictates: the shipped
+    GCR_COMPOSITION under 'none', or the Matthiae-abundance variant under
+    'matthia2013'. Reads the live env (what make_source subprocesses will see)."""
+    if os.environ.get("LUNARSIM_GCR_PERELEMENT", PERELEMENT_MODEL) == "matthia2013":
+        return matthia_composition(phi_MV)
+    return GCR_COMPOSITION
 
 
 def gcr_scalar_fluence_rate(phi_MV: float = 400.0,
