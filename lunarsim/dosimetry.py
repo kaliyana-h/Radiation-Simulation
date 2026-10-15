@@ -27,6 +27,7 @@ and exposed as a tunable.
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import importlib.util
 import json
@@ -390,6 +391,38 @@ def set_perelement_model(model: str) -> None:
     _calibration_factor.cache_clear()
 
 
+def flood_model_for(model: str) -> str:
+    """Map an active per-element model to the model the FLOOD (deep, >~19 g/cm^2)
+    engine must run under. 'perelement' is a THIN-kernel-only override: the 10-ion
+    kernel regen (gcr_thinwall_kernel_perelem.json) changes only the thin-wall fold.
+    The flood's per-species spectral normalization (_gcr_integral) and its
+    make_source beam spectrum were validated against OLTARIS under the 5-ion
+    baseline, so the flood always collapses 'perelement' -> 'none'. 'matthia2013'
+    is a coherent full-composition model (abundances AND spectra move together) and
+    is left intact for the flood; 'none' stays 'none'."""
+    return "none" if model == "perelement" else model
+
+
+@contextlib.contextmanager
+def flood_baseline_model():
+    """Pin the per-element GCR model to its flood-safe value (see flood_model_for)
+    for the duration of a flood evaluation, then restore the caller's model. A
+    no-op unless the active model is 'perelement', so matthia2013/none callers pay
+    no cache-clear. This is what keeps the global LUNARSIM_GCR_PERELEMENT=perelement
+    env -- which fold_gcr_thinwall sets to drive the thin kernel -- from leaking
+    into the OLTARIS-validated flood normalization and make_source beam spectrum."""
+    current = os.environ.get("LUNARSIM_GCR_PERELEMENT", PERELEMENT_MODEL)
+    target = flood_model_for(current)
+    if target == current:
+        yield
+        return
+    set_perelement_model(target)
+    try:
+        yield
+    finally:
+        set_perelement_model(current)
+
+
 def matthia_composition(phi_MV: float = 400.0):
     """Return the 5-representative-ion GCR composition with Matthiae-2013 group
     abundances (relative to H=1) at the given modulation, in the same 6-tuple
@@ -581,7 +614,14 @@ def assess_composition(species_results: list,
     have_relerr = True       # every species has >=2 batches; cleared if any lacks an error
     contributions = []
     sim_fluence_used = 0.0
-    for sp, result in species_results:
+    # The flood engine's per-species flux normalization (gcr_species_fluence_rate ->
+    # _gcr_integral) was validated against OLTARIS under the 5-ion baseline. Pin the
+    # flood-safe model for the duration so a global LUNARSIM_GCR_PERELEMENT=perelement
+    # (set by fold_gcr_thinwall to drive the thin kernel) cannot leak baseline
+    # abundances onto single-element Matthiae spectra -- an incoherent mix that would
+    # silently move the deep dose. No-op unless the model is 'perelement'.
+    with flood_baseline_model():
+      for sp, result in species_results:
         name, particle, z, a, abundance, group = sp
         dose_gy = result.skin_dose_gy if skin else result.dose_gy
         if dose_gy is None or not result.fluence_outside:

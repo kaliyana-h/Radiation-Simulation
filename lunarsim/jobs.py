@@ -29,7 +29,7 @@ from typing import Callable, Optional
 from .spec import HabitatSpec
 from .bridge import RunTier, RunResult, QUICK_LOOK, run_design, SPEScenario
 from .dosimetry import (assess_composition, GCR_COMPOSITION, set_lis_form,
-                        FLOOD_LIS_FORM, active_composition)
+                        FLOOD_LIS_FORM, active_composition, flood_baseline_model)
 
 
 # ----------------------------------------------------------------------
@@ -292,6 +292,29 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                     lis: Optional[str] = None,
                     progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
                     cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedComposition:
+    """Flood (deep) MC driver -- see _run_composition for the full contract.
+
+    Wrapped in flood_baseline_model() so the whole driver runs under the flood-safe
+    GCR model: the 'perelement' thin-kernel override (which fold_gcr_thinwall sets
+    as a process-global env) is collapsed to the OLTARIS-validated 5-ion baseline
+    for BOTH the make_source beam subprocesses spawned here AND the in-process flux
+    normalization. Without this pin, a GUI launched with LUNARSIM_GCR_PERELEMENT=
+    perelement would silently fold baseline abundances onto single-element Matthiae
+    spectra and move the deep dose. No-op unless the active model is 'perelement'."""
+    with flood_baseline_model():
+        return _run_composition(
+            spec, tier, target_rel_err, min_batches, max_batches, converge_on,
+            phantom_slack, composition, lis, progress_cb, cancel_cb)
+
+
+def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
+                     target_rel_err: float = 0.05,
+                     min_batches: int = 2, max_batches: int = 12,
+                     converge_on: str = "both", phantom_slack: float = 1.0,
+                     composition: Optional[list] = None,
+                     lis: Optional[str] = None,
+                     progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
+                     cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedComposition:
     """Run every GCR species round-robin and converge on the COMBINED dose.
 
     Each species is transported with its own ion/spectrum. One batch of every
