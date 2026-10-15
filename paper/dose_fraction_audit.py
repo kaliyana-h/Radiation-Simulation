@@ -323,13 +323,24 @@ def main():
     print(f"  point <Q> (de-lumped)   = {r['qbar_dl']:.2f}   "
           f"[grouped {r['qbar']:.2f} ; arbiter {ARBITER_Q0:.1f}]")
 
-    # ---- method validator: He is right -> the error is in the HEAVIES --------
+    # ---- He anchor: the (Z/A)*phi modulation over-softens non-protons 2x -----
+    # CORRECTED 2026-10-14: an earlier version of this block asserted He/H "= 0.43
+    # EXACTLY" and called the error "confined to the heavies". The number it prints
+    # is 0.88, ~2x the measured 0.43 -- He is over-weighted too. The 2x is NOT
+    # abundance and NOT the LET model (Z_eff^2(He)=4.00 is exact): it is the
+    # per-species force-field modulation Phi=(Z/A)*phi in _raw_gcr_integral, which
+    # under-modulates every Z<A species and shoves its spectrum to low E/nuc where
+    # LET ~ Z^2 is larger. Folding He with proton-like modulation gives D_He/D_H=4.00
+    # == the measured-implied 4.10 (=0.43/0.105), so He=0.105 is RIGHT once the
+    # modulation is. See paper/build_perelement_composition.py for the full decomposition.
     he = next(row for row in r["grouped"] if row[0] == "He")
     he_dose_ratio = he[4] / next(row for row in r["grouped"] if row[0] == "H")[4]
-    print(f"\n  METHOD CHECK: audit He/H absorbed-dose ratio = {he_dose_ratio:.2f}  "
+    print(f"\n  He ANCHOR: audit He/H absorbed-dose ratio = {he_dose_ratio:.2f}  "
           f"vs measured 18.5/42.8 = 0.43")
-    print("    -> He (abundance 0.105) reproduces the measured split EXACTLY; the")
-    print("       method is sound and the error is confined to the HEAVY species.")
+    print("    -> ~2x HIGH. He is over-weighted like the heavies, so the over-read is")
+    print("       NOT confined to abundances. Z_eff^2(He)=4.00 (LET exact) and He folded")
+    print("       with proton-like modulation gives D_He/D_H=4.00 == measured 4.10: the")
+    print("       2x is the Phi=(Z/A)*phi per-species modulation, not abundance/LET.")
 
     # ---- spectral-shape lever (why heavies over-weight, if abundances are OK) --
     print("\n-- Spectral-shape lever: where each species' DOSE sits on E/nuc --")
@@ -349,13 +360,15 @@ def main():
         print(f"REPRODUCES the MC fold's heavy over-weight (Si+Fe {si_fe_dose:.0f}% vs MC 61%,")
         print(f"<Q> {r['qbar']:.1f} vs MC {TOOL_MC_QTOTAL:.1f}) -> the ~2x thin over-read is INTRINSIC to")
         print("the incident composition INPUTS, NOT the kernel node grid and NOT Geant4.")
-        print(f"LOCALIZED further: He (0.105) reproduces its measured 18.5% dose share")
-        print(f"exactly, but Z>=3 lands at {z3_dose:.0f}% of absorbed dose vs the MEASURED ~30%")
-        print("(Hong 2019) -> the error is the HEAVY-ION ABUNDANCES rel H in")
-        print("GCR_COMPOSITION (total Z>=3 ~0.047 rel H vs literature integral ~0.017,")
-        print("~2-3x high), amplified by a*Z^2 and the Z-band lumping. Spectral shape is a")
-        print("minor (~1.1x) amplifier. FIX = re-derive per-element abundances (+ per-element")
-        print("LIS spectra, the documented GCR_COMPOSITION upgrade). NOT a CAL patch.")
+        print(f"TWO comparable INPUT-side errors (both NOT node grid, NOT Geant4): He/H")
+        print(f"=0.88 vs 0.43 and Z>=3={z3_dose:.0f}% vs ~30% (Hong 2019). (1) heavy ABUNDANCES")
+        print("rel H ~0.047 vs literature integral ~0.017 (~3x high); (2) the Phi=(Z/A)*phi")
+        print("per-species MODULATION over-softens EVERY non-proton ~2x (He anchor above).")
+        print("Fixing abundance alone (build_perelement_composition.py) only moves <Q>(0)")
+        print("11.3->9.5; +proton-like modulation -> 7.6 and H/He land in Hong's bands. So")
+        print("the modulation/per-element-LIS is a DOMINANT lever, not the earlier ~1.1x.")
+        print("FIX = per-element abundances AND physics-derived per-species modulation/LIS,")
+        print("checked post-hoc against the He anchor + arbiter. NOT a CAL patch.")
     else:
         print("READ-OUT: the clean analytic LET gives a LOWER heavy share than the MC fold")
         print("-> the MC node grid / R_D response is overweighting low-E high-LET heavies;")

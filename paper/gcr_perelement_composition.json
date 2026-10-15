@@ -1,0 +1,323 @@
+{
+  "meta": {
+    "built_by": "paper/build_perelement_composition.py",
+    "he_abundance_rel_h": 0.105,
+    "he_over_o_bridge": 55.0,
+    "o_rel_h": 0.0019090909090909091,
+    "heavy_shape_source": "George et al. 2009 ApJ 698 1666 Table 1 (ACE/CRIS, 160 MeV/nuc, Si==1000) + GCR secondary tables",
+    "acceptance_ref": "Hong et al. 2019 J.Space Weather Space Clim 9 A3 (p 42.8%, He 18.5%, Z>=3 30.1% absorbed)",
+    "lis_form": "rigidity",
+    "phi_MV": 400.0,
+    "note": "abundances are target-blind (composition only); the Hong-2019 split is a post-hoc fold check, never a fit. Per-element LIS (energy-dependent abundances) remains the deferred refinement."
+  },
+  "species": [
+    {
+      "name": "H",
+      "z": 1,
+      "a": 1,
+      "particle": "proton",
+      "abundance_rel_h": 1.0,
+      "group": "CNO + light (Z=3-9)",
+      "dose_frac": 0.23031540032460762,
+      "deq_frac": 0.024301254538952523,
+      "qbar": 1.0
+    },
+    {
+      "name": "He",
+      "z": 2,
+      "a": 4,
+      "particle": "alpha",
+      "abundance_rel_h": 0.105,
+      "group": "CNO + light (Z=3-9)",
+      "dose_frac": 0.20196755507410252,
+      "deq_frac": 0.021833620436979846,
+      "qbar": 1.024562443220634
+    },
+    {
+      "name": "Li",
+      "z": 3,
+      "a": 7,
+      "particle": "GenericIon(3,7)",
+      "abundance_rel_h": 9.626858125189604e-05,
+      "group": "CNO + light (Z=3-9)",
+      "dose_frac": 0.00047769858681419785,
+      "deq_frac": 6.571815884874366e-05,
+      "qbar": 1.3038442481714752
+    },
+    {
+      "name": "Be",
+      "z": 4,
+      "a": 9,
+      "particle": "GenericIon(4,9)",
+      "abundance_rel_h": 4.742643341086055e-05,
+      "group": "CNO + light (Z=3-9)",
+      "dose_frac": 0.0004054345975336856,
+      "deq_frac": 8.490700647083598e-05,
+      "qbar": 1.9848011705313264
+    },
+    {
+      "name": "B",
+      "z": 5,
+      "a": 11,
+      "particle": "GenericIon(5,11)",
+      "abundance_rel_h": 0.00012599858428556982,
+      "group": "CNO + light (Z=3-9)",
+      "dose_frac": 0.001650181632311468,
+      "deq_frac": 0.0005466422235003257,
+      "qbar": 3.1395377515036245
+    },
+    {
+      "name": "C",
+      "z": 6,
+      "a": 12,
+      "particle": "GenericIon(6,12)",
+      "abundance_rel_h": 0.0018687430478309232,
+      "group": "CNO + light (Z=3-9)",
+      "dose_frac": 0.03234824215718141,
+      "deq_frac": 0.015223888990676492,
+      "qbar": 4.4603527560918375
+    },
+    {
+      "name": "N",
+      "z": 7,
+      "a": 14,
+      "particle": "GenericIon(7,14)",
+      "abundance_rel_h": 0.0003942764688037213,
+      "group": "CNO + light (Z=3-9)",
+      "dose_frac": 0.009288895335897066,
+      "deq_frac": 0.00609478857851521,
+      "qbar": 6.218546122086304
+    },
+    {
+      "name": "O",
+      "z": 8,
+      "a": 16,
+      "particle": "GenericIon(8,16)",
+      "abundance_rel_h": 0.0019090909090909091,
+      "group": "CNO + light (Z=3-9)",
+      "dose_frac": 0.05873922586400039,
+      "deq_frac": 0.05088092020803725,
+      "qbar": 8.20958157788493
+    },
+    {
+      "name": "F",
+      "z": 9,
+      "a": 19,
+      "particle": "GenericIon(9,19)",
+      "abundance_rel_h": 3.539286075437355e-05,
+      "group": "CNO + light (Z=3-9)",
+      "dose_frac": 0.0014472929828060253,
+      "deq_frac": 0.0015805575731927576,
+      "qbar": 10.350185841025016
+    },
+    {
+      "name": "Ne",
+      "z": 10,
+      "a": 20,
+      "particle": "GenericIon(10,20)",
+      "abundance_rel_h": 0.0007069370007078572,
+      "group": "Ne-Ca (Z=10-20)",
+      "dose_frac": 0.03397540237049959,
+      "deq_frac": 0.04338614450045173,
+      "qbar": 12.102657239482726
+    },
+    {
+      "name": "Na",
+      "z": 11,
+      "a": 23,
+      "particle": "GenericIon(11,23)",
+      "abundance_rel_h": 0.0001342097279805845,
+      "group": "Ne-Ca (Z=10-20)",
+      "dose_frac": 0.00812454747420909,
+      "deq_frac": 0.012038077432644626,
+      "qbar": 14.0427523181732
+    },
+    {
+      "name": "Mg",
+      "z": 12,
+      "a": 24,
+      "particle": "GenericIon(12,24)",
+      "abundance_rel_h": 0.0009684902416826778,
+      "group": "Ne-Ca (Z=10-20)",
+      "dose_frac": 0.06699436044576314,
+      "deq_frac": 0.11017597128132403,
+      "qbar": 15.586296243516665
+    },
+    {
+      "name": "Al",
+      "z": 13,
+      "a": 27,
+      "particle": "GenericIon(13,27)",
+      "abundance_rel_h": 0.00014348265749823035,
+      "group": "Ne-Ca (Z=10-20)",
+      "dose_frac": 0.01205165582436514,
+      "deq_frac": 0.02185741818616388,
+      "qbar": 17.18883430790808
+    },
+    {
+      "name": "Si",
+      "z": 14,
+      "a": 28,
+      "particle": "GenericIon(14,28)",
+      "abundance_rel_h": 0.0007078572150874709,
+      "group": "Ne-Ca (Z=10-20)",
+      "dose_frac": 0.06660595679672486,
+      "deq_frac": 0.12974080842067273,
+      "qbar": 18.461110107102108
+    },
+    {
+      "name": "P",
+      "z": 15,
+      "a": 31,
+      "particle": "GenericIon(15,31)",
+      "abundance_rel_h": 2.0527859237536656e-05,
+      "group": "Ne-Ca (Z=10-20)",
+      "dose_frac": 0.002283689033653382,
+      "deq_frac": 0.004740232825396255,
+      "qbar": 19.672383910759297
+    },
+    {
+      "name": "S",
+      "z": 16,
+      "a": 32,
+      "particle": "GenericIon(16,32)",
+      "abundance_rel_h": 0.00011113358276873294,
+      "group": "Ne-Ca (Z=10-20)",
+      "dose_frac": 0.013647840773282606,
+      "deq_frac": 0.029693993630628208,
+      "qbar": 20.620488437247598
+    },
+    {
+      "name": "Cl",
+      "z": 17,
+      "a": 35,
+      "particle": "GenericIon(17,35)",
+      "abundance_rel_h": 1.0617858226312064e-05,
+      "group": "Ne-Ca (Z=10-20)",
+      "dose_frac": 0.0015107118459016698,
+      "deq_frac": 0.0034127023467088093,
+      "qbar": 21.409723602767414
+    },
+    {
+      "name": "Ar",
+      "z": 18,
+      "a": 40,
+      "particle": "GenericIon(18,40)",
+      "abundance_rel_h": 4.162200424714329e-05,
+      "group": "Ne-Ca (Z=10-20)",
+      "dose_frac": 0.00710195602027895,
+      "deq_frac": 0.016427527911970448,
+      "qbar": 21.92242128670857
+    },
+    {
+      "name": "K",
+      "z": 19,
+      "a": 39,
+      "particle": "GenericIon(19,39)",
+      "abundance_rel_h": 1.6988573162099302e-05,
+      "group": "Ne-Ca (Z=10-20)",
+      "dose_frac": 0.003008138645584851,
+      "deq_frac": 0.007100264175095327,
+      "qbar": 22.370255410383166
+    },
+    {
+      "name": "Ca",
+      "z": 20,
+      "a": 40,
+      "particle": "GenericIon(20,40)",
+      "abundance_rel_h": 8.834058044291637e-05,
+      "group": "Ne-Ca (Z=10-20)",
+      "dose_frac": 0.01691830294587651,
+      "deq_frac": 0.040312951819501286,
+      "qbar": 22.58302349339873
+    },
+    {
+      "name": "Sc",
+      "z": 21,
+      "a": 45,
+      "particle": "GenericIon(21,45)",
+      "abundance_rel_h": 1.2741429871574476e-05,
+      "group": "Fe peak (Z=21-28)",
+      "dose_frac": 0.0028610876224980037,
+      "deq_frac": 0.006737271380373218,
+      "qbar": 22.317583427846163
+    },
+    {
+      "name": "Ti",
+      "z": 22,
+      "a": 48,
+      "particle": "GenericIon(22,48)",
+      "abundance_rel_h": 4.9550005056122965e-05,
+      "group": "Fe peak (Z=21-28)",
+      "dose_frac": 0.012399378064425103,
+      "deq_frac": 0.028419523147636058,
+      "qbar": 21.72256816419244
+    },
+    {
+      "name": "V",
+      "z": 23,
+      "a": 51,
+      "particle": "GenericIon(23,51)",
+      "abundance_rel_h": 2.4775002528061483e-05,
+      "group": "Fe peak (Z=21-28)",
+      "dose_frac": 0.006868182245607575,
+      "deq_frac": 0.01503654584051466,
+      "qbar": 20.7491617506614
+    },
+    {
+      "name": "Cr",
+      "z": 24,
+      "a": 52,
+      "particle": "GenericIon(24,52)",
+      "abundance_rel_h": 7.432500758418445e-05,
+      "group": "Fe peak (Z=21-28)",
+      "dose_frac": 0.02196957647532268,
+      "deq_frac": 0.04624715714424565,
+      "qbar": 19.95067715340129
+    },
+    {
+      "name": "Mn",
+      "z": 25,
+      "a": 55,
+      "particle": "GenericIon(25,55)",
+      "abundance_rel_h": 5.308929113156032e-05,
+      "group": "Fe peak (Z=21-28)",
+      "dose_frac": 0.017244835571885348,
+      "deq_frac": 0.0348039609724351,
+      "qbar": 19.127750550496014
+    },
+    {
+      "name": "Fe",
+      "z": 26,
+      "a": 56,
+      "particle": "GenericIon(26,56)",
+      "abundance_rel_h": 0.00046272626150267975,
+      "group": "Fe peak (Z=21-28)",
+      "dose_frac": 0.15945351118573978,
+      "deq_frac": 0.31039790502976694,
+      "qbar": 18.449261164058836
+    },
+    {
+      "name": "Co",
+      "z": 27,
+      "a": 59,
+      "particle": "GenericIon(27,59)",
+      "abundance_rel_h": 2.8314288603498837e-06,
+      "group": "Fe peak (Z=21-28)",
+      "dose_frac": 0.0010648279764074,
+      "deq_frac": 0.0019937437049302987,
+      "qbar": 17.745333282640974
+    },
+    {
+      "name": "Ni",
+      "z": 28,
+      "a": 58,
+      "particle": "GenericIon(28,58)",
+      "abundance_rel_h": 2.406714531297401e-05,
+      "group": "Fe peak (Z=21-28)",
+      "dose_frac": 0.009276112126719981,
+      "deq_frac": 0.01686550253436679,
+      "qbar": 17.231678404711065
+    }
+  ]
+}
