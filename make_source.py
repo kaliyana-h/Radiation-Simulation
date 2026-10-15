@@ -305,6 +305,58 @@ def mattia_group_abundance(rep_z, phi_MV):
 
 
 # --------------------------------------------------------------------------
+# SINGLE-ELEMENT variants (per-element composition, GCR_PERELEMENT='perelement').
+# Identical to the group functions but they NEVER group: z=6/14/26 are treated as
+# the single element, not as the Z3-9 / Z10-20 / Z21-28 band representative. Each
+# element's own abundance is already baked into its Matthiae C_I, so mattia_flux(z)
+# is the true per-element differential flux. For z=1/2 these return exactly the
+# group values (the H/He groups are themselves single elements).
+# --------------------------------------------------------------------------
+@functools.lru_cache(maxsize=512)
+def _mattia_element_integral(z, W, emin, emax, n):
+    """Trapezoidal integral of ONE element's Matthiae flux over per-nucleon energy
+    [emin, emax] MeV/n (shape integral; relative units). Single-element twin of
+    _mattia_group_integral -- never sums a band."""
+    lo = max(emin, _MAT_EMIN)
+    if emax <= lo:
+        return 0.0
+    tot = 0.0
+    tp = fp = None
+    for k in range(n):
+        e = lo * (emax / lo) ** (k / (n - 1))
+        f = mattia_flux(z, e, W)
+        if tp is not None:
+            tot += 0.5 * (f + fp) * (e - tp)
+        tp, fp = e, f
+    return tot
+
+
+def mattia_element_norm_integral(z, phi_MV, emin_mev, emax_mev, n=400):
+    """Single-element twin of mattia_norm_integral: element z's flux integral over
+    [emin, emax] MeV/n, normalised so its FULL-range integral equals the PROTON
+    full-range integral. Preserves the `real_flux = abundance*calib*raw_integral`
+    contract per element (proton absolute calibration untouched); z=6/14/26 are NOT
+    band reps here. Used when GCR_PERELEMENT='perelement'."""
+    W = matthia_W_for_phi(phi_MV)
+    full_z = _mattia_element_integral(z, W, _MAT_EMIN, GCR_EMAX_PER_NUC, 4000)
+    if full_z <= 0.0:
+        return 0.0
+    full_p = _mattia_element_integral(1, W, _MAT_EMIN, GCR_EMAX_PER_NUC, 4000)
+    frac = _mattia_element_integral(z, W, emin_mev, emax_mev, n) / full_z
+    return frac * full_p
+
+
+def mattia_element_abundance(z, phi_MV):
+    """Single-element Matthiae abundance rel. H (ratio of full-range single-element
+    flux integrals). Unlike mattia_group_abundance, z=6/14/26 return only their own
+    element's abundance, not the band sum -- for the per-element composition."""
+    W = matthia_W_for_phi(phi_MV)
+    full_z = _mattia_element_integral(z, W, _MAT_EMIN, GCR_EMAX_PER_NUC, 4000)
+    full_p = _mattia_element_integral(1, W, _MAT_EMIN, GCR_EMAX_PER_NUC, 4000)
+    return full_z / full_p if full_p > 0 else 0.0
+
+
+# --------------------------------------------------------------------------
 # Energy spectra
 # --------------------------------------------------------------------------
 def lis_proton(T_GeV):

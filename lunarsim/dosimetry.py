@@ -262,8 +262,16 @@ def _raw_gcr_integral(z: int = 1, a: int = 1, phi_MV: float = 400.0,
     # while every heavier species carries its own physically-derived LIS shape and
     # abundance instead of the (Z/A)*phi proton clone. Mirrors make_source so the
     # simulated beam spectrum and the flux normalization move together.
-    if getattr(ms, "GCR_PERELEMENT", "none") == "matthia2013":
+    _pe = getattr(ms, "GCR_PERELEMENT", "none")
+    if _pe == "matthia2013":
         return ms.mattia_norm_integral(z, phi_MV, emin_mev, emax_mev, n)
+    # Per-ELEMENT model: each species is a single element (z=6/14/26 are NOT band
+    # reps here), so the raw integral is its own single-element Matthiae spectrum,
+    # normalized to the proton full-range exactly as the group variant is. For z=1
+    # this is identical to the matthia2013 proton read, so the proton ABSOLUTE
+    # calibration (_calibration_factor) is unchanged across both Matthiae models.
+    if _pe == "perelement":
+        return ms.mattia_element_norm_integral(z, phi_MV, emin_mev, emax_mev, n)
     integral_m2_sr = 0.0       # /(m^2 s sr)
     Phi = (z / a) * phi_MV     # effective modulation in MeV/nuc for this species
     T_prev = j_prev = None
@@ -359,7 +367,14 @@ def set_lis_form(form: str) -> None:
 # env var once at import and subprocesses inherit os.environ, so the sampled beam
 # spectrum and the flux normalization cannot drift apart.
 PERELEMENT_MODEL = os.environ.get("LUNARSIM_GCR_PERELEMENT", "none")
-PERELEMENT_MODELS = ("none", "matthia2013")
+# "perelement": each GCR species is a single element carried individually (the
+# 10-ion set H/He/C/N/O/Ne/Mg/Si/Ca/Fe), with its own single-element Matthiae
+# spectrum AND its own Geant4 fragmentation. Unlike "matthia2013" this is NOT a
+# re-fold of the 5-ion kernel -- it needs a dedicated per-element kernel regen
+# (gcr_thinwall_kernel_perelem.json) because fragmentation differs per ion. The
+# proton (z=1) read is identical to matthia2013, so _calibration_factor is
+# unchanged across both Matthiae models.
+PERELEMENT_MODELS = ("none", "matthia2013", "perelement")
 
 
 def set_perelement_model(model: str) -> None:
@@ -668,6 +683,26 @@ _GCR_THINWALL_KERNELS = {
     "polyethylene": Path(__file__).with_name("data") / "gcr_thinwall_kernel_poly.json",
 }
 
+# The per-element kernel is MODEL-keyed, not material-keyed: a single 10-ion
+# aluminium regen that replaces the 5 Z^2-lumped reps with individually carried
+# elements (H/He/C/N/O/Ne/Mg/Si/Ca/Fe), each with its own Matthiae spectrum AND
+# its own Geant4 fragmentation. It is loaded only when LUNARSIM_GCR_PERELEMENT
+# == "perelement" AND the file is present; otherwise the material kernels above
+# stand. Abundances are baked into the JSON (Voronoi per-element sums over
+# Z=1-28), so the fold reads sp["abundance"] directly -- no group ab_override.
+_GCR_THINWALL_KERNEL_PERELEM = (
+    Path(__file__).with_name("data") / "gcr_thinwall_kernel_perelem.json")
+
+
+def _has_perelem_kernel() -> bool:
+    return _GCR_THINWALL_KERNEL_PERELEM.exists()
+
+
+@functools.lru_cache(maxsize=None)
+def _load_gcr_thinwall_kernel_perelem() -> dict:
+    with open(_GCR_THINWALL_KERNEL_PERELEM) as fh:
+        return json.load(fh)
+
 # Wall materials that fold against each material-specific kernel. The EVA kernel is
 # built through the EVASuit laminate and absorbs the thin LCVG liner via areal
 # density, so both suit layers count as its calibration family.
@@ -783,7 +818,21 @@ def fold_gcr_thinwall(spec, phi_MV: float = 400.0, material: Optional[str] = Non
     per-species breakdown."""
     set_lis_form(KERNEL_LIS_FORM)      # kernel was validated on the rigidity form
     material = material or _gcr_calibration_material(spec)
-    K = _load_gcr_thinwall_kernel(material)
+    # Per-element model is a model-keyed kernel override (see
+    # _GCR_THINWALL_KERNEL_PERELEM). Use it only when requested AND built; the
+    # kernel and the LIS model must stay consistent -- a per-element spectrum
+    # (single-element _raw_gcr_integral) folded on a 5-ion kernel, or vice versa,
+    # would double- or under-count a band -- so if the file is absent we reset the
+    # model to the non-perelement spectrum and fall back to the material kernel.
+    if os.environ.get("LUNARSIM_GCR_PERELEMENT", PERELEMENT_MODEL) == "perelement":
+        if _has_perelem_kernel():
+            set_perelement_model("perelement")
+            K = _load_gcr_thinwall_kernel_perelem()
+        else:
+            set_perelement_model("none")
+            K = _load_gcr_thinwall_kernel(material)
+    else:
+        K = _load_gcr_thinwall_kernel(material)
     organs = K["meta"]["organs"]
     # Interpolation below assumes anchors are in ascending areal density. Kernels
     # do not all store them sorted -- the EVA kernel puts the 0.0 bare-phantom

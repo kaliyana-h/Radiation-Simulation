@@ -190,6 +190,7 @@ AL_VALIDATION_OUT = "gcr_thinwall_kernel_al_regen.json"   # compare-only artefac
 EVA_OUT = "gcr_thinwall_kernel_eva.json"                  # the shipped EVA kernel
 SI_OUT = "gcr_thinwall_kernel_si.json"                    # corrected-composition Al kernel
 POLY_OUT = "gcr_thinwall_kernel_poly.json"                # the shipped polyethylene kernel
+PERELEM_OUT = "gcr_thinwall_kernel_perelem.json"          # the 10-ion per-element Al kernel
 
 # --------------------------------------------------------------------------
 # Per-material anchor grid and shipped-kernel filename.
@@ -374,7 +375,101 @@ def species_matthia(phi_MV: float = 400.0) -> dict:
     }
 
 
-COMPOSITIONS = ("reference", "corrected", "tail", "matthia")
+# --------------------------------------------------------------------------
+# PER-ELEMENT composition (Step 2 -- the real thin-wall <Q> fix).
+# --------------------------------------------------------------------------
+# The corrected/matthia tables collapse each HZE band to ONE representative Z
+# (C for Z3-9, Si for Z10-20, Fe for Z21-28). With Matthiae abundances the
+# resulting error in ABSORBED dose is small (<=12% per band -- rep Z^2 ~ the
+# band's ab-weighted Sum Z^2), but the error in DOSE-EQUIVALENT is not: <Q> is
+# nonlinear in LET, so assigning a whole band its rep's single Q over-reads the
+# thin-wall <Q> (see [[let-scorer-thin-qbar-rootcause]], [[thinwall-qbar-fragmentation]]).
+# This table resolves each band into its dose-dominant individual elements, each
+# carried with its OWN Matthiae per-element abundance + its OWN Geant4
+# fragmentation response (a one-time kernel regen; R is spectrum-independent so
+# re-folds are free afterwards).
+#
+# The ion list is the minimal set covering ~92% of absorbed dose AND spanning
+# each band's Q range (step2_ionset.py ranking, target-blind). A, particle and
+# node grid follow the same rules as the 5-ion table (A = most-abundant isotope;
+# proton/alpha for Z<=2 else GenericIon(z,a); light 7-node grid for Z<=2 else the
+# 6-node HZE grid). Abundance is the per-element Matthiae value via
+# mattia_element_abundance -- which, unlike mattia_group_abundance, returns the
+# single element even for z=6/14/26 (those are band reps in the 5-ion model and
+# would otherwise return the whole-band sum, double-counting N/O, Ne-Ca, etc.).
+#
+# Edit PERELEMENT_IONS to change the set; (name, z, a) only -- everything else is
+# derived. Keep it ordered by Z.
+PERELEMENT_IONS = [
+    ("H",   1,  1),
+    ("He",  2,  4),
+    ("C",   6,  12),
+    ("N",   7,  14),
+    ("O",   8,  16),
+    ("Ne",  10, 20),
+    ("Mg",  12, 24),
+    ("Si",  14, 28),
+    ("Ca",  20, 40),
+    ("Fe",  26, 56),
+]
+
+
+def _perelement_nodes(z: int) -> list:
+    """Node grid for a per-element ion: the light 7-node grid for Z<=2, else the
+    6-node HZE grid (same rule the 5-ion table uses for C/Si/Fe)."""
+    return list(_NODES_LIGHT) if z <= 2 else list(_NODES_C)
+
+
+def _perelement_particle(z: int, a: int) -> str:
+    if z == 1:
+        return "proton"
+    if z == 2:
+        return "alpha"
+    return f"GenericIon({z},{a})"
+
+
+def _perelement_assignment() -> dict:
+    """Voronoi partition of every GCR element Z=1..28 onto the chosen ion set:
+    each Z goes to the nearest ion by |dZ| (ties -> the heavier ion). Returns
+    {ion_z: [assigned Zs]}. Guarantees the per-element kernel's TOTAL GCR flux
+    equals the full 28-element sum (== the 5-ion model's total), so the ion list
+    is a pure Z-RESOLUTION dial: more ions -> finer bands -> less <Q> distortion,
+    never a change in total fluence. A dropped element's flux is carried by its
+    nearest-Z neighbour (same-band, small dZ), not by a cross-band representative."""
+    ion_zs = sorted(z for _, z, _ in PERELEMENT_IONS)
+    assign = {z: [] for z in ion_zs}
+    for z in range(1, 29):
+        # nearest ion; tie -> heavier (max z). key sorts by (distance, -z) asc.
+        best = min(ion_zs, key=lambda iz: (abs(iz - z), -iz))
+        assign[best].append(z)
+    return assign
+
+
+def species_perelement(phi_MV: float = 400.0) -> dict:
+    """Per-element GCR composition: each dose-dominant element carried
+    individually with its OWN Matthiae-2013 spectrum + node grid, and an abundance
+    that is the sum of its Voronoi-assigned neighbourhood (so total flux is
+    conserved -- see _perelement_assignment). Same dict shape as species_corrected().
+    A kernel generated from this table MUST be folded with the per-element
+    abundances baked into its JSON (dosimetry reads meta.composition == 'perelement'
+    and keys the abundance override on each element's own Z)."""
+    import make_source as ms  # repo-root module (same import species_matthia uses)
+    assign = _perelement_assignment()
+    out = {}
+    for name, z, a in PERELEMENT_IONS:
+        ab = sum(ms.mattia_element_abundance(zz, phi_MV) for zz in assign[z])
+        out[name] = {
+            "z": z, "a": a,
+            "abundance": ab,
+            "particle": _perelement_particle(z, a),
+            "group": f"Z={z} ({name}); carries Z={assign[z][0]}-{assign[z][-1]}"
+                     if len(assign[z]) > 1 else f"Z={z} ({name})",
+            "nodes_pernuc_mev": _perelement_nodes(z),
+        }
+    return out
+
+
+COMPOSITIONS = ("reference", "corrected", "tail", "matthia", "perelement")
 
 
 def species_for(composition: str = "reference") -> dict:
@@ -387,4 +482,6 @@ def species_for(composition: str = "reference") -> dict:
         return species_corrected_tail()
     if composition == "matthia":
         return species_matthia()
+    if composition == "perelement":
+        return species_perelement()
     raise ValueError(f"unknown composition {composition!r}; expected one of {COMPOSITIONS}")

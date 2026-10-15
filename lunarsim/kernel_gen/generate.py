@@ -208,6 +208,15 @@ def collect(out: Path) -> dict:
                 "[400-1000], which folded only ~31% of the Fe GCR fluence. H/He/C "
                 "transport is identical to the committed kernel (--validate confirms); "
                 "Si and Fe are new MC. " + note).strip()
+    if composition == "perelement":
+        note = ("COMPOSITION=perelement: 10 ions (H/He/C/N/O/Ne/Mg/Si/Ca/Fe) carried "
+                "INDIVIDUALLY, replacing the 5 Z^2-lumped reps. Each ion has its own "
+                "single-element Matthiae-2013 spectrum AND its own Geant4 fragmentation; "
+                "abundances are Voronoi per-element sums over Z=1-28 (every Z assigned to "
+                "its nearest carried ion, so the total GCR flux is conserved exactly). "
+                "Folded with LUNARSIM_GCR_PERELEMENT=perelement so the LIS read is "
+                "element-aware. Built to resolve the thin-wall <Q> over-read (memory "
+                "let-scorer-thin-qbar-rootcause). " + note).strip()
     kernel = {
         "meta": {
             "description": f"Thin-wall GCR response kernel R=D_organ/Phi_ff, "
@@ -240,7 +249,12 @@ def collect(out: Path) -> dict:
     # other. Only for aluminium does composition pick the file: corrected -> SI_OUT
     # (ships to the headline kernel), reference -> the compare-only Al regen artefact.
     if material == "aluminium":
-        fname = config.SI_OUT if composition == "corrected" else config.AL_VALIDATION_OUT
+        if composition == "perelement":
+            fname = config.PERELEM_OUT            # the 10-ion per-element Al kernel
+        elif composition == "corrected":
+            fname = config.SI_OUT                 # ships to the headline kernel
+        else:
+            fname = config.AL_VALIDATION_OUT      # compare-only Al regen artefact
     else:
         fname = config.OUT_FOR_MATERIAL.get(material, config.EVA_OUT)
     dest = out / fname
