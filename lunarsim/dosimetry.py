@@ -735,9 +735,20 @@ def _thinwall_fold_point(point: dict, phi_MV: float, organs: list) -> dict:
     HI = {k: 0.0 for k, _w in organs}          # ICRP dose-eq rate  (Sv/s)
     HD = {k: 0.0 for k, _w in organs}          # absorbed dose rate (Gy/s)
     HIvar = {k: 0.0 for k, _w in organs}
+    # The kernel's per-node R (=D/Phi_ff) is pure transport response -- it does NOT
+    # depend on the incident spectrum, which enters only through fw below. So the
+    # per-element model needs NO kernel regeneration: the per-node SHAPE already
+    # comes live from _raw_gcr_integral (Matthiae-aware), and the only remaining
+    # spectrum-side input baked in the JSON is the ABUNDANCE. When the Matthiae model
+    # is active, take abundances from the live model instead of the (proton-clone)
+    # JSON, so a thin-wall depth re-gate is a pure re-fold of the EXISTING kernel.
+    ab_override = None
+    if os.environ.get("LUNARSIM_GCR_PERELEMENT", PERELEMENT_MODEL) == "matthia2013":
+        ab_override = {t[0]: t[4] for t in matthia_composition(phi_MV)}
     per_species = {}
     for name, sp in point["species"].items():
-        z, a, ab = sp["z"], sp["a"], sp["abundance"]
+        z, a = sp["z"], sp["a"]
+        ab = ab_override[name] if ab_override and name in ab_override else sp["abundance"]
         nd = sp["nodes_pernuc_mev"]
         edges = ([nd[0]] + [math.sqrt(nd[j] * nd[j + 1]) for j in range(len(nd) - 1)]
                  + [nd[-1]])
