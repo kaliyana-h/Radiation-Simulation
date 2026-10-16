@@ -118,6 +118,10 @@ def report_organ(folded):
 
 def report_waterpoint(let_path):
     """(B) Water-point <Q>(depth) from the LET collect JSON vs the CRaTER arbiter."""
+    if not let_path:
+        print("(B) WATER-POINT <Q> vs CRaTER arbiter -- SKIPPED (no --let given)")
+        print("    Pass --let runs/let_perelem/let_qbar_depth.json to enable it.\n")
+        return
     p = Path(let_path)
     if not p.exists():
         print(f"(B) WATER-POINT <Q> vs CRaTER arbiter -- SKIPPED (no {p})")
