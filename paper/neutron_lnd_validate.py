@@ -56,6 +56,7 @@ import sys
 
 from lunarsim.spec import HabitatSpec, WallLayer, MATERIALS
 from lunarsim import jobs
+from lunarsim.bridge import QUICK_LOOK, FULL_RUN   # FULL_RUN not re-exported via jobs
 from lunarsim import dosimetry as D
 
 # ---------------------------------------------------------------------------
@@ -151,7 +152,7 @@ def run_point(wall_cm: float, radius_cm: float, args):
     areal = spec.areal_density_gcm2()
     print(f"  -> running {spec.name}  (wall {wall_cm:g} cm Al = {areal:.2f} g/cm2, "
           f"R={radius_cm:g} cm) ...", flush=True)
-    tier = jobs.FULL_RUN if args.tier == "full" else jobs.QUICK_LOOK
+    tier = FULL_RUN if args.tier == "full" else QUICK_LOOK
     cc = jobs.run_composition(
         spec, tier=tier,
         target_rel_err=args.rel_err,
