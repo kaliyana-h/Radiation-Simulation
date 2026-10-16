@@ -43,10 +43,13 @@ third reason to compare to the tissue model, not the raw 0.23.)
 Usage (run from repo root ~/topas, on the PC with TOPAS_G4_DATA_DIR set):
     python3 -m paper.neutron_lnd_validate
     python3 -m paper.neutron_lnd_validate --walls 0.5,2,5 --radius 300
-    python3 -m paper.neutron_lnd_validate --walls 0.5 --max-batches 12   # one LND point
+    python3 -m paper.neutron_lnd_validate --walls 0.5 --radii 30,100,300  # dome-size curve
+    python3 -m paper.neutron_lnd_validate --walls 0.5 --radius 30         # tight LND analogue
 
 Default sweep: 0.5 / 2.0 / 5.0 cm Al surface dome (~1.35 / 5.4 / 13.5 g/cm2).
-The thinnest point is the LND comparand; the trio tests the monotone rise.
+The thinnest wall at the smallest radius is the LND comparand; the wall trio
+tests the monotone rise, and --radii sweeps the regolith solid angle the
+CrewSkin lining sees (a geometry control, not a fit -- see build_spec).
 """
 import argparse
 import sys
@@ -89,17 +92,45 @@ PROTON_ONLY_THICK_F = 0.69
 AL_DENSITY = MATERIALS["aluminium"]["density"]      # 2.70 g/cm^3
 
 
-def build_spec(wall_cm: float, radius_cm: float) -> HabitatSpec:
+def _fit_phantom(radius_cm: float, crew_h: float | None,
+                 phantom_r: float | None) -> tuple[float, float]:
+    """Return (crew_height_cm, phantom_radius_cm) that satisfy spec.validate()
+    for a dome of the given inner radius. The phantom is a legality formality
+    here -- f is scored on the CrewSkin lining, not the phantom -- so for a tight
+    LND-analogue dome we just shrink it to fit. A standing-adult phantom
+    (100/20 cm) needs a >=120 cm dome; below that we scale both down (crew at
+    0.5R, phantom at 0.2R => sum 0.7R < R and crew >= phantom, always legal).
+    Explicit --crew-height / --phantom-radius override the auto rule."""
+    if phantom_r is None:
+        phantom_r = min(20.0, 0.2 * radius_cm)
+    if crew_h is None:
+        crew_h = min(100.0, 0.5 * radius_cm)
+    return crew_h, phantom_r
+
+
+def build_spec(wall_cm: float, radius_cm: float,
+               crew_h: float | None = None,
+               phantom_r: float | None = None) -> HabitatSpec:
     """A SURFACE dome (not buried) over regolith with a single Al wall of the
     given thickness -- the LND-analogue flood geometry. The regolith half-space
     and FTFP_BERT_HP neutron transport come from lunar_environment.txt, which the
     flood path always includes; the engineered wall is the only overhead shield,
-    so a thin wall approximates LND's near-bare surface exposure."""
+    so a thin wall approximates LND's near-bare surface exposure.
+
+    A SMALL inner radius pulls the CrewSkin lining down toward the regolith
+    interface -- the geometry LND actually sampled (detector ~at the surface,
+    ~2pi regolith below). A large (3 m) dome's lining mostly faces open sky, so
+    it dilutes the regolith-albedo neutron fraction. Sweeping radius therefore
+    sweeps the regolith solid angle the lining sees -- not a fit knob, a geometry
+    control."""
+    crew_h, phantom_r = _fit_phantom(radius_cm, crew_h, phantom_r)
     return HabitatSpec(
-        name=f"lnd_neutron_{wall_cm:g}cm",
+        name=f"lnd_neutron_{wall_cm:g}cm_r{radius_cm:g}",
         shape="dome",
         inner_radius_cm=radius_cm,
         walls=[WallLayer(material="aluminium", thickness_cm=wall_cm)],
+        crew_height_cm=crew_h,
+        phantom_radius_cm=phantom_r,
     )
 
 
@@ -109,10 +140,11 @@ def _fmt(x, nd=3):
 
 def run_point(wall_cm: float, radius_cm: float, args):
     """Flood-run one surface spec and return (areal_gcm2, f, rel_err)."""
-    spec = build_spec(wall_cm, radius_cm)
+    spec = build_spec(wall_cm, radius_cm,
+                      crew_h=args.crew_height, phantom_r=args.phantom_radius)
     areal = spec.areal_density_gcm2()
-    print(f"  -> running {spec.name}  (wall {wall_cm:g} cm Al = {areal:.2f} g/cm2) ...",
-          flush=True)
+    print(f"  -> running {spec.name}  (wall {wall_cm:g} cm Al = {areal:.2f} g/cm2, "
+          f"R={radius_cm:g} cm) ...", flush=True)
     cc = jobs.run_composition(
         spec, tier=jobs.QUICK_LOOK,
         target_rel_err=args.rel_err,
@@ -140,7 +172,16 @@ def main(argv=None):
     ap.add_argument("--walls", default="0.5,2.0,5.0",
                     help="comma-separated Al wall thicknesses in cm (default 0.5,2.0,5.0)")
     ap.add_argument("--radius", type=float, default=300.0,
-                    help="dome inner radius in cm (default 300)")
+                    help="dome inner radius in cm (default 300). Ignored if --radii given.")
+    ap.add_argument("--radii", default=None,
+                    help="comma-separated dome inner radii in cm to sweep (e.g. 30,100,300). "
+                         "Pulls the CrewSkin lining toward (small) or away from (large) the "
+                         "regolith interface -- a geometry control, not a fit knob.")
+    ap.add_argument("--crew-height", type=float, default=None,
+                    help="phantom-centre height above floor in cm (default auto-fit to radius; "
+                         "phantom does not enter f, only legality)")
+    ap.add_argument("--phantom-radius", type=float, default=None,
+                    help="crew phantom radius in cm (default auto-fit to radius)")
     ap.add_argument("--rel-err", type=float, default=0.05,
                     help="skin dose convergence target (default 0.05)")
     ap.add_argument("--min-batches", type=int, default=2)
@@ -154,6 +195,16 @@ def main(argv=None):
     if not walls:
         ap.error("no wall thicknesses given")
 
+    if args.radii:
+        try:
+            radii = [float(r) for r in args.radii.split(",") if r.strip()]
+        except ValueError:
+            ap.error(f"could not parse --radii {args.radii!r}")
+        if not radii:
+            ap.error("no radii given")
+    else:
+        radii = [args.radius]
+
     print("=" * 74)
     print("STEP 4 -- secondary-neutron dose-equivalent fraction vs Chang'E-4 LND")
     print("=" * 74)
@@ -164,16 +215,18 @@ def main(argv=None):
     print()
 
     rows = []
-    for w in walls:
-        areal, f, rel = run_point(w, args.radius, args)
-        rows.append((w, areal, f, rel))
+    for r in radii:
+        for w in walls:
+            areal, f, rel = run_point(w, r, args)
+            rows.append((w, r, areal, f, rel))
 
     # ---- results table -----------------------------------------------------
     print()
-    print(f"{'wall(cm Al)':>12}  {'areal(g/cm2)':>12}  {'f(tissue,lineage)':>18}  {'rel_err':>8}")
-    print(f"{'-'*12}  {'-'*12}  {'-'*18}  {'-'*8}")
-    for w, areal, f, rel in rows:
-        print(f"{w:>12g}  {areal:>12.2f}  {_fmt(f):>18}  {_fmt(rel):>8}")
+    print(f"{'wall(cm Al)':>12}  {'R(cm)':>7}  {'areal(g/cm2)':>12}  "
+          f"{'f(tissue,lineage)':>18}  {'rel_err':>8}")
+    print(f"{'-'*12}  {'-'*7}  {'-'*12}  {'-'*18}  {'-'*8}")
+    for w, r, areal, f, rel in rows:
+        print(f"{w:>12g}  {r:>7g}  {areal:>12.2f}  {_fmt(f):>18}  {_fmt(rel):>8}")
 
     # ---- post-hoc references ----------------------------------------------
     print()
@@ -190,21 +243,35 @@ def main(argv=None):
     print(f"  internal cap: proton-only THICK-shield dome f ~ {PROTON_ONLY_THICK_F:.2f}  (tool, prior)")
 
     # ---- falsifiable physics checks ---------------------------------------
-    fs = [(areal, f) for _, areal, f, _ in rows if f is not None]
+    good = [(w, r, areal, f) for w, r, areal, f, _ in rows if f is not None]
     print()
     print("PHYSICS checks (falsifiable, no fit):")
 
-    if len(fs) >= 2:
-        mono = all(fs[i + 1][1] >= fs[i][1] - 1e-9 for i in range(len(fs) - 1))
-        verdict = "PASS" if mono else "FAIL"
-        print(f"  [1] f rises with wall areal density ................... {verdict}")
-        if not mono:
+    # [1] f must rise with wall areal density -- checked WITHIN each radius group
+    # (mixing radii would confound the wall trend with the geometry trend).
+    wall_groups = {}
+    for w, r, areal, f in good:
+        wall_groups.setdefault(r, []).append((areal, f))
+    checkable = [g for g in wall_groups.values() if len(g) >= 2]
+    if checkable:
+        mono_all = True
+        for g in checkable:
+            g.sort()
+            if not all(g[i + 1][1] >= g[i][1] - 1e-9 for i in range(len(g) - 1)):
+                mono_all = False
+        verdict = "PASS" if mono_all else "FAIL"
+        print(f"  [1] f rises with wall areal density (per radius) ..... {verdict}")
+        if not mono_all:
             print("      (non-monotone -- check statistics before reading it as physics)")
     else:
-        print("  [1] f rises with wall areal density ................... SKIP (need >=2 points)")
+        print("  [1] f rises with wall areal density .................. SKIP (need >=2 walls at a radius)")
 
+    # [2] LND analogue = thinnest wall at the SMALLEST radius (lining closest to
+    # the regolith interface, the geometry LND actually sampled).
+    fs = sorted(good, key=lambda t: (t[1], t[2]))   # by (radius, areal)
     if fs:
-        f_thin = fs[0][1]                       # thinnest wall = LND analogue
+        f_thin = fs[0][3]
+        r_thin = fs[0][1]
         if f_thin >= LND_ALBEDO_TISSUE_MODEL - 0.02:
             v = "PASS"
         elif f_thin >= LND_NEUTRAL_SI_2YR - 0.02:
@@ -212,10 +279,11 @@ def main(argv=None):
         else:
             v = "UNDERSHOOT (below LND Si -- investigate geometry/scorer, do NOT re-fit)"
         print(f"  [2] thin-wall f >= 0.25 tissue-albedo model .......... {v}")
-        print(f"      thin-wall f = {f_thin:.3f}  vs tissue model {LND_ALBEDO_TISSUE_MODEL:.2f} "
+        print(f"      LND analogue = smallest R={r_thin:g} cm, thinnest wall: f = {f_thin:.3f}")
+        print(f"      vs tissue model {LND_ALBEDO_TISSUE_MODEL:.2f} "
               f"/ Si measured {LND_NEUTRAL_SI_MEASURED:.2f}")
 
-        f_max = max(f for _, f in fs)
+        f_max = max(f for _, _, _, f in fs)
         v3 = "PASS" if f_max < PROTON_ONLY_THICK_F else "FAIL (exceeds proton-only cap -- unphysical)"
         print(f"  [3] f < {PROTON_ONLY_THICK_F:.2f} proton-only thick cap .............. {v3}")
     else:
@@ -233,6 +301,13 @@ def main(argv=None):
     print("  * LND's raw measured 0.23 folds in lander/LND-structure neutron")
     print("    multiplication the tool does not model (its shield is regolith+Al only) --")
     print("    a second reason the floor comparand is the 0.25 tissue model, not 0.23.")
+    print("  * GEOMETRY control (not a fit knob): dome inner radius sets how much")
+    print("    regolith the CrewSkin lining sees. A 3 m dome's lining mostly faces")
+    print("    open sky, so direct GCR dominates and f is DILUTED; a small radius")
+    print("    pulls the lining to the regolith interface -- LND's actual geometry")
+    print("    (detector ~at the surface, ~2pi regolith below). Sweep --radii to")
+    print("    see f climb as the regolith solid angle grows. Compare the LND")
+    print("    analogue (smallest R) to the tissue model, NOT the 3 m dome point.")
     print("  * f is dimensionless and normalisation-invariant (ratio within one run):")
     print("    it carries NO calibration and CAL is untouched here.")
     print()
