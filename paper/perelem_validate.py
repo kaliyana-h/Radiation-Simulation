@@ -126,8 +126,15 @@ def report_waterpoint(let_path):
         return
     with open(p) as fh:
         let = json.load(fh)
-    pts = sorted(let.get("points", []), key=lambda q: q["wall_gcm2"])
-    print("(B) WATER-POINT <Q>(depth) vs CRaTER / arXiv:2511.09040 arbiter")
+    # Schema (let_harness.collect): points live under materials[<name>]["points"],
+    # NOT at the top level. Prefer aluminium (the Al-equiv arbiter axis); else the
+    # first material present.
+    mats = let.get("materials", {})
+    mat = "aluminium" if "aluminium" in mats else (next(iter(mats), None))
+    pts = sorted(mats.get(mat, {}).get("points", []) if mat else [],
+                 key=lambda q: q["wall_gcm2"])
+    print(f"(B) WATER-POINT <Q>(depth) vs CRaTER / arXiv:2511.09040 arbiter"
+          f"   [material={mat}]")
     print(f"    {'wall':>6} | {'<Q> water':>10} | {'arbiter':>8} | "
           f"{'ratio':>6} | note")
     print(f"    {'g/cm2':>6} | {'(kernel)':>10} | {'(meas+INCL)':>8} | "
