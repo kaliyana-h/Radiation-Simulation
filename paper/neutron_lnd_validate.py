@@ -91,6 +91,12 @@ PROTON_ONLY_THICK_F = 0.69
 
 AL_DENSITY = MATERIALS["aluminium"]["density"]      # 2.70 g/cm^3
 
+# Above this skin-dose rel_err, f is too noisy to read as a physics result: a
+# small dome's thin lining shell gets few hits, so variance stays high unless
+# given many more batches. Points above it are flagged NOISY in the table and
+# excluded from the pass/fail verdicts (reported, not silently trusted).
+REL_ERR_NOISY = 0.15
+
 
 def _fit_phantom(radius_cm: float, crew_h: float | None,
                  phantom_r: float | None) -> tuple[float, float]:
@@ -145,8 +151,9 @@ def run_point(wall_cm: float, radius_cm: float, args):
     areal = spec.areal_density_gcm2()
     print(f"  -> running {spec.name}  (wall {wall_cm:g} cm Al = {areal:.2f} g/cm2, "
           f"R={radius_cm:g} cm) ...", flush=True)
+    tier = jobs.FULL_RUN if args.tier == "full" else jobs.QUICK_LOOK
     cc = jobs.run_composition(
-        spec, tier=jobs.QUICK_LOOK,
+        spec, tier=tier,
         target_rel_err=args.rel_err,
         min_batches=args.min_batches, max_batches=args.max_batches,
         converge_on="skin",                # f lives on the skin lining; it converges fast
@@ -154,7 +161,7 @@ def run_point(wall_cm: float, radius_cm: float, args):
     if not cc.ok:
         print(f"     RUN FAILED (returncode={cc.returncode}). log tail:\n{cc.log_tail}")
         return areal, None, None
-    da = D.assess_composition(cc.species_results, phi_MV=jobs.QUICK_LOOK.phi_mv, skin=True)
+    da = D.assess_composition(cc.species_results, phi_MV=tier.phi_mv, skin=True)
     if da is None:
         print("     assess_composition returned None (no usable species dose).")
         return areal, None, None
@@ -182,6 +189,9 @@ def main(argv=None):
                          "phantom does not enter f, only legality)")
     ap.add_argument("--phantom-radius", type=float, default=None,
                     help="crew phantom radius in cm (default auto-fit to radius)")
+    ap.add_argument("--tier", choices=("quick", "full"), default="quick",
+                    help="MC tier (default quick ~1e3 primaries/batch; 'full' ~1e4/batch "
+                         "-- use for small domes whose thin lining shell converges slowly)")
     ap.add_argument("--rel-err", type=float, default=0.05,
                     help="skin dose convergence target (default 0.05)")
     ap.add_argument("--min-batches", type=int, default=2)
@@ -226,7 +236,8 @@ def main(argv=None):
           f"{'f(tissue,lineage)':>18}  {'rel_err':>8}")
     print(f"{'-'*12}  {'-'*7}  {'-'*12}  {'-'*18}  {'-'*8}")
     for w, r, areal, f, rel in rows:
-        print(f"{w:>12g}  {r:>7g}  {areal:>12.2f}  {_fmt(f):>18}  {_fmt(rel):>8}")
+        flag = "  NOISY" if (rel is not None and rel > REL_ERR_NOISY) else ""
+        print(f"{w:>12g}  {r:>7g}  {areal:>12.2f}  {_fmt(f):>18}  {_fmt(rel):>8}{flag}")
 
     # ---- post-hoc references ----------------------------------------------
     print()
@@ -243,9 +254,18 @@ def main(argv=None):
     print(f"  internal cap: proton-only THICK-shield dome f ~ {PROTON_ONLY_THICK_F:.2f}  (tool, prior)")
 
     # ---- falsifiable physics checks ---------------------------------------
-    good = [(w, r, areal, f) for w, r, areal, f, _ in rows if f is not None]
+    # Keep only points whose f actually converged: a NOISY f is reported in the
+    # table but never drives a verdict (it would fire false pass/fail).
+    good = [(w, r, areal, f) for w, r, areal, f, rel in rows
+            if f is not None and (rel is None or rel <= REL_ERR_NOISY)]
+    dropped = [(w, r, rel) for w, r, areal, f, rel in rows
+               if f is not None and rel is not None and rel > REL_ERR_NOISY]
     print()
-    print("PHYSICS checks (falsifiable, no fit):")
+    print("PHYSICS checks (falsifiable, no fit; NOISY points excluded):")
+    if dropped:
+        for w, r, rel in dropped:
+            print(f"  (excluded: wall {w:g} cm, R={r:g} cm -- rel_err {rel:.3f} > "
+                  f"{REL_ERR_NOISY:.2f}; f not converged, re-run with more batches)")
 
     # [1] f must rise with wall areal density -- checked WITHIN each radius group
     # (mixing radii would confound the wall trend with the geometry trend).
@@ -269,26 +289,39 @@ def main(argv=None):
     # [2] LND analogue = thinnest wall at the SMALLEST radius (lining closest to
     # the regolith interface, the geometry LND actually sampled).
     fs = sorted(good, key=lambda t: (t[1], t[2]))   # by (radius, areal)
+    # If a SMALLER radius than any converged point was attempted but dropped for
+    # noise, the true LND analogue is still pending -- do not read the undershoot
+    # off a larger (sky-dominated) dome.
+    smallest_dropped_r = min((r for _, r, _ in dropped), default=None)
     if fs:
         f_thin = fs[0][3]
         r_thin = fs[0][1]
-        if f_thin >= LND_ALBEDO_TISSUE_MODEL - 0.02:
-            v = "PASS"
-        elif f_thin >= LND_NEUTRAL_SI_2YR - 0.02:
-            v = "LOW (between Si and tissue model -- watch, do NOT re-fit)"
+        analogue_pending = smallest_dropped_r is not None and smallest_dropped_r < r_thin
+        if analogue_pending:
+            print(f"  [2] thin-wall f >= 0.25 tissue-albedo model .......... "
+                  "INCONCLUSIVE (analogue R unconverged)")
+            print(f"      smallest converged point is R={r_thin:g} cm (f={f_thin:.3f}); the tighter")
+            print(f"      R={smallest_dropped_r:g} cm analogue was NOISY -- re-run it with more batches.")
         else:
-            v = "UNDERSHOOT (below LND Si -- investigate geometry/scorer, do NOT re-fit)"
-        print(f"  [2] thin-wall f >= 0.25 tissue-albedo model .......... {v}")
-        print(f"      LND analogue = smallest R={r_thin:g} cm, thinnest wall: f = {f_thin:.3f}")
-        print(f"      vs tissue model {LND_ALBEDO_TISSUE_MODEL:.2f} "
-              f"/ Si measured {LND_NEUTRAL_SI_MEASURED:.2f}")
+            if f_thin >= LND_ALBEDO_TISSUE_MODEL - 0.02:
+                v = "PASS"
+            elif f_thin >= LND_NEUTRAL_SI_2YR - 0.02:
+                v = "LOW (between Si and tissue model -- watch, do NOT re-fit)"
+            else:
+                v = "UNDERSHOOT (below LND Si -- investigate geometry/scorer, do NOT re-fit)"
+            print(f"  [2] thin-wall f >= 0.25 tissue-albedo model .......... {v}")
+            print(f"      LND analogue = smallest R={r_thin:g} cm, thinnest wall: f = {f_thin:.3f}")
+            print(f"      vs tissue model {LND_ALBEDO_TISSUE_MODEL:.2f} "
+                  f"/ Si measured {LND_NEUTRAL_SI_MEASURED:.2f}")
 
         f_max = max(f for _, _, _, f in fs)
         v3 = "PASS" if f_max < PROTON_ONLY_THICK_F else "FAIL (exceeds proton-only cap -- unphysical)"
         print(f"  [3] f < {PROTON_ONLY_THICK_F:.2f} proton-only thick cap .............. {v3}")
     else:
-        print("  [2] thin-wall f >= tissue model ...................... SKIP (no f reported)")
-        print("  [3] f < proton-only cap .............................. SKIP (no f reported)")
+        print("  [2] thin-wall f >= tissue model ...................... "
+              + ("INCONCLUSIVE (only NOISY points -- re-run with more batches)"
+                 if dropped else "SKIP (no f reported)"))
+        print("  [3] f < proton-only cap .............................. SKIP (no usable f)")
 
     # ---- interpretation ----------------------------------------------------
     print()
