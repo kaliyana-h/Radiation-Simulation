@@ -26,6 +26,7 @@ PORT="${LUNARSIM_PORT:-8050}"
 IFACE="${TS_IFACE:-tailscale0}"
 MTU="${TS_MTU:-800}"
 THREADS="${LUNARSIM_THREADS:--2}"
+PERELEM="${LUNARSIM_GCR_PERELEMENT:-perelement}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "[install_service] must run as root -- use: sudo $0" >&2
@@ -57,7 +58,7 @@ fi
 
 echo "[install_service] user=${TARGET_USER} home=${TARGET_HOME}"
 echo "[install_service] python=${VENV_PY}"
-echo "[install_service] port=${PORT} iface=${IFACE} mtu=${MTU} threads=${THREADS}"
+echo "[install_service] port=${PORT} iface=${IFACE} mtu=${MTU} threads=${THREADS} perelem=${PERELEM}"
 
 cat > "${UNIT}" <<UNITEOF
 [Unit]
@@ -77,6 +78,12 @@ WorkingDirectory=${TARGET_HOME}/topas
 Environment=TOPAS_G4_DATA_DIR=${G4DATA}
 Environment=LUNARSIM_THREADS=${THREADS}
 Environment=LUNARSIM_PORT=${PORT}
+# Ship the per-element (10-ion H/He/C/N/O/Ne/Mg/Si/Ca/Fe) thin-wall GCR kernel as
+# the live default. THIN-kernel-only: the flood (deep, >~19 g/cm^2) engine self-
+# collapses it to 'none' via jobs.py, so the thick path is untouched. Requires
+# data/gcr_thinwall_kernel_perelem.json present -- the loader silently falls back
+# to the 5-group lumped kernel (the old over-read) if it is missing.
+Environment=LUNARSIM_GCR_PERELEMENT=${PERELEM}
 # The Tailscale underlay here can't carry the default 1280 MTU -- large packets
 # get dropped and the page loads blank. Shrink it before launch. Runs as root
 # (system service), so no sudo; leading '-' tolerates the iface not being up yet.
