@@ -276,10 +276,20 @@ def delta(base: Path, tail: Path, phi_MV: float = 400.0) -> None:
         eb, et = psb[name]["E_sv_s"], pst[name]["E_sv_s"]
         d = (et / eb - 1) * 100 if eb else float("nan")
         print(f"    {name:3} {psb[name]['group']:<24} dE {d:+6.2f}%")
-    print("\n  READ (target-blind): a small positive lift, larger for the thin anchors "
-          "and\n  for the penetrating heavy ions, means the ceiling truncation is now "
-          "measured.\n  A large or negative jump means a bad/incomplete tail batch -- "
-          "check topas.log\n  and the merge guard, do NOT ship.")
+    print("\n  READ (target-blind):")
+    print("  * A small positive lift means the ceiling truncation is now MEASURED, not")
+    print("    stated. The lift GROWS with depth (the penetrating >ceiling band is")
+    print("    enriched as the soft spectrum attenuates) -- that direction is correct")
+    print("    physics, NOT a bad batch. A NEGATIVE jump is the bad-batch signal.")
+    print("  * The per-species column says WHICH ions the tail lifts. A proton-led lift")
+    print("    LOWERS <Q> (adds low-Q dose), so a ceiling extension cannot cure a deep")
+    print("    <Q> UNDERshoot -- confirm that against the per-species read before")
+    print("    attributing any deep-<Q> defect to the ceiling.")
+    print("  * SHIP CAVEAT: if the deep lift pushes the kernel >~15% above its depth")
+    print("    anchor it would break the validated deep absorbed gate (kernel/flood~1.0")
+    print("    at 50 g/cm^2, two-gate shell fix) and test_crossover_coherence. Production")
+    print("    folds the thin-wall kernel only BELOW the 19 g/cm^2 gate (flood above), so")
+    print("    a large deep lift means KEEP THIS AS A DIAGNOSTIC, do not promote to default.")
 
 
 # --------------------------------------------------------------------------
