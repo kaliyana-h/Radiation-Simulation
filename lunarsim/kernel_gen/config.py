@@ -469,7 +469,57 @@ def species_perelement(phi_MV: float = 400.0) -> dict:
     return out
 
 
-COMPOSITIONS = ("reference", "corrected", "tail", "matthia", "perelement")
+# --------------------------------------------------------------------------
+# PER-ELEMENT high-energy TAIL (the #3 energy-ceiling run for the 10-ion kernel).
+# --------------------------------------------------------------------------
+# The 5-ion TAIL above (species_corrected_tail) extends the OLD corrected kernel.
+# The shipped THIN engine is now the 10-ion per-element kernel
+# (gcr_thinwall_kernel_perelem.json), whose per-nucleon tops are 6000 (H/He) and
+# 5000 (the 8 HZE ions) MeV/n -- the same truncation point. This per-element tail
+# appends the high-energy nodes UP TO the free-field ceiling for EACH of the 10
+# ions, so dosimetry._thinwall_fold_point's top edge reaches GCR_EMAX_PER_NUC and
+# the penetrating 5-20 GeV/n HZE band (the population that keeps the deep water-
+# point <Q> up -- memory crater-qfactor-depth-reference) is no longer dropped.
+# Append nodes only; base R stays byte-identical, merged by kernel_gen.tail onto
+# the per-element base kernel. Same append structure as TAIL_NODES_PERNUC_MEV.
+def _perelement_tail_nodes(z: int) -> list:
+    """Per-element TAIL append nodes: [12000, ceiling] for Z<=2 (base top 6000),
+    else [10000, ceiling] (base top 5000). Top pinned to the free-field ceiling so
+    the fold loses zero residual flux; strictly above each ion's base top so the
+    merge guard (tail must extend, not overlap) is satisfied."""
+    lead = 12000.0 if z <= 2 else 10000.0
+    return [lead, TAIL_CEILING_PERNUC_MEV]
+
+
+def species_perelement_tail(phi_MV: float = 400.0) -> dict:
+    """The 10-ion per-element table carrying ONLY the high-energy TAIL append nodes
+    (_perelement_tail_nodes). Same dict shape as species_perelement(); used by
+    kernel_gen.tail to emit a per-element tail batch whose responses are merged onto
+    the per-element base kernel (gcr_thinwall_kernel_perelem.json).
+
+    Abundance is the per-element Voronoi sum (identical to species_perelement) and is
+    carried for display/collect only -- the merge keeps the BASE kernel's abundance
+    and never reads this one (R = D/phi_ff is abundance-independent transport), so a
+    stale phi here cannot corrupt a merged kernel."""
+    base = species_perelement(phi_MV)
+    return {
+        name: {"z": s["z"], "a": s["a"], "abundance": s["abundance"],
+               "particle": s["particle"], "group": s["group"],
+               "nodes_pernuc_mev": _perelement_tail_nodes(s["z"])}
+        for name, s in base.items()
+    }
+
+
+COMPOSITIONS = ("reference", "corrected", "tail", "matthia", "perelement",
+                "perelement_tail")
+
+# Tail compositions kernel_gen.tail knows how to emit/merge: each appends high-
+# energy nodes onto a base kernel without changing its base grid. Maps each to the
+# base-kernel composition(s) it may be merged onto (merge guards on this).
+TAIL_COMPOSITIONS = {
+    "tail": ("reference", "corrected"),
+    "perelement_tail": ("perelement",),
+}
 
 
 def species_for(composition: str = "reference") -> dict:
@@ -484,4 +534,6 @@ def species_for(composition: str = "reference") -> dict:
         return species_matthia()
     if composition == "perelement":
         return species_perelement()
+    if composition == "perelement_tail":
+        return species_perelement_tail()
     raise ValueError(f"unknown composition {composition!r}; expected one of {COMPOSITIONS}")

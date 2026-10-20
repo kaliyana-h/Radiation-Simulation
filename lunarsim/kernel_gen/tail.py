@@ -51,6 +51,29 @@ HANDOFF WORKFLOW (assistant builds; USER runs the MC on the 24-core PC)
 The tail batch is EMITTED with composition="tail" (config.species_corrected_tail),
 so it reuses generate.emit / run_all.sh / _collect_point unchanged; only the merge
 and the delta report live here.
+
+PER-ELEMENT variant (the #3 run for the SHIPPED 10-ion kernel)
+--------------------------------------------------------------
+The shipped THIN engine is the 10-ion per-element kernel, not the old 5-ion
+corrected one. Pass `--composition perelement_tail` (config.species_perelement_tail)
+to every step to extend THAT kernel's 6000/5000 MeV/n tops to the ceiling instead.
+The base/dest are then the per-element files:
+
+  python3 -m lunarsim.kernel_gen.tail plan  --seeds 4 --composition perelement_tail
+  python3 -m lunarsim.kernel_gen.tail emit  --out runs/tail_perelem --seeds 4 \
+         --composition perelement_tail
+  # ... run runs/tail_perelem/run_all.sh on the PC ...
+  python3 -m lunarsim.kernel_gen.tail merge --out runs/tail_perelem \
+         --base lunarsim/data/gcr_thinwall_kernel_perelem.json \
+         --dest lunarsim/data/gcr_thinwall_kernel_perelem_tail.json
+  python3 -m lunarsim.kernel_gen.tail delta \
+         --base lunarsim/data/gcr_thinwall_kernel_perelem.json \
+         --tail lunarsim/data/gcr_thinwall_kernel_perelem_tail.json
+
+merge auto-detects the composition from the batch manifest and guards that --base
+is the matching base kernel (config.TAIL_COMPOSITIONS). delta auto-sets the
+per-element fold model from the base kernel's meta.composition, so the folded
+numbers are element-aware without an env export.
 """
 from __future__ import annotations
 
@@ -66,27 +89,41 @@ from . import config, generate
 # EMIT (thin wrapper over generate.emit with composition="tail")
 # --------------------------------------------------------------------------
 def emit(out: Path, seeds: int, threads: int, material: str = "aluminium",
-         wall_geometry: str = config.WALL_GEOMETRY) -> None:
-    _check_ceiling()
-    generate.emit(material, out, seeds, threads, composition="tail",
+         wall_geometry: str = config.WALL_GEOMETRY,
+         composition: str = "tail") -> None:
+    _check_ceiling(composition)
+    generate.emit(material, out, seeds, threads, composition=composition,
                   wall_geometry=wall_geometry)
 
 
-def _check_ceiling() -> None:
+def _check_ceiling(composition: str = "tail") -> None:
     """Fail loudly if the tail ceiling has drifted from make_source's free-field
-    ceiling -- the whole point is for the top node to land ON GCR_EMAX_PER_NUC."""
+    ceiling, or if any species in the tail table does not top out exactly ON that
+    ceiling -- the whole point is for every tail top node to land ON GCR_EMAX_PER_NUC
+    so the fold loses no residual flux."""
+    if composition not in config.TAIL_COMPOSITIONS:
+        raise SystemExit(
+            f"composition {composition!r} is not a tail composition; expected one of "
+            f"{tuple(config.TAIL_COMPOSITIONS)}")
     try:
         import make_source as ms  # repo-root module
         emax = float(ms.GCR_EMAX_PER_NUC)
     except Exception as exc:        # pragma: no cover - import guard
         print(f"  (note: could not import make_source to verify ceiling: {exc})")
-        return
-    if abs(emax - config.TAIL_CEILING_PERNUC_MEV) > 1.0:
+        emax = None
+    if emax is not None and abs(emax - config.TAIL_CEILING_PERNUC_MEV) > 1.0:
         raise SystemExit(
             f"TAIL ceiling {config.TAIL_CEILING_PERNUC_MEV:g} MeV/n != make_source."
             f"GCR_EMAX_PER_NUC {emax:g}. The tail's top node must equal the free-field "
             f"ceiling or the fold still truncates. Update config.TAIL_CEILING_PERNUC_MEV "
-            f"(and the per-species top entries in TAIL_NODES_PERNUC_MEV) to {emax:g}.")
+            f"to {emax:g}.")
+    for name, s in config.species_for(composition).items():
+        top = s["nodes_pernuc_mev"][-1]
+        if abs(top - config.TAIL_CEILING_PERNUC_MEV) > 1.0:
+            raise SystemExit(
+                f"tail species {name} top node {top:g} != ceiling "
+                f"{config.TAIL_CEILING_PERNUC_MEV:g} MeV/n: the fold would still "
+                f"truncate above it")
 
 
 # --------------------------------------------------------------------------
@@ -98,20 +135,41 @@ def merge(out: Path, base: Path, dest: Path) -> dict:
     species, the tail nodes_pernuc_mev and R/Rsem arrays are concatenated after the
     existing ones. Base values are copied through untouched."""
     manifest = json.loads((out / "manifest.json").read_text())
-    if manifest.get("composition") != "tail":
-        raise SystemExit(f"manifest composition is {manifest.get('composition')!r}, "
-                         f"expected 'tail' -- did you `emit` with this module?")
+    composition = manifest.get("composition")
+    if composition not in config.TAIL_COMPOSITIONS:
+        raise SystemExit(f"manifest composition is {composition!r}, expected a tail "
+                         f"composition {tuple(config.TAIL_COMPOSITIONS)} -- did you "
+                         f"`emit` with this module?")
     material = manifest["material"]
     seeds = manifest["seeds"]
     runs_dir = out / "runs"
     K = json.loads(base.read_text())
     organs = [name for name, _ in config.organs_from_reference()]
 
+    # Guard: the base kernel must be the one this tail composition extends -- merging
+    # a 10-ion perelement_tail onto the 5-ion base (or vice versa) would silently
+    # merge only the overlapping species and ship a corrupted kernel.
+    base_comp = K["meta"].get("composition", "reference")
+    allowed_base = config.TAIL_COMPOSITIONS[composition]
+    if base_comp not in allowed_base:
+        raise SystemExit(
+            f"base kernel composition {base_comp!r} does not match tail composition "
+            f"{composition!r} (expected base in {allowed_base}); wrong --base?")
+
     tail_by_wall = {
         p["wall_gcm2"]: p for p in
-        (generate._collect_point(runs_dir, material, w, seeds, "tail")
+        (generate._collect_point(runs_dir, material, w, seeds, composition)
          for w in manifest["grid_gcm2"])
     }
+
+    # Species-set guard: base and tail must carry the SAME species, or the per-base
+    # loop below would drop tail-only species and mis-pair the rest.
+    base_species = set(K["points"][0]["species"])
+    tail_species = set(next(iter(tail_by_wall.values()))["species"])
+    if base_species != tail_species:
+        raise SystemExit(
+            f"species mismatch: base has {sorted(base_species)}, tail batch has "
+            f"{sorted(tail_species)} -- base kernel and tail composition disagree")
 
     appended = 0
     for p in K["points"]:
@@ -137,8 +195,11 @@ def merge(out: Path, base: Path, dest: Path) -> dict:
                     bs["Rsem"][o][q] = bs["Rsem"][o][q] + ts["Rsem"][o][q]
             appended += len(tnodes)
 
+    tail_nodes_meta = {name: list(s["nodes_pernuc_mev"])
+                       for name, s in config.species_for(composition).items()}
     K["meta"]["tail_extension"] = {
-        "nodes_pernuc_mev": config.TAIL_NODES_PERNUC_MEV,
+        "composition": composition,
+        "nodes_pernuc_mev": tail_nodes_meta,
         "ceiling_pernuc_mev": config.TAIL_CEILING_PERNUC_MEV,
         "seeds": seeds,
         "note": ("High-energy tail appended by kernel_gen.tail so the fold's top "
@@ -166,12 +227,23 @@ def delta(base: Path, tail: Path, phi_MV: float = 400.0) -> None:
     arithmetic on the two kernels -- no geometry, no external reference. This is the
     acceptance read: the tail should ADD a small, positive, monotone-ish lift
     (bigger for thin walls, where the penetrating tail is least attenuated)."""
+    import os
     from .. import dosimetry as dz
 
     Kb = json.loads(base.read_text())
     Kt = json.loads(tail.read_text())
     organs = Kb["meta"]["organs"]
     wmap = {name: w for name, w in organs}
+
+    # The per-element kernel must be folded with the per-element model active
+    # (double-gate footgun, memory perelement-kernel-activation): otherwise the
+    # fold reads the element-blind spectrum and the delta is meaningless. Drive the
+    # model straight off the base kernel's own composition so this is automatic.
+    model = "perelement" if Kb["meta"].get("composition") == "perelement" else "none"
+    os.environ["LUNARSIM_GCR_PERELEMENT"] = model
+    dz.set_perelement_model(model)
+    print(f"  (fold model = {model}, from base meta.composition="
+          f"{Kb['meta'].get('composition')!r})")
 
     def fold_point(point):
         f = dz._thinwall_fold_point(point, phi_MV, organs)
@@ -211,14 +283,15 @@ def delta(base: Path, tail: Path, phi_MV: float = 400.0) -> None:
 
 
 # --------------------------------------------------------------------------
-def _plan(seeds: int, material: str = "aluminium") -> None:
-    _check_ceiling()
-    runs = list(generate.enumerate_runs(material, seeds, "tail"))
-    species = config.species_for("tail")
+def _plan(seeds: int, material: str = "aluminium",
+          composition: str = "tail") -> None:
+    _check_ceiling(composition)
+    runs = list(generate.enumerate_runs(material, seeds, composition))
+    species = config.species_for(composition)
     grid = generate._grid_for(material)
     nodes = sum(len(s["nodes_pernuc_mev"]) for s in species.values())
     prim = config.RINGS * config.AZIMUTH * config.HISTORIES
-    print(f"TAIL batch plan  (composition=tail, material={material})")
+    print(f"TAIL batch plan  (composition={composition}, material={material})")
     print(f"  ceiling          = {config.TAIL_CEILING_PERNUC_MEV:g} MeV/n "
           f"(== make_source.GCR_EMAX_PER_NUC)")
     print(f"  anchors g/cm^2   = {grid}")
@@ -241,6 +314,10 @@ def main(argv=None):
     pp = sub.add_parser("plan", help="print tail run counts + per-species total KE")
     pp.add_argument("--seeds", type=int, default=config.SEEDS)
     pp.add_argument("--material", default="aluminium", choices=sorted(config.MATERIALS))
+    pp.add_argument("--composition", default="tail",
+                    choices=sorted(config.TAIL_COMPOSITIONS),
+                    help="tail=5-ion (old corrected base); perelement_tail=10-ion "
+                         "(shipped per-element base). default tail")
 
     pe = sub.add_parser("emit", help="write the tail TOPAS param files + runner")
     pe.add_argument("--out", required=True, type=Path)
@@ -251,6 +328,10 @@ def main(argv=None):
                     default=config.WALL_GEOMETRY,
                     help="MUST match the base kernel's geometry being merged onto "
                          f"(default {config.WALL_GEOMETRY})")
+    pe.add_argument("--composition", default="tail",
+                    choices=sorted(config.TAIL_COMPOSITIONS),
+                    help="tail=5-ion (old corrected base); perelement_tail=10-ion "
+                         "(shipped per-element base). default tail")
 
     pm = sub.add_parser("merge", help="append tail responses onto the committed kernel")
     pm.add_argument("--out", required=True, type=Path)
@@ -264,9 +345,10 @@ def main(argv=None):
 
     args = p.parse_args(argv)
     if args.cmd == "plan":
-        _plan(args.seeds, args.material)
+        _plan(args.seeds, args.material, args.composition)
     elif args.cmd == "emit":
-        emit(args.out, args.seeds, args.threads, args.material, args.wall_geometry)
+        emit(args.out, args.seeds, args.threads, args.material, args.wall_geometry,
+             args.composition)
     elif args.cmd == "merge":
         merge(args.out, args.base, args.dest)
     elif args.cmd == "delta":
