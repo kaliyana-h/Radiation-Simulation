@@ -61,8 +61,8 @@ SHAPE_LABELS = {"dome": "Dome (half-sphere)", "cylinder": "Cylinder",
 # Regolith terrain (composition only; mass/areal-density identical). Mare is the
 # default and reproduces every shipped anchor; highland is the far-side / polar
 # feldspathic soil with far less Ti+Fe (a weaker secondary-neutron producer).
-SITE_LABELS = {"mare": "Mare basalt (Apollo-17, default)",
-               "highland": "Feldspathic highland (Apollo-16)"}
+SITE_LABELS = {"mare": "Equatorial mare",
+               "highland": "Polar highland"}
 # The suit layers are preset-only: they are consumed by the fixed EVA shape, not
 # offered as free wall materials, so keep them out of the layer-material picker.
 MATERIAL_OPTIONS = [{"label": m.replace("_", " ").capitalize(), "value": m}
