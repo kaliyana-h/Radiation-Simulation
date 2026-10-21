@@ -21,6 +21,17 @@
 #
 # Pull into a habitat file with:  includeFile = lunar_environment.txt
 #
+# REGOLITH SITE SELECTORS (required): the three regolith layers link
+# their Material to selector parameters the host run file MUST define
+# BEFORE this include (TOPAS forbids redefining an already-set param,
+# so they cannot be defaulted here):
+#     s:Ge/RegolithMat/Layer1 = "LunarReg176"   # mare (default)
+#     s:Ge/RegolithMat/Layer2 = "LunarReg211"
+#     s:Ge/RegolithMat/Layer3 = "LunarReg178"
+# For the Apollo-16 highland site substitute the LunarHigh* materials.
+# lunarsim.bridge writes these automatically from HabitatSpec.regolith_site;
+# a hand-written run file that includes this must set them itself.
+#
 # PHYSICS NOTE: the host habitat file must set the physics list
 # ABSOLUTELY in its own top level —
 #     s:Ph/Default/Type = "FTFP_BERT_HP"
@@ -54,6 +65,31 @@ d:Ma/LunarReg178/Density      = 1.78 g/cm3
 sv:Ma/LunarReg178/Components  = 8 "Oxygen" "Sodium" "Magnesium" "Aluminum" "Silicon" "Calcium" "Titanium" "Iron"
 uv:Ma/LunarReg178/Fractions   = 8 0.4184 0.0026 0.0585 0.0604 0.1885 0.0773 0.0569 0.1374
 
+# ---- Highland regolith composition ------------------------
+# Apollo-16 feldspathic (anorthositic) highland soil, the far-side /
+# south-pole terrain, reduced from its major-oxide assay (SiO2 45.0,
+# TiO2 0.54, Al2O3 27.3, FeO 5.1, MgO 5.7, CaO 15.7, Na2O 0.46 wt%)
+# to the same 8 elements by paper/regolith_composition.py. Density is
+# held at the mare REDMoon profile so a mare<->highland swap is a
+# COMPOSITION-ONLY change (identical areal density / habitat mass).
+# Physics point: Ti+Fe drops 19.5% -> 4.3% (x0.22), so highland is a
+# much weaker fast-neutron / HZE-fragment producer than mare basalt.
+# Selected per-run via the Ge/RegolithMat/Layer* selectors (see header).
+s:Ma/LunarHigh176/State        = "Solid"
+d:Ma/LunarHigh176/Density      = 1.76 g/cm3
+sv:Ma/LunarHigh176/Components  = 8 "Oxygen" "Sodium" "Magnesium" "Aluminum" "Silicon" "Calcium" "Titanium" "Iron"
+uv:Ma/LunarHigh176/Fractions   = 8 0.4512 0.0034 0.0344 0.1448 0.2108 0.1124 0.0032 0.0397
+
+s:Ma/LunarHigh211/State        = "Solid"
+d:Ma/LunarHigh211/Density      = 2.11 g/cm3
+sv:Ma/LunarHigh211/Components  = 8 "Oxygen" "Sodium" "Magnesium" "Aluminum" "Silicon" "Calcium" "Titanium" "Iron"
+uv:Ma/LunarHigh211/Fractions   = 8 0.4512 0.0034 0.0344 0.1448 0.2108 0.1124 0.0032 0.0397
+
+s:Ma/LunarHigh178/State        = "Solid"
+d:Ma/LunarHigh178/Density      = 1.78 g/cm3
+sv:Ma/LunarHigh178/Components  = 8 "Oxygen" "Sodium" "Magnesium" "Aluminum" "Silicon" "Calcium" "Titanium" "Iron"
+uv:Ma/LunarHigh178/Fractions   = 8 0.4512 0.0034 0.0344 0.1448 0.2108 0.1124 0.0032 0.0397
+
 # ---- EVA spacesuit layers ---------------------------------
 # Two-layer pressure-garment model used by the GUI's fixed EVA preset
 # (a human-sized cylinder: LCVG against the skin, EVASuit laminate
@@ -81,7 +117,7 @@ d:Ma/LCVG/Density = 0.5133 g/cm3
 # ---- Layer 1:  0 -> -22 cm  (rho 1.76) --------------------
 s:Ge/RegolithL1/Type         = "TsBox"
 s:Ge/RegolithL1/Parent       = "World"
-s:Ge/RegolithL1/Material     = "LunarReg176"
+s:Ge/RegolithL1/Material     = Ge/RegolithMat/Layer1
 d:Ge/RegolithL1/HLX          = 700.0 cm
 d:Ge/RegolithL1/HLY          = 700.0 cm
 d:Ge/RegolithL1/HLZ          = 11.0 cm
@@ -94,7 +130,7 @@ s:Ge/RegolithL1/DrawingStyle = "Solid"
 # ---- Layer 2:  -22 -> -49 cm  (rho 2.11, compacted) -------
 s:Ge/RegolithL2/Type         = "TsBox"
 s:Ge/RegolithL2/Parent       = "World"
-s:Ge/RegolithL2/Material     = "LunarReg211"
+s:Ge/RegolithL2/Material     = Ge/RegolithMat/Layer2
 d:Ge/RegolithL2/HLX          = 700.0 cm
 d:Ge/RegolithL2/HLY          = 700.0 cm
 d:Ge/RegolithL2/HLZ          = 13.5 cm
@@ -107,7 +143,7 @@ s:Ge/RegolithL2/DrawingStyle = "Solid"
 # ---- Layer 3:  -49 -> -300 cm  (rho 1.78, to saturation) --
 s:Ge/RegolithL3/Type         = "TsBox"
 s:Ge/RegolithL3/Parent       = "World"
-s:Ge/RegolithL3/Material     = "LunarReg178"
+s:Ge/RegolithL3/Material     = Ge/RegolithMat/Layer3
 d:Ge/RegolithL3/HLX          = 700.0 cm
 d:Ge/RegolithL3/HLY          = 700.0 cm
 d:Ge/RegolithL3/HLZ          = 125.5 cm

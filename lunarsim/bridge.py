@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from .spec import HabitatSpec
+from .spec import HabitatSpec, regolith_layer_materials
 from .geometry import (build_geometry, build_scorers, _outer_gauge_radius,
                        _enclosing_radius_cm)
 
@@ -84,8 +84,8 @@ def beam_radius_for(spec: HabitatSpec) -> float:
     (outer gauge rg <= 1200 cm) and only grows it for very large enclosures whose
     gauge would otherwise poke past the source plane.  Safe to vary per design:
     the GCR sources are parallel beams through a Vacuum World, so the field at the
-    habitat -- and hence D / fluence_outside -- is invariant to BeamRadius (proven
-    empirically at +1.4%), meaning no CAL re-anchor is needed.  gauge_corr in
+    habitat, and hence D / fluence_outside, is invariant to BeamRadius, 
+    meaning no CAL re-anchor is needed.  gauge_corr in
     dosimetry restores fluence_outside to the fixed 800 cm reference independently."""
     return max(DEFAULT_BEAM_RADIUS_CM,
                _outer_gauge_radius(spec) + _BEAM_RADIUS_MARGIN_CM)
@@ -122,7 +122,7 @@ TIERS = {"quick": QUICK_LOOK, "full": FULL_RUN}
 # A GCR run is a *chronic* field scored as a dose RATE over a mission. An SPE is
 # a *single acute event*: a fixed total proton fluence (protons/cm^2, integrated
 # over the whole event) arriving as a beam/cone from the Sun. So an SPE has no
-# per-second flux -- it is normalised to a total event fluence and scored against
+# per-second flux, it is normalised to a total event fluence and scored against
 # the acute 30-day BFO limit, not an annual rate. This dataclass carries both the
 # source-shape parameters (fed to make_source --mode spe) and the real event
 # fluence used by dosimetry.assess_spe to set the absolute scale.
@@ -202,7 +202,7 @@ i:Gr/MyView/WindowSizeY         = 1100
 """
 
 # Headless file output: geometry + trajectories with colour, no GL context.
-# View the .heprep in HepRApp (Java) or jas3. The proven-working code path.
+# View the .heprep in HepRApp (Java) or jas3
 _HEPREP_BLOCK = f"""
 # ---- HepRep file output (headless; view the .heprep in HepRApp/jas3) ----
 s:Gr/MyView/Type                = "HepRepFile"
@@ -214,7 +214,7 @@ b:Gr/MyView/IncludeStepPoints   = "false"
 """
 
 # Headless CPU ray-trace to a JPEG: geometry only (NO trajectories), but zero
-# external viewer -- just open the .jpeg on Windows. Camera from lunar_habitat.txt.
+# external viewer. Camera from lunar_habitat.txt
 _RAYTRACER_BLOCK = """
 # ---- RayTracer JPEG output (headless; geometry only, no particle tracks) ----
 s:Gr/MyView/Type             = "RayTracer"
@@ -277,7 +277,7 @@ def _world_half_cm(spec: HabitatSpec, beam_radius_cm: float,
     regolith column below. Margin to avoid clipping the outer source discs."""
     # a vertical cylinder reaches z = effective_height + wall at its roof; a
     # quonset reaches +/- (effective_height/2 + total_wall) along its axis once
-    # the end-cap bulkheads are added -- still bounded by the vertical term below,
+    # the end-cap bulkheads are added, still bounded by the vertical term below,
     # but both can exceed the (radial) outer radius, so size to the largest extent.
     vertical = spec.effective_height_cm + spec.total_wall_cm
     # a source disc of radius beam_spot on the sky-dome (radius beam_radius) has its
@@ -308,6 +308,7 @@ def build_parameter_file(spec: HabitatSpec, tier: RunTier,
     pause = "true" if live_window else "false"
     use_qt = "true" if viewer == "qt" else "false"
     vis_block = _viewer_block(viewer)
+    reg1, reg2, reg3 = regolith_layer_materials(spec.regolith_site)
     return f"""# ============================================================
 # Auto-generated lunar habitat run  --  design: {spec.safe_name}
 #   shape={spec.shape}  inner_r={spec.inner_radius_cm:.1f} cm
@@ -332,6 +333,13 @@ d:Ge/World/HLX       = {half:.1f} cm
 d:Ge/World/HLY       = {half:.1f} cm
 d:Ge/World/HLZ       = {half:.1f} cm
 b:Ge/World/Invisible = "true"
+
+# Regolith site selectors ({spec.regolith_site}): the environment include and
+# any buried berm/overburden link their Material to these. Must be set here,
+# before the include, because TOPAS forbids redefining an already-set param.
+s:Ge/RegolithMat/Layer1 = "{reg1}"
+s:Ge/RegolithMat/Layer2 = "{reg2}"
+s:Ge/RegolithMat/Layer3 = "{reg3}"
 
 {build_geometry(spec)}
 
@@ -519,7 +527,7 @@ def _fold_secondary_into_skin(spec: HabitatSpec, results: dict) -> None:
     cylinder's side wall, the quonset's curved arch); the reported skin_* must be
     the crew's whole-inner-surface average. Secondary keys are always popped so
     RunResult(**results) sees only its own fields; folding happens only for shapes
-    that define -- and actually produced CSVs for -- a secondary lining."""
+    that define, and actually produced CSVs for, a secondary lining."""
     roof_d = results.pop("roof_dose_gy", None)
     roof_de = results.pop("roof_doseeq_sv", None)
     roof_den = results.pop("roof_doseeq_nasa_sv", None)
@@ -592,7 +600,7 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     # Popen + poll (not the simpler blocking subprocess.run) so a cancel request
     # can terminate TOPAS mid-run. Combined stdout/stderr goes to a file, not a
     # PIPE, so a long run's output can't fill a pipe buffer and deadlock the
-    # process while we poll. Exit code alone (no PIPE drain) is what we act on.
+    # process while we poll
     log_path = run_dir / "topas_stdout.log"
     cancelled = False
     with open(log_path, "w") as lf:
@@ -619,7 +627,7 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     if cancelled:
         # A terminated run has no usable CSVs; return a not-ok result (returncode
         # != 0, no dose) so the convergence loop and the runner mark the job
-        # CANCELLED rather than trying to parse a half-written output.
+        # cancelled rather than trying to parse a half-written output.
         log_tail = "[cancelled] " + "\n".join(out_text.splitlines()[-24:])
         if not keep:
             shutil.rmtree(run_dir, ignore_errors=True)
@@ -631,8 +639,7 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     # Secondary-neutron dose fraction on the PRIMARY CrewSkin lining, taken before
     # secondaries fold in so numerator and denominator share the one basis. It is a
     # ratio of two dose-equivalents from the same run, so flux/gauge normalisation
-    # cancels -- a pure diagnostic, no calibration. Exact for the dome (single
-    # shell, no secondary lining); representative for cylinder/quonset, whose
+    # cancels. Exact for the dome (single shell, no secondary lining); representative for cylinder/quonset, whose
     # secondary linings fold into the reported skin dose but not this ratio.
     _neu = results.pop("skin_doseeq_neutron_sv", None)
     _base_eq = results.get("skin_doseeq_sv")

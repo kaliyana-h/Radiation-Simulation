@@ -43,6 +43,31 @@ MATERIALS: dict[str, dict] = {
 
 SHAPES = ("dome", "cylinder", "quonset", "buried")
 
+# ----------------------------------------------------------------------
+# Regolith site: which lunar terrain the surface/overburden regolith is.
+# ----------------------------------------------------------------------
+# A composition-only choice (density profile is identical between sites,
+# see lunar_environment.txt / paper/regolith_composition.py). "mare" is the
+# DEFAULT -- every shipped anchor (OLTARIS/LND/CRaTER) is mare-surface, so
+# leaving this unset reproduces all existing results exactly. Each site maps
+# to the three TOPAS material names for the REDMoon density layers; bridge
+# writes these into the run file's Ge/RegolithMat/Layer* selectors and both
+# the environment slabs and any buried berm/overburden link to them.
+REGOLITH_SITES = ("mare", "highland")
+_REGOLITH_MATERIALS: dict[str, tuple[str, str, str]] = {
+    "mare":     ("LunarReg176",  "LunarReg211",  "LunarReg178"),
+    "highland": ("LunarHigh176", "LunarHigh211", "LunarHigh178"),
+}
+
+
+def regolith_layer_materials(site: str) -> tuple[str, str, str]:
+    """The (Layer1, Layer2, Layer3) TOPAS material names for a site."""
+    try:
+        return _REGOLITH_MATERIALS[site]
+    except KeyError:
+        raise ValueError(
+            f"unknown regolith_site {site!r}; choose from {REGOLITH_SITES}")
+
 # The two EVA pressure-garment layers above are preset-only: the GUI hides them
 # from the free wall-material dropdown and drives them solely through the fixed
 # EVA-suit shape. Anything in this set triggers the indicative-regime warning.
@@ -83,11 +108,20 @@ class HabitatSpec:
     # trunk/BFO centre, which is what the dose limits are written against. Fixed,
     # NOT scaled with the habitat: crew do not get taller in a bigger dome.
     crew_height_cm: float = 100.0
+    # Lunar terrain whose regolith surrounds/overburdens the habitat. Composition
+    # only (mare basalt vs feldspathic highland); density is identical, so this
+    # never changes habitat mass or areal density. "mare" reproduces every
+    # existing anchor. See REGOLITH_SITES / lunar_environment.txt.
+    regolith_site: str = "mare"
 
     # ---- validation -------------------------------------------------
     def validate(self) -> None:
         if self.shape not in SHAPES:
             raise ValueError(f"shape must be one of {SHAPES}, got {self.shape!r}")
+        if self.regolith_site not in REGOLITH_SITES:
+            raise ValueError(
+                f"regolith_site must be one of {REGOLITH_SITES}, "
+                f"got {self.regolith_site!r}")
         if self.inner_radius_cm <= 0:
             raise ValueError("inner_radius_cm must be > 0")
         if not self.walls:
@@ -96,7 +130,7 @@ class HabitatSpec:
             w.validate()
         if self.phantom_radius_cm >= self.inner_radius_cm:
             raise ValueError("phantom must fit inside the habitat")
-        # The phantom sits OFF the origin, so "radius < inner_radius" is no longer
+        # The phantom sits OFF the origin, so "radius < inner_radius" is not
         # sufficient -- check the lifted sphere actually clears floor and shell.
         if self.crew_height_cm - self.phantom_radius_cm < 0:
             raise ValueError("crew phantom would sink below the floor: "
@@ -125,7 +159,7 @@ class HabitatSpec:
         design file carrying spaces, slashes, punctuation, or (worst) a newline,
         any of which would crash tempfile.mkdtemp or corrupt the parameter file.
         Use this anywhere the name becomes a path segment or a .txt token; keep
-        `name` for anything the student reads."""
+        `name` for anything the user reads."""
         s = re.sub(r"[^A-Za-z0-9._-]+", "_", (self.name or "").strip())
         s = s.strip("._")[:48]
         return s or "habitat"
@@ -201,10 +235,7 @@ class HabitatSpec:
 
     # ---- serialisation (design save / load) -------------------------
     # A design is one plain dict so it round-trips through JSON with no custom
-    # decoder. The nested wall list is the only non-scalar, so it is spelled out
-    # by hand rather than via dataclasses.asdict (which would also drag in any
-    # future private fields). from_dict is tolerant of unknown keys so a file
-    # saved by a newer build still loads.
+    # decoder
     SCHEMA_VERSION = 1
 
     def to_dict(self) -> dict:
@@ -217,6 +248,7 @@ class HabitatSpec:
             "burial_depth_cm": self.burial_depth_cm,
             "phantom_radius_cm": self.phantom_radius_cm,
             "crew_height_cm": self.crew_height_cm,
+            "regolith_site": self.regolith_site,
             "walls": [{"material": w.material, "thickness_cm": w.thickness_cm}
                       for w in self.walls],
         }
@@ -243,6 +275,7 @@ class HabitatSpec:
             walls=walls,
             phantom_radius_cm=float(data.get("phantom_radius_cm", 20.0)),
             crew_height_cm=float(data.get("crew_height_cm", 100.0)),
+            regolith_site=str(data.get("regolith_site", "mare")),
         )
         spec.validate()
         return spec

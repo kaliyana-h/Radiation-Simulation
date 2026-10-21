@@ -28,7 +28,7 @@ import base64
 import datetime as _dt
 import json
 
-from .spec import (HabitatSpec, WallLayer, MATERIALS, SHAPES,
+from .spec import (HabitatSpec, WallLayer, MATERIALS, SHAPES, REGOLITH_SITES,
                    SUIT_MATERIALS, eva_suit_spec)
 from .bridge import FULL_RUN, WORST_CASE_SPE, DEFAULT_BEAM_SPOT_CM
 from .dosimetry import (assess, assess_composition, assess_spe,
@@ -58,6 +58,11 @@ SHAPE_LABELS = {"dome": "Dome (half-sphere)", "cylinder": "Cylinder",
                 "quonset": "Half-cylinder (tunnel)",
                 "buried": "Buried cylinder (regolith-covered)",
                 "eva": "EVA suit (single crew)"}
+# Regolith terrain (composition only; mass/areal-density identical). Mare is the
+# default and reproduces every shipped anchor; highland is the far-side / polar
+# feldspathic soil with far less Ti+Fe (a weaker secondary-neutron producer).
+SITE_LABELS = {"mare": "Mare basalt (Apollo-17, default)",
+               "highland": "Feldspathic highland (Apollo-16)"}
 # The suit layers are preset-only: they are consumed by the fixed EVA shape, not
 # offered as free wall materials, so keep them out of the layer-material picker.
 MATERIAL_OPTIONS = [{"label": m.replace("_", " ").capitalize(), "value": m}
@@ -179,7 +184,7 @@ def _num(x):
 
 
 def spec_from_inputs(name, shape, inner_r_m, layers, length_m=None,
-                     burial_depth_m=None) -> HabitatSpec:
+                     burial_depth_m=None, regolith_site="mare") -> HabitatSpec:
     # EVA is a fixed one-click preset: a human-sized cylinder in the two-layer
     # suit. Ignore the geometry/layer inputs entirely (the GUI hides them) and
     # return the canned spec so every call site -- preview, cascade, run -- agrees.
@@ -207,6 +212,7 @@ def spec_from_inputs(name, shape, inner_r_m, layers, length_m=None,
         inner_radius_cm=float(inner_r_m) * 100.0,
         walls=walls,
         height_cm=height_cm,
+        regolith_site=regolith_site or "mare",
         **kw,
     )
 
@@ -678,6 +684,11 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
                  options=([{"label": SHAPE_LABELS[s], "value": s} for s in SHAPES]
                           + [{"label": SHAPE_LABELS["eva"], "value": "eva"}]),
                  style={"marginBottom": "16px"}),
+    html.Div("Regolith site", style=FIELD_LABEL),
+    dcc.Dropdown(id="regolith-site", value="mare", clearable=False,
+                 options=[{"label": SITE_LABELS[s], "value": s}
+                          for s in REGOLITH_SITES],
+                 style={"marginBottom": "16px"}),
     # Geometry + wall-stack editor. Hidden as a group when the EVA preset is
     # selected (its geometry and suit wall are fixed -- see _geo_controls_vis).
     html.Div(id="geo-controls", children=[
@@ -1112,9 +1123,10 @@ def _eva_warning(spec):
     Input("dose-overlay", "data"),
     Input("length-slider", "value"),
     Input("burial-slider", "value"),
+    Input("regolith-site", "value"),
     State({"type": "layer-mat", "index": ALL}, "id"),
     State("active-rows", "data"))
-def _live(shape, inner_r, mats, thks, view_mode, overlay, length, burial, ids, active):
+def _live(shape, inner_r, mats, thks, view_mode, overlay, length, burial, site, ids, active):
     r_label = f"{float(inner_r or 2.5):.2f}"
     layers = _layers_from_components(mats, ids, thks, active)
     if not any(L["t"] > 0 for L in layers):
@@ -1124,7 +1136,7 @@ def _live(shape, inner_r, mats, thks, view_mode, overlay, length, burial, ids, a
                 "⚠ Enter a wall thickness (mm) for at least one layer",
                 no_update, r_label, no_update)
     try:
-        spec = spec_from_inputs("design", shape, inner_r, layers, length, burial)
+        spec = spec_from_inputs("design", shape, inner_r, layers, length, burial, site)
         spec.validate()
     except Exception:
         return (no_update, no_update, no_update, no_update, r_label, no_update)
@@ -1180,12 +1192,13 @@ def _live(shape, inner_r, mats, thks, view_mode, overlay, length, burial, ids, a
     State("active-rows", "data"),
     State("length-slider", "value"),
     State("burial-slider", "value"),
+    State("regolith-site", "value"),
     State("cascade-dir", "data"),
     prevent_initial_call=True)
-def _cascade(n, colour_by, shape, inner_r, mats, ids, thks, active, length, burial, cascade_dir):
+def _cascade(n, colour_by, shape, inner_r, mats, ids, thks, active, length, burial, site, cascade_dir):
     spec = spec_from_inputs("habitat", shape, inner_r,
                             _layers_from_components(mats, ids, thks, active),
-                            length, burial)
+                            length, burial, site)
     trigger = ctx.triggered_id
 
     if trigger == "cascade-colour":
@@ -1255,13 +1268,14 @@ def _style_cascade(fig):
     State("active-rows", "data"), State("scenario", "value"),
     State("length-slider", "value"),
     State("burial-slider", "value"),
+    State("regolith-site", "value"),
     prevent_initial_call=True)
-def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length, burial):
+def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length, burial, site):
     layers = _layers_from_components(mats, ids, thks, active)
     if not any(L["t"] > 0 for L in layers):
         # No layer has a thickness -- refuse rather than score a fabricated wall.
         return no_update, True, "⚠ Enter a wall thickness (mm) for at least one layer before evaluating."
-    spec = spec_from_inputs("habitat", shape, inner_r, layers, length, burial)
+    spec = spec_from_inputs("habitat", shape, inner_r, layers, length, burial, site)
     if scenario == "spe":
         # One acute event: a single proton cone at the fixed event fluence.
         # Converge on the wall lining (the skin/BFO surface); no ion composition.
@@ -2141,11 +2155,12 @@ def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
     State("active-rows", "data"),
     State("length-slider", "value"),
     State("burial-slider", "value"),
+    State("regolith-site", "value"),
     prevent_initial_call=True)
-def _save_design(n, shape, inner_r, mats, ids, thks, active, length, burial):
+def _save_design(n, shape, inner_r, mats, ids, thks, active, length, burial, site):
     spec = spec_from_inputs("habitat", shape, inner_r,
                             _layers_from_components(mats, ids, thks, active),
-                            length, burial)
+                            length, burial, site)
     return dict(content=spec.to_json(), filename=f"{spec.name}.json")
 
 
@@ -2171,6 +2186,7 @@ def _save_report(n, report):
     Output("shape", "value"), Output("inner-r", "value"),
     Output("length-slider", "value"),
     Output("burial-slider", "value"),
+    Output("regolith-site", "value"),
     Output("active-rows", "data", allow_duplicate=True),
     Output({"type": "layer-mat", "index": ALL}, "value"),
     Output({"type": "layer-thk", "index": ALL}, "value"),
@@ -2179,14 +2195,14 @@ def _save_report(n, report):
     prevent_initial_call=True)
 def _load_design(contents):
     if not contents:
-        return (no_update,) * 8
+        return (no_update,) * 9
     try:
         _, b64 = contents.split(",", 1)
         text = base64.b64decode(b64).decode("utf-8")
         spec = HabitatSpec.from_json(text)
     except Exception as exc:
         return (no_update, no_update, no_update, no_update, no_update, no_update,
-                no_update,
+                no_update, no_update,
                 html.Span(f"Load failed: {str(exc)[-120:]}", style={"color": ACCENT}))
 
     walls = spec.walls[:MAX_LAYERS]
@@ -2204,7 +2220,7 @@ def _load_design(contents):
     burial = max(0.5, min(5.0, spec.burial_depth_cm / 100.0))
     note = html.Span(f"Loaded '{spec.name}'.", style={"color": "#3fb950"})
     return (spec.shape, spec.inner_radius_cm / 100.0, length, burial,
-            active, mats, thks, note)
+            spec.regolith_site, active, mats, thks, note)
 
 
 def main_entry():

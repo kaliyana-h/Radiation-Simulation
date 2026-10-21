@@ -1,6 +1,6 @@
 """Parametric habitat geometry generator: HabitatSpec -> TOPAS parameter text.
 
-Generalises the three hand-written habitat files into one generator so a student
+Generalises the three hand-written habitat files into one generator so a user
 can build *any* design. Emits the wall stack (one nested shell per WallLayer),
 the inner/outer fluence scorer shells, and the tissue phantom + dose scorer.
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 
-from .spec import HabitatSpec, MATERIALS
+from .spec import HabitatSpec, MATERIALS, regolith_layer_materials
 
 
 # Standoff (cm) between an oversized habitat's enclosing radius and the outer gauge.
@@ -296,7 +296,10 @@ def _buried(spec: HabitatSpec) -> tuple[str, list[str]]:
     inner = spec.inner_radius_cm
     ceiling_total = spec.total_wall_cm
     side = _buried_side_cm(spec)
-    reg = MATERIALS["regolith"]["topas"]
+    # Berm/overburden follow the selected site (composition-only; the saturation-
+    # band Layer3 material, matching the deep environment slab). Density is
+    # identical across sites so areal_density_gcm2 / mass are unchanged.
+    reg = regolith_layer_materials(spec.regolith_site)[2]
     reg_col = MATERIALS["regolith"]["colour"]
 
     # Engineered ceiling: one flat cap per wall layer, innermost lowest, spanning the
