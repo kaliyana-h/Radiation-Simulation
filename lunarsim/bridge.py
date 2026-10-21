@@ -334,12 +334,14 @@ d:Ge/World/HLY       = {half:.1f} cm
 d:Ge/World/HLZ       = {half:.1f} cm
 b:Ge/World/Invisible = "true"
 
-# Regolith site selectors ({spec.regolith_site}): the environment include and
-# any buried berm/overburden link their Material to these. Must be set here,
-# before the include, because TOPAS forbids redefining an already-set param.
-s:Ge/RegolithMat/Layer1 = "{reg1}"
-s:Ge/RegolithMat/Layer2 = "{reg2}"
-s:Ge/RegolithMat/Layer3 = "{reg3}"
+# Regolith site ({spec.regolith_site}): assign the three surface-layer Materials
+# directly here. TOPAS 3.9 does NOT resolve string-to-string parameter links, so
+# the environment include leaves RegolithL*/Material unset and we set it per-run.
+# Must precede the include so these are the sole definition (any buried
+# berm/overburden Material is set the same way inside build_geometry).
+s:Ge/RegolithL1/Material = "{reg1}"
+s:Ge/RegolithL2/Material = "{reg2}"
+s:Ge/RegolithL3/Material = "{reg3}"
 
 {build_geometry(spec)}
 

@@ -105,19 +105,21 @@ class TestBridgeWiring(unittest.TestCase):
         return spec, build_parameter_file(spec, QUICK_LOOK,
                                           "gcr_source.txt", "lunar_environment.txt")
 
-    def test_selectors_match_site(self):
+    def test_layer_materials_match_site(self):
+        # The three surface layers get their Material assigned DIRECTLY (TOPAS 3.9
+        # does not resolve a string param whose RHS is another string param name).
         for site in REGOLITH_SITES:
             _, txt = self._run_file(site)
             l1, l2, l3 = regolith_layer_materials(site)
-            self.assertIn(f's:Ge/RegolithMat/Layer1 = "{l1}"', txt)
-            self.assertIn(f's:Ge/RegolithMat/Layer2 = "{l2}"', txt)
-            self.assertIn(f's:Ge/RegolithMat/Layer3 = "{l3}"', txt)
+            self.assertIn(f's:Ge/RegolithL1/Material = "{l1}"', txt)
+            self.assertIn(f's:Ge/RegolithL2/Material = "{l2}"', txt)
+            self.assertIn(f's:Ge/RegolithL3/Material = "{l3}"', txt)
 
-    def test_selectors_precede_environment_include(self):
-        # TOPAS forbids redefining an already-set param, so the selectors MUST be
-        # written before the include that references them.
+    def test_layer_materials_precede_environment_include(self):
+        # The run file's assignment must be the SOLE definition, so it has to
+        # precede the include (which defines the layers but leaves Material unset).
         _, txt = self._run_file("highland")
-        self.assertLess(txt.index("Ge/RegolithMat/Layer1"),
+        self.assertLess(txt.index("s:Ge/RegolithL1/Material"),
                         txt.index("includeFile = lunar_environment.txt"))
 
     def test_buried_berm_follows_site(self):
