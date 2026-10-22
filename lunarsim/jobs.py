@@ -121,6 +121,43 @@ def _combine(spec: HabitatSpec, tier: RunTier,
 # ----------------------------------------------------------------------
 # Converge-by-error driver (blocking; the runner calls this in a thread)
 # ----------------------------------------------------------------------
+# Small-sample upper-confidence inflation for the STOPPING decision only.
+#
+# A relative error is sem/mean with sem = s/sqrt(n); the sample stdev s is itself
+# a random variable that, for the small n a batch loop reaches (2-12), sits BELOW
+# the true sigma more often than above it -- (n-1)s^2/sigma^2 ~ chi^2_{n-1}, a
+# right-skewed law whose median is below its mean. So the point-estimate rel_err
+# is skewed LOW and the loop can stop on a lucky draw that merely LOOKS converged
+# (the measured 326->212 phantom collapse: a run that floor-stopped on a small
+# n=4 SE, then fell by a third once forced to 12 batches). The cure is to stop not
+# when the point estimate is within target but when its one-sided upper confidence
+# bound is: multiply the rel_err by sqrt((n-1)/chi^2_{n-1,alpha}), the 84% (one-
+# sigma) upper bound on sigma. The factor is huge at n=2-3 (a stop is essentially
+# forbidden until s means something) and relaxes to ~1 as n grows, so run length
+# adapts to when the error estimate is trustworthy instead of a fixed floor. It
+# gates ONLY the stop test; the REPORTED error bars stay the raw sem/mean.
+#
+# Frozen table (Wilson-Hilferty chi^2 quantile, one-sided 84%), n = 2..MAX_BATCHES.
+_GATE_CONF_FACTOR = {2: 5.822, 3: 2.403, 4: 1.885, 5: 1.671, 6: 1.552,
+                     7: 1.475, 8: 1.421, 9: 1.381, 10: 1.349, 11: 1.324,
+                     12: 1.303}
+
+
+def _gate_inflation(n: Optional[int]) -> float:
+    """Upper-confidence multiplier applied to a rel_err in a STOP decision only.
+
+    n is the number of independent batches the error estimate was built from (for
+    the round-robin composition loop every species shares the same n = rounds, so
+    one factor inflates the flux-weighted combined error correctly). Returns 1.0
+    when n is unknown or already large enough that s is trustworthy; clamps to the
+    smallest tabulated inflation above the table (n > MAX_BATCHES should not occur)."""
+    if n is None or n < 2:
+        return 1.0
+    if n in _GATE_CONF_FACTOR:
+        return _GATE_CONF_FACTOR[n]
+    return _GATE_CONF_FACTOR[max(_GATE_CONF_FACTOR)]  # n beyond the loop cap
+
+
 def _pick_rel(skin: Optional[float], phantom: Optional[float],
               converge_on: str, phantom_slack: float = 1.0) -> Optional[float]:
     """Pick the relative error a convergence loop watches from a (skin, phantom)
@@ -198,8 +235,9 @@ def run_converged(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
         rel = _rel_err_of(combined, converge_on, phantom_slack)
         if progress_cb:
             progress_cb(len(batches), max_batches, rel)
+        # Stop on the upper-confidence bound, not the (skew-low) point estimate.
         if len(batches) >= min_batches and rel is not None \
-                and rel <= target_rel_err:
+                and rel * _gate_inflation(len(batches)) <= target_rel_err:
             break
     return _combine(spec, tier, batches)
 
@@ -397,7 +435,10 @@ def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                         converge_on, phantom_slack)
         if progress_cb:
             progress_cb(rounds, max_batches, rel)
-        if rounds >= min_batches and rel is not None and rel <= target_rel_err:
+        # Stop on the upper-confidence bound, not the (skew-low) point estimate:
+        # every species shares n = rounds, so one factor inflates the combined err.
+        if rounds >= min_batches and rel is not None \
+                and rel * _gate_inflation(rounds) <= target_rel_err:
             break
 
     species_results = snapshot()
