@@ -27,8 +27,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from lunarsim.spec import (HabitatSpec, WallLayer, REGOLITH_SITES,
-                           regolith_layer_materials)
+from lunarsim.spec import (HabitatSpec, WallLayer, REGOLITH_SITES, MATERIALS,
+                           regolith_layer_materials, wall_topas_material)
 from lunarsim.bridge import build_parameter_file, QUICK_LOOK
 from paper import regolith_composition as rc
 
@@ -133,6 +133,49 @@ class TestBridgeWiring(unittest.TestCase):
         for shape in ("dome", "cylinder", "quonset", "buried"):
             mare = HabitatSpec(shape=shape, inner_radius_cm=300.0,
                                walls=[WallLayer("aluminium", 5.0)],
+                               regolith_site="mare")
+            high = mare.copy(regolith_site="highland")
+            self.assertAlmostEqual(mare.areal_density_gcm2(),
+                                   high.areal_density_gcm2(), places=9)
+            self.assertAlmostEqual(mare.shell_mass_kg(),
+                                   high.shell_mass_kg(), places=9)
+
+
+# --------------------------------------------------------------------------
+# Wall material "regolith" follows the site (in-situ ISRU construction)
+# --------------------------------------------------------------------------
+class TestRegolithWallFollowsSite(unittest.TestCase):
+
+    def test_helper_regolith_follows_site(self):
+        # An engineered regolith wall is built from the LOCAL soil.
+        self.assertEqual(wall_topas_material("regolith", "mare"), "LunarReg178")
+        self.assertEqual(wall_topas_material("regolith", "highland"), "LunarHigh178")
+
+    def test_helper_other_materials_are_site_invariant(self):
+        # Only "regolith" tracks the site; every other wall material is fixed.
+        for mat in ("aluminium", "polyethylene", "water", "concrete", "titanium"):
+            for site in REGOLITH_SITES:
+                self.assertEqual(wall_topas_material(mat, site),
+                                 MATERIALS[mat]["topas"])
+
+    def test_regolith_wall_emits_site_material(self):
+        # A habitat whose outer wall is engineered regolith must build that wall
+        # from the SELECTED terrain, not a fixed mare block.
+        for site, expect in (("mare", "LunarReg178"), ("highland", "LunarHigh178")):
+            spec = HabitatSpec(name="t", shape="dome", inner_radius_cm=250.0,
+                               walls=[WallLayer("aluminium", 20.0),
+                                      WallLayer("regolith", 30.0)],
+                               regolith_site=site)
+            txt = build_parameter_file(spec, QUICK_LOOK,
+                                       "gcr_source.txt", "lunar_environment.txt")
+            self.assertIn(f's:Ge/Wall1/Material     = "{expect}"', txt)
+
+    def test_regolith_wall_swap_is_mass_neutral(self):
+        # Same mass-neutral guarantee as the terrain swap, now with the regolith
+        # as an engineered WALL layer: composition changes, density does not.
+        for shape in ("dome", "cylinder", "quonset", "buried"):
+            mare = HabitatSpec(shape=shape, inner_radius_cm=300.0,
+                               walls=[WallLayer("regolith", 30.0)],
                                regolith_site="mare")
             high = mare.copy(regolith_site="highland")
             self.assertAlmostEqual(mare.areal_density_gcm2(),

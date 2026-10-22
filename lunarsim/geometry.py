@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import math
 
-from .spec import HabitatSpec, MATERIALS, regolith_layer_materials
+from .spec import (HabitatSpec, MATERIALS, regolith_layer_materials,
+                   wall_topas_material)
 
 
 # Standoff (cm) between an oversized habitat's enclosing radius and the outer gauge.
@@ -176,7 +177,7 @@ def _dome(spec: HabitatSpec) -> tuple[str, list[str]]:
     for i, ((ri, ro), layer) in enumerate(zip(spec.layer_radii_cm(), spec.walls)):
         name = f"Wall{i}"
         wall_names.append(name)
-        topas_mat = MATERIALS[layer.material]["topas"]
+        topas_mat = wall_topas_material(layer.material, spec.regolith_site)
         lines.append(f"# layer {i}: {layer.material} {layer.thickness_cm:.1f} cm "
                      f"({ri:.1f}->{ro:.1f} cm)")
         lines.append(_sphere_shell(name, "World", topas_mat, ri, ro,
@@ -228,7 +229,7 @@ def _cylinder(spec: HabitatSpec) -> tuple[str, list[str]]:
     # spans z in [0, H]; the caps stack flat on top (innermost material lowest),
     # giving a layered roof of the same total thickness as the side wall.
     for i, ((ri, ro), layer) in enumerate(zip(spec.layer_radii_cm(), spec.walls)):
-        topas_mat = MATERIALS[layer.material]["topas"]
+        topas_mat = wall_topas_material(layer.material, spec.regolith_site)
         colour = MATERIALS[layer.material]["colour"]
         t = layer.thickness_cm
         lines.append(f"# layer {i}: {layer.material} {t:.1f} cm "
@@ -307,7 +308,7 @@ def _buried(spec: HabitatSpec) -> tuple[str, list[str]]:
     # Mirrors the _cylinder roof caps, but the barrel side wall is regolith, not the
     # user's stack, so there are no `Wall{i}` barrels here.
     for i, ((ri, ro), layer) in enumerate(zip(spec.layer_radii_cm(), spec.walls)):
-        topas_mat = MATERIALS[layer.material]["topas"]
+        topas_mat = wall_topas_material(layer.material, spec.regolith_site)
         colour = MATERIALS[layer.material]["colour"]
         t = layer.thickness_cm
         lines.append(f"# ceiling layer {i}: {layer.material} {t:.1f} cm "
@@ -376,7 +377,7 @@ def _quonset(spec: HabitatSpec) -> tuple[str, list[str]]:
     outer = spec.outer_radius_cm
 
     for i, ((ri, ro), layer) in enumerate(zip(spec.layer_radii_cm(), spec.walls)):
-        topas_mat = MATERIALS[layer.material]["topas"]
+        topas_mat = wall_topas_material(layer.material, spec.regolith_site)
         colour = MATERIALS[layer.material]["colour"]
         t = layer.thickness_cm
         lines.append(f"# layer {i}: {layer.material} {t:.1f} cm "

@@ -68,6 +68,22 @@ def regolith_layer_materials(site: str) -> tuple[str, str, str]:
         raise ValueError(
             f"unknown regolith_site {site!r}; choose from {REGOLITH_SITES}")
 
+
+def wall_topas_material(material: str, site: str) -> str:
+    """TOPAS material name for an engineered WALL layer.
+
+    Identical to MATERIALS[material]["topas"] for every built-in material, with
+    one exception: a "regolith" wall is in-situ construction (sandbags / sintered
+    ISRU block) made from the LOCAL soil, so it follows the surrounding-terrain
+    choice rather than a fixed composition -- a highland site builds highland
+    blocks, not mare basalt. Both resolve to the 1.78 g/cm3 layer (LunarReg178 /
+    LunarHigh178), so MATERIALS["regolith"]["density"] still holds and the swap is
+    mass-neutral (no areal-density move, no anchor/CAL shift).
+    """
+    if material == "regolith":
+        return regolith_layer_materials(site)[2]
+    return MATERIALS[material]["topas"]
+
 # The two EVA pressure-garment layers above are preset-only: the GUI hides them
 # from the free wall-material dropdown and drives them solely through the fixed
 # EVA-suit shape. Anything in this set triggers the indicative-regime warning.
