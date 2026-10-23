@@ -27,6 +27,7 @@ import plotly.graph_objects as go
 import base64
 import datetime as _dt
 import json
+from dataclasses import replace as _dc_replace
 
 from .spec import (HabitatSpec, WallLayer, MATERIALS, SHAPES, REGOLITH_SITES,
                    SUIT_MATERIALS, eva_suit_spec)
@@ -130,6 +131,44 @@ SCORING_MAX_BATCHES = 12
 SCORING_MIN_BATCHES = 4         # must be >= 3 for a usable stdev; see above
 SCORING_CONVERGE_ON = "both"
 SCORING_PHANTOM_SLACK = 2.0     # phantom target = SLACK x SCORING_TARGET_REL_ERR
+
+# --- Solar-cycle modulation (force-field potential phi, MV) ----------------
+# GCR intensity rides the ~11-year solar cycle: the heliospheric field suppresses
+# the low-energy flux that dominates dose, so the annual dose swings ~2x between
+# solar minimum (weak modulation, LOW phi, MAX GCR) and solar maximum (strong
+# modulation, HIGH phi, suppressed GCR). phi is a pure source-normalisation knob
+# -- it feeds make_source.py (the generated spectrum) and the dosimetry flux
+# normalisation / thin-wall + SPE folds IDENTICALLY, through the SAME phi on the
+# run's RunTier -- so selecting a phase re-generates the field at that modulation
+# with NO change to geometry, transport, or CAL (no re-anchor; see
+# bridge.beam_radius_for / dosimetry.gcr_species_fluence_rate). The pinned default
+# stays solar minimum: it is the conservative worst case for a chronic-exposure
+# verdict. The other presets answer "what if the crew flies mid-cycle / at solar
+# max", and drive the phi-sweep validation (paper/phi_sweep.py).
+PHI_DEFAULT_MV = SCORING_TIER.phi_mv            # 400 MV, solar minimum
+PHI_DEFAULT = str(int(round(PHI_DEFAULT_MV)))   # "400" -- the radio's default value
+PHI_PRESETS = [                                 # (value, short name, caption)
+    ("400",  "Solar minimum", "maximum GCR · worst case"),
+    ("650",  "Cycle mean",    "mid-cycle average"),
+    ("1100", "Solar maximum", "suppressed GCR"),
+]
+_PHI_NAME = {v: name for v, name, _ in PHI_PRESETS}
+
+
+def _phi_phase(phi_mv) -> str:
+    """Short solar-cycle phase name for a modulation potential (falls back to the
+    nearest intent when a non-preset phi is supplied)."""
+    key = str(int(round(float(phi_mv))))
+    if key in _PHI_NAME:
+        return _PHI_NAME[key]
+    phi = float(phi_mv)
+    return ("Solar minimum" if phi <= 500 else
+            "Solar maximum" if phi >= 950 else "Mid-cycle")
+
+
+def _phi_caption(phi_mv) -> str:
+    """'φ=400 MV (Solar minimum)' for the scoring-conditions / subtitle display."""
+    return f"φ={int(round(float(phi_mv)))} MV ({_phi_phase(phi_mv)})"
 
 CARD = {"background": CARD_BG, "border": f"1px solid {BORDER}",
         "borderRadius": "10px", "padding": "16px", "marginBottom": "14px"}
@@ -756,6 +795,20 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
              style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
                     "margin": "4px 0 0"}),
 
+    html.Div("Solar Cycle Phase", style=SECTION),
+    dcc.RadioItems(id="phi-select", value=PHI_DEFAULT,
+                   options=[{"label": f" {name} — {cap}", "value": v}
+                            for v, name, cap in PHI_PRESETS],
+                   style={"color": INK, "fontSize": "13px"},
+                   labelStyle={"display": "flex", "alignItems": "center",
+                               "marginBottom": "6px", "color": INK},
+                   inputStyle={"marginRight": "8px", "accentColor": ACCENT}),
+    html.Div("GCR modulation potential φ. Solar minimum (low φ) is the chronic "
+             "worst case and the default; higher φ suppresses the field. Does not "
+             "affect the SPE event itself.",
+             style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
+                    "margin": "4px 0 0"}),
+
     html.Div("Scoring Conditions", style=SECTION),
     html.Div(id="scoring-conditions", style={**CARD, "padding": "12px"}),
 
@@ -863,8 +916,8 @@ gcr_panel = html.Div(id="panel-gcr", style={"display": "none"}, children=[
                "Dose Analysis breakdown.", style={"color": MUTED,
                                                    "fontSize": "13px",
                                                    "lineHeight": "1.6"}),
-        _kv("Solar modulation φ", "400 MV (solar minimum, worst case)"),
-        _kv("Integral proton flux", f"{gcr_scalar_fluence_rate(400.0):.2f} /cm²/s"),
+        _kv("Solar modulation φ", "selectable 400–1100 MV; default 400 (solar min, worst case)"),
+        _kv("Integral proton flux", f"{gcr_scalar_fluence_rate(400.0):.2f} /cm²/s  (at φ=400 MV)"),
         _kv("Ion composition", "H + He … Fe (weighted GCR abundances)"),
         _kv("Angular distribution", "isotropic over 2π sr (sky dome)"),
     ]),
@@ -960,8 +1013,9 @@ def _switch_tab(tab):
 # both use the same fixed statistics preset so the two verdicts stay comparable.
 @app.callback(
     Output("scoring-conditions", "children"), Output("scenario-note", "children"),
-    Input("scenario", "value"))
-def _scenario_conditions(scenario):
+    Input("scenario", "value"), Input("phi-select", "value"))
+def _scenario_conditions(scenario, phi):
+    gcr_field = _phi_caption(phi)
     if scenario == "spe":
         note = ("A single worst-case solar proton event. The acute test. Scored as "
                 "the TOTAL event dose against the 30-day blood-forming-organ limit, "
@@ -977,16 +1031,16 @@ def _scenario_conditions(scenario):
                 "the 30-day limit). The two doses are never summed. They reward "
                 "different shielding, so a design must clear both.")
         rows = [
-            _kv("🔒 GCR field", "φ=400 MV (solar min)"),
+            _kv("GCR field", gcr_field),
             _kv("🔒 SPE event", WORST_CASE_SPE.name),
             _kv("🔒 Gates", "career limit  +  30-day BFO limit"),
             _kv("🔒 Statistics", "converged full run"),
         ]
     else:
-        note = ("The chronic galactic-cosmic-ray field at solar minimum, integrated "
+        note = (f"The chronic galactic-cosmic-ray field ({gcr_field}), integrated "
                 "over the whole mission and judged against the annual / career limits.")
         rows = [
-            _kv("🔒 GCR field", "φ=400 MV (solar min)"),
+            _kv("GCR field", gcr_field),
             _kv("🔒 Mission", f"{SCORING_MISSION_DAYS} days"),
             _kv("🔒 Statistics", "converged full run"),
         ]
@@ -1124,9 +1178,11 @@ def _eva_warning(spec):
     Input("length-slider", "value"),
     Input("burial-slider", "value"),
     Input("regolith-site", "value"),
+    Input("phi-select", "value"),
     State({"type": "layer-mat", "index": ALL}, "id"),
     State("active-rows", "data"))
-def _live(shape, inner_r, mats, thks, view_mode, overlay, length, burial, site, ids, active):
+def _live(shape, inner_r, mats, thks, view_mode, overlay, length, burial, site, phi,
+          ids, active):
     r_label = f"{float(inner_r or 2.5):.2f}"
     layers = _layers_from_components(mats, ids, thks, active)
     if not any(L["t"] > 0 for L in layers):
@@ -1154,7 +1210,8 @@ def _live(shape, inner_r, mats, thks, view_mode, overlay, length, burial, site, 
 
     stack = " + ".join(f"{w.thickness_cm * 10:g} mm {w.material}" for w in spec.walls)
     subtitle = (f"Radiation protection score · {SHAPE_LABELS[spec.shape]} "
-                f"| {stack} · φ=400 MV · {SCORING_MISSION_DAYS}-day lunar mission")
+                f"| {stack} · φ={int(round(float(phi)))} MV · "
+                f"{SCORING_MISSION_DAYS}-day lunar mission")
 
     params = [
         _kv("Inner radius", f"{spec.inner_radius_cm / 100:.2f} m"),
@@ -1269,24 +1326,31 @@ def _style_cascade(fig):
     State("length-slider", "value"),
     State("burial-slider", "value"),
     State("regolith-site", "value"),
+    State("phi-select", "value"),
     prevent_initial_call=True)
-def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length, burial, site):
+def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length, burial,
+              site, phi):
     layers = _layers_from_components(mats, ids, thks, active)
     if not any(L["t"] > 0 for L in layers):
         # No layer has a thickness -- refuse rather than score a fabricated wall.
         return no_update, True, "⚠ Enter a wall thickness (mm) for at least one layer before evaluating."
     spec = spec_from_inputs("habitat", shape, inner_r, layers, length, burial, site)
+    # Run the scoring preset at the chosen solar-cycle modulation. phi rides on the
+    # RunTier, which both the MC source generation (bridge -> make_source --phi) and
+    # every dosimetry fold read, so one override keeps the whole chain consistent.
+    tier = (SCORING_TIER if float(phi) == SCORING_TIER.phi_mv
+            else _dc_replace(SCORING_TIER, phi_mv=float(phi)))
     if scenario == "spe":
         # One acute event: a single proton cone at the fixed event fluence.
         # Converge on the wall lining (the skin/BFO surface); no ion composition.
-        jid = default_runner.submit(spec, tier=SCORING_TIER,
+        jid = default_runner.submit(spec, tier=tier,
                                     target_rel_err=SCORING_TARGET_REL_ERR,
                                     max_batches=SCORING_MAX_BATCHES,
                                     converge_on="skin", composition=False,
                                     spe=WORST_CASE_SPE)
     elif scenario == "gcr":
         # Chronic GCR: fixed scoring preset -- identical conditions for every team.
-        jid = default_runner.submit(spec, tier=SCORING_TIER,
+        jid = default_runner.submit(spec, tier=tier,
                                     target_rel_err=SCORING_TARGET_REL_ERR,
                                     max_batches=SCORING_MAX_BATCHES,
                                     converge_on=SCORING_CONVERGE_ON,
@@ -1297,7 +1361,7 @@ def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length, buri
         # Workshop default: BOTH gates from one GCR run -- the chronic GCR field
         # (MC) plus the acute SPE gate (folded from job.result.spec, no MC of its
         # own), reported as two separate verdicts (never summed).
-        jid = default_runner.submit(spec, tier=SCORING_TIER,
+        jid = default_runner.submit(spec, tier=tier,
                                     target_rel_err=SCORING_TARGET_REL_ERR,
                                     max_batches=SCORING_MAX_BATCHES,
                                     converge_on=SCORING_CONVERGE_ON,
@@ -1411,7 +1475,7 @@ def _poll(_n, jid):
         # lining recording signal -- check it before touching the flood assessments.
         # Gate 2 (SPE) is unaffected; the flood MC still ran and supplies statistics.
         a_tw = (assess_gcr_thinwall(job.spec, mission_days=SCORING_MISSION_DAYS,
-                                    phi_MV=SCORING_TIER.phi_mv)
+                                    phi_MV=job.tier.phi_mv)
                 if _gcr_thinwall_applies(job.spec) else None)
         if a_tw is not None:
             calibrated = _gcr_thinwall_calibrated(job.spec)
@@ -1481,7 +1545,7 @@ def _poll(_n, jid):
     # are shown), but the headline is the folded ICRP effective dose.
     if _gcr_thinwall_applies(job.spec):
         a_tw = assess_gcr_thinwall(job.spec, mission_days=SCORING_MISSION_DAYS,
-                                   phi_MV=SCORING_TIER.phi_mv)
+                                   phi_MV=job.tier.phi_mv)
         if a_tw is not None:
             calibrated = _gcr_thinwall_calibrated(job.spec)
             report = _report_text(job, gcr=(None, a_tw, None), thinwall=calibrated)
@@ -1537,7 +1601,7 @@ def _assess(result, skin, qf="icrp"):
     if isinstance(result, ConvergedComposition):
         return assess_composition(result.species_results,
                                   mission_days=SCORING_MISSION_DAYS,
-                                  phi_MV=SCORING_TIER.phi_mv, skin=skin, qf=qf)
+                                  phi_MV=result.tier.phi_mv, skin=skin, qf=qf)
     return assess(result, mission_days=SCORING_MISSION_DAYS, skin=skin, qf=qf)
 
 
@@ -2081,7 +2145,7 @@ def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
         s = head.summary("career")
         L += ["## Gate 1 — chronic GCR field (annual)" if combined
               else "## Scenario — chronic GCR field (annual)",
-              f"- Solar modulation: φ=400 MV (solar minimum)",
+              f"- Solar modulation: {_phi_caption(job.tier.phi_mv)}",
               f"- Mission: {SCORING_MISSION_DAYS} days",
               f"- **Protection score (habitat-wide, {head_qf}): {head.annual_msv:.1f} mSv/yr**"]
         if cmp_nasa is not None:
