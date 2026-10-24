@@ -160,6 +160,15 @@ SOFT_SPE = SPEScenario(
     name="Soft high-fluence SPE (Aug-1972 class)",
     event="aug1972", fluence_cm2=1.386e10, zenith_deg=45.0, cone_deg=25.0)
 
+# Intermediate Oct-1989 GLE-series event (R0=150 MV): a harder-than-Aug-1972 but
+# softer-than-Feb-1956 spectrum at large fluence. Lies between SOFT_SPE and
+# WORST_CASE_SPE in both skin and deep dose, so it fills the design envelope the
+# other two bracket. fluence_cm2 is the phi(>30 MeV)=1.5e9 anchor integrated over
+# the sampled 10-3000 MeV band (ratio 1.971 for the R0=150 King shape).
+OCT1989_SPE = SPEScenario(
+    name="Hard-intermediate SPE (Oct-1989 GLE series)",
+    event="oct1989", fluence_cm2=2.957e9, zenith_deg=45.0, cone_deg=25.0)
+
 
 # Viewer blocks. ParticleType colouring separates the penetrating secondary
 # neutrons (green) from the red primary/knock-on protons. Appended only when a

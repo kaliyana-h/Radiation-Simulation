@@ -31,7 +31,8 @@ from dataclasses import replace as _dc_replace
 
 from .spec import (HabitatSpec, WallLayer, MATERIALS, SHAPES, REGOLITH_SITES,
                    SUIT_MATERIALS, eva_suit_spec)
-from .bridge import FULL_RUN, WORST_CASE_SPE, DEFAULT_BEAM_SPOT_CM
+from .bridge import (FULL_RUN, WORST_CASE_SPE, SOFT_SPE, OCT1989_SPE,
+                     DEFAULT_BEAM_SPOT_CM)
 from .dosimetry import (assess, assess_composition, assess_spe,
                         gcr_scalar_fluence_rate, DOSE_LIMITS_MSV,
                         gauge_size_flag, _gauge_corr,
@@ -169,6 +170,30 @@ def _phi_phase(phi_mv) -> str:
 def _phi_caption(phi_mv) -> str:
     """'φ=400 MV (Solar minimum)' for the scoring-conditions / subtitle display."""
     return f"φ={int(round(float(phi_mv)))} MV ({_phi_phase(phi_mv)})"
+
+
+# --- SPE design-event selector --------------------------------------------
+# The acute-exposure scenario was pinned to WORST_CASE_SPE (Feb-1956, the hardest
+# modern event -- worst *behind thick shielding* because its hard tail penetrates).
+# For a general design tool a research user wants to test the other canonical
+# events: Aug-1972 (soft, extreme fluence -- worst for skin / thin shielding) and
+# Oct-1989 (hard-intermediate). Default stays Feb-1956 as the shielded worst case.
+SPE_SCENARIOS = {                               # radio value -> SPEScenario
+    "feb1956": WORST_CASE_SPE,
+    "oct1989": OCT1989_SPE,
+    "aug1972": SOFT_SPE,
+}
+SPE_DEFAULT = "feb1956"
+SPE_PRESETS = [                                 # (value, short name, caption)
+    ("feb1956", "Feb-1956 (GLE 5)", "hardest tail · shielded worst case"),
+    ("oct1989", "Oct-1989 GLE",     "hard-intermediate · large fluence"),
+    ("aug1972", "Aug-1972 class",   "soft · extreme fluence · worst for skin"),
+]
+
+
+def _spe_scenario(event) -> "SPEScenario":
+    """SPEScenario for a radio value; falls back to the shielded worst case."""
+    return SPE_SCENARIOS.get(str(event), WORST_CASE_SPE)
 
 CARD = {"background": CARD_BG, "border": f"1px solid {BORDER}",
         "borderRadius": "10px", "padding": "16px", "marginBottom": "14px"}
@@ -809,6 +834,21 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
              style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
                     "margin": "4px 0 0"}),
 
+    html.Div("SPE Design Event", style=SECTION),
+    dcc.RadioItems(id="spe-select", value=SPE_DEFAULT,
+                   options=[{"label": f" {name} — {cap}", "value": v}
+                            for v, name, cap in SPE_PRESETS],
+                   style={"color": INK, "fontSize": "13px"},
+                   labelStyle={"display": "flex", "alignItems": "center",
+                               "marginBottom": "6px", "color": INK},
+                   inputStyle={"marginRight": "8px", "accentColor": ACCENT}),
+    html.Div("Which solar-particle event defines the acute case. Feb-1956 is the "
+             "default because its hard tail is the worst behind thick shielding; "
+             "Aug-1972 is worst for skin / thin shields. Used only when the scenario "
+             "includes an SPE.",
+             style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
+                    "margin": "4px 0 0"}),
+
     html.Div("Scoring Conditions", style=SECTION),
     html.Div(id="scoring-conditions", style={**CARD, "padding": "12px"}),
 
@@ -1013,26 +1053,28 @@ def _switch_tab(tab):
 # both use the same fixed statistics preset so the two verdicts stay comparable.
 @app.callback(
     Output("scoring-conditions", "children"), Output("scenario-note", "children"),
-    Input("scenario", "value"), Input("phi-select", "value"))
-def _scenario_conditions(scenario, phi):
+    Input("scenario", "value"), Input("phi-select", "value"),
+    Input("spe-select", "value"))
+def _scenario_conditions(scenario, phi, spe_event):
     gcr_field = _phi_caption(phi)
+    spe = _spe_scenario(spe_event)
     if scenario == "spe":
-        note = ("A single worst-case solar proton event. The acute test. Scored as "
+        note = ("A single solar proton event. The acute test. Scored as "
                 "the TOTAL event dose against the 30-day blood-forming-organ limit, "
                 "not a per-year rate.")
         rows = [
-            _kv("🔒 Event", WORST_CASE_SPE.name),
-            _kv("🔒 Fluence", f"{WORST_CASE_SPE.fluence_cm2:.1e} p/cm²"),
+            _kv("Event", spe.name),
+            _kv("Fluence", f"{spe.fluence_cm2:.1e} p/cm²"),
             _kv("🔒 Limit", f"{DOSE_LIMITS_MSV['nasa_30day']:.0f} mSv (30-day BFO)"),
         ]
     elif scenario == "both":
-        note = ("One run, both hazards: the chronic GCR field AND a worst-case solar "
+        note = ("One run, both hazards: the chronic GCR field AND a solar "
                 "event, judged as two SEPARATE pass/fail gates (annual/career limit vs "
                 "the 30-day limit). The two doses are never summed. They reward "
                 "different shielding, so a design must clear both.")
         rows = [
             _kv("GCR field", gcr_field),
-            _kv("🔒 SPE event", WORST_CASE_SPE.name),
+            _kv("SPE event", spe.name),
             _kv("🔒 Gates", "career limit  +  30-day BFO limit"),
             _kv("🔒 Statistics", "converged full run"),
         ]
@@ -1327,9 +1369,10 @@ def _style_cascade(fig):
     State("burial-slider", "value"),
     State("regolith-site", "value"),
     State("phi-select", "value"),
+    State("spe-select", "value"),
     prevent_initial_call=True)
 def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length, burial,
-              site, phi):
+              site, phi, spe_event):
     layers = _layers_from_components(mats, ids, thks, active)
     if not any(L["t"] > 0 for L in layers):
         # No layer has a thickness -- refuse rather than score a fabricated wall.
@@ -1340,6 +1383,7 @@ def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length, buri
     # every dosimetry fold read, so one override keeps the whole chain consistent.
     tier = (SCORING_TIER if float(phi) == SCORING_TIER.phi_mv
             else _dc_replace(SCORING_TIER, phi_mv=float(phi)))
+    spe = _spe_scenario(spe_event)
     if scenario == "spe":
         # One acute event: a single proton cone at the fixed event fluence.
         # Converge on the wall lining (the skin/BFO surface); no ion composition.
@@ -1347,7 +1391,7 @@ def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length, buri
                                     target_rel_err=SCORING_TARGET_REL_ERR,
                                     max_batches=SCORING_MAX_BATCHES,
                                     converge_on="skin", composition=False,
-                                    spe=WORST_CASE_SPE)
+                                    spe=spe)
     elif scenario == "gcr":
         # Chronic GCR: fixed scoring preset -- identical conditions for every team.
         jid = default_runner.submit(spec, tier=tier,
@@ -1367,7 +1411,7 @@ def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length, buri
                                     converge_on=SCORING_CONVERGE_ON,
                                     phantom_slack=SCORING_PHANTOM_SLACK,
                                     min_batches=SCORING_MIN_BATCHES,
-                                    composition=True, spe=WORST_CASE_SPE,
+                                    composition=True, spe=spe,
                                     combined=True)
     return jid, False, no_update
 
@@ -2190,8 +2234,8 @@ def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
         s = spe.summary("nasa_30day")
         skin_txt = (f"{spe.skin_msv:.0f} mSv ({spe.skin_msv / 1500 * 100:.1f}% of 1500)"
                     if spe.skin_msv is not None else "n/a")
-        L += ["## Gate 2 — worst-case solar particle event (acute)" if combined
-              else "## Scenario — worst-case solar particle event (acute)",
+        L += ["## Gate 2 — solar particle event (acute)" if combined
+              else "## Scenario — solar particle event (acute)",
               f"- Event: {spe.scenario_name}",
               f"- Event proton fluence (>30 MeV): {spe.event_fluence_cm2:.1e} /cm²",
               f"- Penetrating fluence (reaches crew): {spe.sim_fluence_cm2:.1e} /cm²",
