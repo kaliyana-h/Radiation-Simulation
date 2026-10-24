@@ -185,9 +185,9 @@ SPE_SCENARIOS = {                               # radio value -> SPEScenario
 }
 SPE_DEFAULT = "feb1956"
 SPE_PRESETS = [                                 # (value, short name, caption)
-    ("feb1956", "Feb-1956 (GLE 5)", "hardest tail · shielded worst case"),
-    ("oct1989", "Oct-1989 GLE",     "hard-intermediate · large fluence"),
-    ("aug1972", "Aug-1972 class",   "soft · extreme fluence · worst for skin"),
+    ("feb1956", "Feb-1956", "hardest tail · shielded worst case"),
+    ("oct1989", "Oct-1989", "hard-intermediate · large fluence"),
+    ("aug1972", "Aug-1972", "soft · extreme fluence · worst for skin"),
 ]
 
 
@@ -822,7 +822,7 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
 
     html.Div("Solar Cycle Phase", style=SECTION),
     dcc.RadioItems(id="phi-select", value=PHI_DEFAULT,
-                   options=[{"label": f" {name} — {cap}", "value": v}
+                   options=[{"label": f" {name}: {cap}", "value": v}
                             for v, name, cap in PHI_PRESETS],
                    style={"color": INK, "fontSize": "13px"},
                    labelStyle={"display": "flex", "alignItems": "center",
@@ -836,7 +836,7 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
 
     html.Div("SPE Design Event", style=SECTION),
     dcc.RadioItems(id="spe-select", value=SPE_DEFAULT,
-                   options=[{"label": f" {name} — {cap}", "value": v}
+                   options=[{"label": f" {name}: {cap}", "value": v}
                             for v, name, cap in SPE_PRESETS],
                    style={"color": INK, "fontSize": "13px"},
                    labelStyle={"display": "flex", "alignItems": "center",
