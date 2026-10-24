@@ -774,8 +774,7 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
                                 tooltip=None))]),
 
     html.Div("Wall Layers", id="layers-title", style=SECTION),
-    html.Div("Innermost first. Add the structural shell, insulation and regolith "
-             "overburden as your team designed them.",
+    html.Div("Innermost first.",
              id="layers-note",
              style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
                     "marginBottom": "12px"}),
@@ -828,9 +827,7 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
                    labelStyle={"display": "flex", "alignItems": "center",
                                "marginBottom": "6px", "color": INK},
                    inputStyle={"marginRight": "8px", "accentColor": ACCENT}),
-    html.Div("GCR modulation potential φ. Solar minimum (low φ) is the chronic "
-             "worst case and the default; higher φ suppresses the field. Does not "
-             "affect the SPE event itself.",
+    html.Div("GCR modulation potential φ. Does not affect the SPE event.",
              style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
                     "margin": "4px 0 0"}),
 
@@ -842,10 +839,7 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
                    labelStyle={"display": "flex", "alignItems": "center",
                                "marginBottom": "6px", "color": INK},
                    inputStyle={"marginRight": "8px", "accentColor": ACCENT}),
-    html.Div("Which solar-particle event defines the acute case. Feb-1956 is the "
-             "default because its hard tail is the worst behind thick shielding; "
-             "Aug-1972 is worst for skin / thin shields. Used only when the scenario "
-             "includes an SPE.",
+    html.Div("Defines the acute case. Used only when the scenario includes an SPE.",
              style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
                     "margin": "4px 0 0"}),
 
@@ -1165,8 +1159,7 @@ def _length_control(shape, length, burial):
                 "it is set by the burial-depth slider.")
     else:
         title = "Wall Layers"
-        note = ("Innermost first. Add the structural shell, insulation and regolith "
-                "overburden as your team designed them.")
+        note = "Innermost first."
     return (length_style, f"{float(length or 6.0):.1f}",
             burial_style, f"{float(burial or 1.0):.1f}", title, note)
 
