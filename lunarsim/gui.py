@@ -40,6 +40,7 @@ from .dosimetry import (assess, assess_composition, assess_spe,
                         assess_gcr_thinwall, _gcr_thinwall_applies,
                         _gcr_thinwall_calibrated, areal_density_confidence)
 from .geometry import _enclosing_radius_cm
+from .headline_context import headline_flags, is_q_fallback, COMBINED_ENVELOPE_NOTE
 from .jobs import default_runner, JobStatus, ConvergedComposition
 from .trajviz import run_cascade, build_figure
 
@@ -1065,7 +1066,9 @@ def _scenario_conditions(scenario, phi, spe_event):
         note = ("One run, both hazards: the chronic GCR field AND a solar "
                 "event, judged as two SEPARATE pass/fail gates (annual/career limit vs "
                 "the 30-day limit). The two doses are never summed. They reward "
-                "different shielding, so a design must clear both.")
+                "different shielding, so a design must clear both. The default "
+                "pairing (solar-minimum GCR + hardest event) is a conservative "
+                "worst + worst envelope, not one solar epoch.")
         rows = [
             _kv("GCR field", gcr_field),
             _kv("SPE event", spe.name),
@@ -1542,7 +1545,8 @@ def _poll(_n, jid):
             head = a_skin if a_skin is not None else a
             g1_overlay_skin, g1_phantom = head.annual_msv, a
 
-        metrics = [_gate_header("Gate 1 · Chronic GCR field (annual)"),
+        metrics = [_envelope_note(),
+                   _gate_header("Gate 1 · Chronic GCR field (annual)"),
                    *g1_metrics,
                    _gate_header("Gate 2 · Solar particle event (acute)"),
                    *_spe_metric_cards(a_spe, job)]
@@ -1675,8 +1679,32 @@ def _standard_row(assessment, key, name, note):
     ])
 
 
+_FLAG_COLOUR = {"info": MUTED, "ok": "#3fb950", "warn": "#d29922", "alert": ACCENT}
+
+
+def _context_strip(flags):
+    """Render headline_context flags (engine / confidence / near-gate / Q fallback)
+    as compact lines under the headline. Advisory only -- no dose is changed."""
+    if not flags:
+        return None
+    return html.Div(style={"marginTop": "10px", "display": "flex",
+                           "flexDirection": "column", "gap": "4px"}, children=[
+        html.Div(("" if f["level"] == "info" else "● ") + f["text"], style={
+            "color": _FLAG_COLOUR.get(f["level"], MUTED), "fontSize": "10.5px",
+            "lineHeight": "1.35",
+            "fontWeight": 400 if f["level"] in ("info", "ok") else 600})
+        for f in flags])
+
+
+def _envelope_note():
+    """Combined-run caveat: the two gates bound worst + worst, not one epoch."""
+    return html.Div(COMBINED_ENVELOPE_NOTE, style={
+        "color": MUTED, "fontSize": "11px", "fontStyle": "italic",
+        "lineHeight": "1.4", "marginBottom": "4px"})
+
+
 def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
-                size_note=None, standards=SCORE_STANDARDS):
+                size_note=None, standards=SCORE_STANDARDS, context=None):
     """The headline the student records: habitat-wide annual effective dose,
     compared against several agency career limits rather than NASA's alone.
 
@@ -1705,6 +1733,9 @@ def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
         html.Div(caption, style={
             "color": MUTED, "fontSize": "11px", "marginTop": "6px"}),
     ]
+    strip = _context_strip(context)
+    if strip is not None:
+        children.append(strip)
     children += [_standard_row(assessment, k, n, note) for k, n, note in standards]
     if size_note:
         note_colour, note_text = size_note
@@ -1857,9 +1888,13 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
                     f"central self-shielded point{phantom_rel} — noisier diagnostic")
     size_note = _size_note(job.result.spec) if job.result is not None else None
     banner = _footprint_banner(job.result.spec) if job.result is not None else None
+    context = headline_flags(job.spec.areal_density_gcm2(), "flood",
+                             card_assess.quality_factor)
+    if is_q_fallback(card_assess.quality_factor):
+        qf_label = f"flat Q = {card_assess.quality_factor:g} (fallback)"
     return ([banner] if banner else []) + [
         _score_card(score, rel_txt, card_assess, qf_label=qf_label,
-                    cmp_line=cmp_line, size_note=size_note),
+                    cmp_line=cmp_line, size_note=size_note, context=context),
         metric_card("Absorbed dose",
                     f"{ab.dose_rate_ugy_day / 1000:.3f} mGy/day",
                     f"= {ab.annual_mgy:.1f} mGy/year"),
@@ -2021,7 +2056,9 @@ def _thinwall_metric_cards(a, job, calibrated):
         _score_card(a.annual_msv, rel_txt, a,
                     qf_label="ICRP-60 Q(L) · thin-wall phantom-matched",
                     cmp_line=None,
-                    size_note=size_note),
+                    size_note=size_note,
+                    context=headline_flags(job.spec.areal_density_gcm2(), "kernel",
+                                           a.quality_factor)),
         metric_card("Absorbed dose", f"{a.dose_rate_ugy_day / 1000:.3f} mGy/day",
                     f"= {a.annual_mgy:.1f} mGy/year"),
         metric_card("Dose equivalent", f"{a.equiv_rate_msv_day:.3f} mSv/day",
@@ -2167,7 +2204,8 @@ def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
     if gcr is not None and spe is not None:
         L += ["> Two independent gates — the acute solar event and the chronic GCR "
               "field have different dose limits and clocks, so they are judged "
-              "separately and never summed.", ""]
+              "separately and never summed.",
+              f"> {COMBINED_ENVELOPE_NOTE}", ""]
 
     combined = gcr is not None and spe is not None
 
@@ -2198,8 +2236,11 @@ def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
               f"- Career limit: {s['limit_mSv']:.0f} mSv "
               f"({s['fraction_of_limit'] * 100:.0f}% used)",
               f"- **Verdict: {s['verdict']}**"]
-        cband = areal_density_confidence(spec.areal_density_gcm2())
-        L.append(f"- **Confidence ({cband['label']}):** {cband['message']}")
+        for f in headline_flags(spec.areal_density_gcm2(),
+                                "kernel" if thinwall is not None else "flood",
+                                head.quality_factor):
+            mark = "⚠ " if f["level"] in ("warn", "alert") else ""
+            L.append(f"- {mark}{f['text']}")
         if thinwall is not None:
             L += ["- Regime: thin-wall phantom-matched fold (wall < ~19 g/cm², below "
                   "the flood-normalisation crossover — direct primary transmission, "
