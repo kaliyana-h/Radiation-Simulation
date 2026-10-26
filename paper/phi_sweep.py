@@ -168,7 +168,8 @@ def field_only(phis) -> int:
     return 0
 
 
-def run_mc(phis, rel_err: float, max_batches: int, min_batches: int) -> int:
+def run_mc(phis, rel_err: float, max_batches: int, min_batches: int,
+           out_csv=None) -> int:
     from dataclasses import replace as _dc_replace
     from lunarsim.spec import HabitatSpec, WallLayer
     from lunarsim.bridge import FULL_RUN
@@ -194,7 +195,7 @@ def run_mc(phis, rel_err: float, max_batches: int, min_batches: int) -> int:
               "headline that\n  phi scales cleanly is NOT the one reported.  Thicken "
               "the wall before trusting Mode 2.")
 
-    out_csv = _REPO / "paper" / "phi_sweep_mc.csv"
+    out_csv = Path(out_csv) if out_csv else _REPO / "paper" / "phi_sweep_mc.csv"
     results = []
     for phi in phis:
         tier = _dc_replace(FULL_RUN, phi_mv=float(phi))
@@ -244,6 +245,9 @@ def main(argv=None) -> int:
     ap.add_argument("--rel-err", type=float, default=0.05)
     ap.add_argument("--max-batches", type=int, default=12)
     ap.add_argument("--min-batches", type=int, default=4)
+    ap.add_argument("--out", default=None,
+                    help="Mode 2 output CSV (default paper/phi_sweep_mc.csv -- the "
+                         "committed baseline; pass a runs/ path for what-if runs)")
     args = ap.parse_args(argv)
 
     if args.phis:
@@ -254,7 +258,7 @@ def main(argv=None) -> int:
         phis = [400.0, 500.0, 650.0, 800.0, 950.0, 1100.0]
 
     if args.run:
-        return run_mc(phis, args.rel_err, args.max_batches, args.min_batches)
+        return run_mc(phis, args.rel_err, args.max_batches, args.min_batches, args.out)
     return field_only(phis)
 
 
