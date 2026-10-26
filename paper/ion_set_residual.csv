@@ -1,0 +1,5 @@
+representation,D_rel,H_rel,Qbar,hze_dose_frac,n_ions,D_over_full,H_over_full,Q_over_full
+FULL28,0.74725,4.63079,6.19714,0.40418,28,1.0,1.0,1.0
+PEREL10 (kernel),0.75634,4.73086,6.25492,0.41064,10,1.01217,1.02161,1.00932
+GROUP5 (flood matthia2013),0.7501,4.78551,6.37986,0.40645,5,1.00381,1.03341,1.02949
+CLONE5 (shipped flood),2.23647,27.14616,12.13795,0.78617,5,2.99295,5.8621,1.95864
