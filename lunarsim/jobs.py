@@ -332,12 +332,12 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                     cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedComposition:
     """Flood (deep) MC driver -- see _run_composition for the full contract.
 
-    Wrapped in flood_baseline_model() so the whole driver runs under the flood-safe
+    Wrapped in flood_baseline_model() so the whole driver runs under the flood's
     GCR model: the 'perelement' thin-kernel override (which fold_gcr_thinwall sets
-    as a process-global env) is collapsed to the OLTARIS-validated 5-ion baseline
+    as a process-global env) is mapped to the coherent 5-ion matthia2013 group model
     for BOTH the make_source beam subprocesses spawned here AND the in-process flux
     normalization. Without this pin, a GUI launched with LUNARSIM_GCR_PERELEMENT=
-    perelement would silently fold baseline abundances onto single-element Matthiae
+    perelement would fold 5-ion band abundances onto single-element Matthiae
     spectra and move the deep dose. No-op unless the active model is 'perelement'."""
     with flood_baseline_model():
         return _run_composition(

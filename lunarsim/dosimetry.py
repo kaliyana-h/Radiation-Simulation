@@ -135,8 +135,18 @@ DAYS_PER_YEAR = 365.0
 # the spectral shape, the per-species ratios, or the simulated transport. This is the
 # single lever that brings absorbed dose and dose-equivalent into the measured
 # lunar-surface range (see git history / the dose-calibration investigation).
+#
+# The pin applies ONLY to the legacy proton-clone model ('none'). Under the Matthiae
+# models ('matthia2013' / 'perelement') the spectrum carries its own absolute
+# normalisation (C_I in particles cm^-2 s^-1 sr^-1 (MeV/n)^-1), which reproduces the
+# MEASURED PAMELA Dec-2009 solar-minimum proton spectrum to 1.001x over 0.1-48.7 GeV
+# (Adriani et al. 2013, ApJ 765:91, Table 1; 0.98-1.05x per bin to 10 GeV), whereas
+# this 2.0 pin reads 0.80x of it. So for Matthiae the calibration is just the 2*pi sr
+# of the upper hemisphere (see _calibration_factor) -- a measured-input choice, no
+# dose target and no CAL refit. Memory [[flood-heavy-abundance-overweight]].
 GCR_PROTON_FLUX_REF_2PI = 2.0   # protons/cm^2/s, solar-min lunar surface, phi=400 MV
 GCR_CALIB_PHI_MV = 400.0        # reference modulation the calibration is pinned to
+UPPER_HEMISPHERE_SR = 2.0 * math.pi   # Matthiae absolute: intensity -> 2*pi scalar fluence
 
 # --- Outer-gauge re-anchor -----------------------------------------------
 # fluence_outside is scored on the OuterShell hemisphere gauge OUTSIDE all walls.
@@ -257,20 +267,19 @@ def _raw_gcr_integral(z: int = 1, a: int = 1, phi_MV: float = 400.0,
     if emax_mev is None:
         emax_mev = ms.GCR_EMAX_PER_NUC   # shared per-nucleon ceiling (matches source)
     # Per-element Matthiae model: when active, the raw integral for this species is
-    # its group's Matthiae spectrum, normalized so a proton (z=a=1) full-range read
-    # equals the proton-clone full-range read. That keeps the proton ABSOLUTE
-    # calibration (_calibration_factor, pinned on z=a=1) byte-for-byte unchanged,
-    # while every heavier species carries its own physically-derived LIS shape and
-    # abundance instead of the (Z/A)*phi proton clone. Mirrors make_source so the
-    # simulated beam spectrum and the flux normalization move together.
+    # its group's Matthiae spectrum, normalized so its full-range read equals the
+    # Matthiae PROTON full-range read (an absolute intensity, /cm^2/s/sr). With the
+    # group abundance applied by the caller, every species lands at its absolute
+    # Matthiae flux once _calibration_factor supplies the 2*pi sr. Mirrors make_source
+    # so the simulated beam spectrum and the flux normalization move together.
     _pe = getattr(ms, "GCR_PERELEMENT", "none")
     if _pe == "matthia2013":
         return ms.mattia_norm_integral(z, phi_MV, emin_mev, emax_mev, n)
     # Per-ELEMENT model: each species is a single element (z=6/14/26 are NOT band
     # reps here), so the raw integral is its own single-element Matthiae spectrum,
     # normalized to the proton full-range exactly as the group variant is. For z=1
-    # this is identical to the matthia2013 proton read, so the proton ABSOLUTE
-    # calibration (_calibration_factor) is unchanged across both Matthiae models.
+    # this is identical to the matthia2013 proton read, so both Matthiae models share
+    # one absolute normalisation (_calibration_factor).
     if _pe == "perelement":
         return ms.mattia_element_norm_integral(z, phi_MV, emin_mev, emax_mev, n)
     integral_m2_sr = 0.0       # /(m^2 s sr)
@@ -300,7 +309,16 @@ def _calibration_factor() -> float:
     is a single multiplicative constant, it rescales every species' absolute flux
     -- and hence absorbed dose and dose-equivalent -- without altering the spectral
     shape, the per-species ratios, or anything in the simulated transport. Pinned at
-    GCR_CALIB_PHI_MV so the spectrum still modulates correctly for other phi."""
+    GCR_CALIB_PHI_MV so the spectrum still modulates correctly for other phi.
+
+    Under the Matthiae models the raw integral is already the ABSOLUTE Matthiae
+    intensity (/cm^2/s/sr; mattia_*_norm_integral returns the proton's own absolute
+    integral for z=1 and normalises every heavier species to it), so the factor is
+    only the 2*pi sr hemisphere -- the 2.0 pin would discard the model's measured
+    normalisation (PAMELA-validated, see GCR_PROTON_FLUX_REF_2PI). Being a constant,
+    solar modulation then comes entirely from Matthiae's own W(phi)."""
+    if _load_make_source().GCR_PERELEMENT in ("matthia2013", "perelement"):
+        return UPPER_HEMISPHERE_SR
     return GCR_PROTON_FLUX_REF_2PI / _raw_gcr_integral(1, 1, GCR_CALIB_PHI_MV)
 
 
@@ -393,24 +411,29 @@ def set_perelement_model(model: str) -> None:
 
 def flood_model_for(model: str) -> str:
     """Map an active per-element model to the model the FLOOD (deep, >~19 g/cm^2)
-    engine must run under. 'perelement' is a THIN-kernel-only override: the 10-ion
-    kernel regen (gcr_thinwall_kernel_perelem.json) changes only the thin-wall fold.
-    The flood's per-species spectral normalization (_gcr_integral) and its
-    make_source beam spectrum were validated against OLTARIS under the 5-ion
-    baseline, so the flood always collapses 'perelement' -> 'none'. 'matthia2013'
-    is a coherent full-composition model (abundances AND spectra move together) and
-    is left intact for the flood; 'none' stays 'none'."""
-    return "none" if model == "perelement" else model
+    engine must run under. The flood transports the 5 representative ions
+    (H/He/C/Si/Fe), so the 10-single-element 'perelement' composition cannot drive
+    it directly; it maps to 'matthia2013', the coherent 5-ion Matthiae model (group
+    abundances AND spectra from the same 28-element LIS, absolute normalisation).
+    The flood thus reads the same Matthiae GCR field as the per-element thin kernel.
+
+    History: until 2026-10-27 'perelement' collapsed to 'none', so the flood ran the
+    hand-set GCR_COMPOSITION (C/Si/Fe 4.7-7.1x Matthiae) on the soft proton clone
+    pinned to 2.0/cm^2/s -- a compensating pair that matched OLTARIS for the wrong
+    reason (memory [[flood-heavy-abundance-overweight]]). 'none' is kept as the
+    explicit legacy option and stays 'none'; 'matthia2013' stays 'matthia2013'."""
+    return "matthia2013" if model == "perelement" else model
 
 
 @contextlib.contextmanager
 def flood_baseline_model():
-    """Pin the per-element GCR model to its flood-safe value (see flood_model_for)
-    for the duration of a flood evaluation, then restore the caller's model. A
-    no-op unless the active model is 'perelement', so matthia2013/none callers pay
-    no cache-clear. This is what keeps the global LUNARSIM_GCR_PERELEMENT=perelement
-    env -- which fold_gcr_thinwall sets to drive the thin kernel -- from leaking
-    into the OLTARIS-validated flood normalization and make_source beam spectrum."""
+    """Pin the per-element GCR model to its flood value (see flood_model_for) for
+    the duration of a flood evaluation, then restore the caller's model. A no-op
+    unless the active model is 'perelement', so matthia2013/none callers pay no
+    cache-clear. This is what keeps the global LUNARSIM_GCR_PERELEMENT=perelement
+    env -- which fold_gcr_thinwall sets to drive the 10-ion thin kernel -- from
+    feeding single-element spectra to the 5-ion flood: the flood runs the coherent
+    matthia2013 group model for both its normalization and make_source beam."""
     current = os.environ.get("LUNARSIM_GCR_PERELEMENT", PERELEMENT_MODEL)
     target = flood_model_for(current)
     if target == current:
@@ -614,12 +637,13 @@ def assess_composition(species_results: list,
     have_relerr = True       # every species has >=2 batches; cleared if any lacks an error
     contributions = []
     sim_fluence_used = 0.0
-    # The flood engine's per-species flux normalization (gcr_species_fluence_rate ->
-    # _gcr_integral) was validated against OLTARIS under the 5-ion baseline. Pin the
-    # flood-safe model for the duration so a global LUNARSIM_GCR_PERELEMENT=perelement
-    # (set by fold_gcr_thinwall to drive the thin kernel) cannot leak baseline
-    # abundances onto single-element Matthiae spectra -- an incoherent mix that would
-    # silently move the deep dose. No-op unless the model is 'perelement'.
+    # The flood transports 5 representative ions, so its per-species flux
+    # normalization (gcr_species_fluence_rate -> _gcr_integral) must read the 5-ion
+    # matthia2013 group model. Pin it for the duration so a global
+    # LUNARSIM_GCR_PERELEMENT=perelement (set by fold_gcr_thinwall to drive the thin
+    # kernel) cannot put single-element spectra under band-representative abundances
+    # -- an incoherent mix that would silently move the deep dose. No-op unless the
+    # model is 'perelement'.
     with flood_baseline_model():
       for sp, result in species_results:
         name, particle, z, a, abundance, group = sp
@@ -942,8 +966,11 @@ def areal_density_confidence(ad_gcm2: float) -> dict:
     crossover-discontinuity). Trust is governed by where the design sits relative
     to the ~19 g/cm^2 kernel<->flood crossover:
 
-      * ad >= 40    -> HIGH: the flood MC path, OLTARIS-validated at depth
-                       (skin-ICRP ~1.1x of OLTARIS at 50 g/cm^2).
+      * ad >= 40    -> HIGH: the flood MC path, the tool's cleanest regime; its
+                       Matthiae input field reproduces measured PAMELA solar-min
+                       protons, and published codes span ~210-320 mSv/yr there.
+                       (The pre-2026-10-27 "~1.1x OLTARIS" agreement came from a
+                       compensating pin+heavy-ion pair, now removed.)
       * ad <= 12    -> MEDIUM: thin-wall kernel regime, close but OPTIMISTIC
                        (~0.8x of OLTARIS at 10 g/cm^2) -- may under-warn.
       * 12 < ad < 40 -> LOW: straddles the crossover cliff and is *least* certain
@@ -955,9 +982,11 @@ def areal_density_confidence(ad_gcm2: float) -> dict:
     physics edges; treat a design near a boundary as the lower-confidence side."""
     if ad_gcm2 >= 40.0:
         return {"level": "high", "label": "validated regime",
-                "message": ("Wall areal density is in the thick regime where the "
-                            "flood MC is OLTARIS-validated (~1.1x). The headline "
-                            "is trustworthy.")}
+                "message": ("Wall areal density is in the thick regime, where the "
+                            "flood Monte Carlo is most reliable. Its GCR input "
+                            "(Matthiae 2013) matches measured solar-minimum proton "
+                            "spectra; the remaining uncertainty is the ~±20% spread "
+                            "between published transport codes at this depth.")}
     if ad_gcm2 <= 12.0:
         return {"level": "medium", "label": "thin-wall (optimistic)",
                 "message": ("Thin-wall kernel regime: reasonably close to OLTARIS "

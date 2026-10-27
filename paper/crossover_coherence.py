@@ -159,25 +159,27 @@ def main() -> int:
     print(f"    -> {'PASS' if s4 else 'CONCERN'}: per-element <Q> handoff is "
           "seamless; the stale areal_density_confidence note is now conservative")
     print(f"    (per-element E @gate {pg['E_msv_yr']:.0f} mSv/yr reproduces the "
-          f"validated ~130 shielded-dome headline; lumped read {bg['E_msv_yr']:.0f})")
+          f"~158 shielded-dome headline under the Matthiae absolute normalisation; "
+          f"~130 under the legacy 2.0 pin; lumped read {bg['E_msv_yr']:.0f})")
 
     # --- Sub-check 5: thin organ-absorbed vs OLTARIS point (self-shielding) -----
     # The per-element absorbed dose is ~flat with depth (proton/He-dominated once
-    # the heavy over-weight is gone) at ~0.55x the OLTARIS bare-point -- the
-    # EXPECTED organ-vs-point self-shielding factor (perelem_validate: ~0.5-0.56x),
+    # the heavy over-weight is gone) below the OLTARIS bare-point -- the EXPECTED
+    # organ-vs-point self-shielding. Was ~0.55x under the legacy 2.0 proton pin;
+    # ~0.68x since the Matthiae absolute normalisation (x1.215, 2026-10-27).
     # NOT a defect. Flag if it drifts outside that physical band.
     pd = perel[OLTARIS_DEEP_GCM2]["D_mgy_day"] / OLTARIS_D_MGY_DAY
-    s5 = 0.45 <= pd <= 0.62
+    s5 = 0.58 <= pd <= 0.78
     print(f"\n[5] Per-element organ-absorbed vs OLTARIS point @{OLTARIS_DEEP_GCM2:g}"
-          f" g/cm2: ratio {pd:.3f}  (expected 0.50-0.56 organ/point self-shielding)")
+          f" g/cm2: ratio {pd:.3f}  (expected 0.58-0.78 organ/point self-shielding)")
     print(f"    -> {'PASS' if s5 else 'CONCERN'}")
 
     print("\nNOTE: the per-element kernel is the THIN engine, live only BELOW the "
           f"{gate:g} g/cm2 gate.")
-    print("      The flood (deep) engine collapses 'perelement' -> 'none' "
-          "(jobs.flood_model_for),")
-    print("      so the OLTARIS-validated deep headline is unchanged by the "
-          "per-element kernel. A real")
+    print("      The flood (deep) engine maps 'perelement' -> 'matthia2013' "
+          "(dosimetry.flood_model_for),")
+    print("      so both engines share the Matthiae input and absolute "
+          "normalisation. A real")
     print("      flood-MC value at the gate needs a PC run; this script folds "
           "kernels only (no MC).")
 

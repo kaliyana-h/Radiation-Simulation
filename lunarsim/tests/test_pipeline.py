@@ -1142,53 +1142,61 @@ class TestRegolithSweep(unittest.TestCase):
 
 
 class TestFloodPerelementIsolation(unittest.TestCase):
-    """The 'perelement' per-element GCR model is a THIN-kernel-only override. It must
-    never leak into the flood (deep) engine: fold_gcr_thinwall sets
-    LUNARSIM_GCR_PERELEMENT=perelement as a process-global env to drive the 10-ion
-    thin kernel, and the flood's own per-species flux normalisation
-    (gcr_species_fluence_rate -> _gcr_integral) and make_source beam spectrum were
-    validated against OLTARIS under the 5-ion baseline. Under the perelement env the
-    flood composition stays the baseline GCR_COMPOSITION (inflated band abundances)
-    but the raw spectral integral collapses to the single-element normalisation
-    (2.0 vs the baseline 3.566/3.751 for C/Si/Fe) -- an incoherent abundance/spectrum
-    mix that would silently move the deep dose. These tests pin the guard that stops
-    it (dosimetry.flood_baseline_model / jobs.run_composition's wrapper). No TOPAS."""
+    """The 'perelement' per-element GCR model is a 10-single-element THIN-kernel
+    composition. The flood (deep) engine transports the 5 representative ions, so it
+    must run the coherent 5-ion 'matthia2013' group model instead: fold_gcr_thinwall
+    sets LUNARSIM_GCR_PERELEMENT=perelement as a process-global env to drive the
+    10-ion thin kernel, and under that env the raw C/Si/Fe integrals are their
+    SINGLE-ELEMENT Matthiae spectra -- wrong under the 5-ion band abundances the
+    flood carries. These tests pin the guard (dosimetry.flood_baseline_model /
+    jobs.run_composition's wrapper) that maps the flood to matthia2013. Before
+    2026-10-27 it mapped to the legacy 'none' baseline (memory
+    flood-heavy-abundance-overweight). No TOPAS."""
 
     def setUp(self):
         self._saved_env = os.environ.get("LUNARSIM_GCR_PERELEMENT")
-        # capture the OLTARIS-validated baseline integrals with a clean env
-        dosimetry.set_perelement_model("none")
+        # capture the 5-ion matthia2013 group integrals the flood must read
+        dosimetry.set_perelement_model("matthia2013")
         self.base_C = dosimetry._gcr_integral(6, 12, 400.0)
         self.base_Si = dosimetry._gcr_integral(14, 28, 400.0)
         self.base_Fe = dosimetry._gcr_integral(26, 56, 400.0)
+        self.base_comp = dosimetry.active_composition(400.0)
+        dosimetry.set_perelement_model("perelement")
+        self.elem_C = dosimetry._gcr_integral(6, 12, 400.0)
 
     def tearDown(self):
         # leave the process on whatever the env said at entry (default none)
         dosimetry.set_perelement_model(self._saved_env or "none")
 
     def test_flood_model_mapping(self):
-        # perelement collapses to the baseline for the flood; the coherent
-        # full-composition matthia2013 and the plain none are left untouched.
+        # perelement maps to the coherent 5-ion Matthiae model for the flood;
+        # matthia2013 and the explicit legacy none are left untouched.
         self.assertEqual(dosimetry.flood_model_for("none"), "none")
         self.assertEqual(dosimetry.flood_model_for("matthia2013"), "matthia2013")
-        self.assertEqual(dosimetry.flood_model_for("perelement"), "none")
+        self.assertEqual(dosimetry.flood_model_for("perelement"), "matthia2013")
 
     def test_sanity_leak_exists_without_guard(self):
-        # Document the bug the guard defends against: raw under perelement the heavy
-        # integrals collapse to the single-element normalisation (2.0), NOT baseline.
+        # Document the bug the guard defends against: raw under perelement the C
+        # integral is the single-element carbon spectrum's band, NOT the Z=3-9 group.
+        # (Both normalise to the proton full range, so the full-range totals agree;
+        # the difference is the per-element spectral SHAPE, visible in a sub-range.)
         dosimetry.set_perelement_model("perelement")
-        self.assertAlmostEqual(dosimetry._gcr_integral(6, 12, 400.0), 2.0, places=6)
-        self.assertNotAlmostEqual(self.base_C, 2.0, places=3)   # baseline is ~3.566
+        elem = dosimetry._gcr_integral(6, 12, 400.0, 10.0, 300.0)
+        dosimetry.set_perelement_model("matthia2013")
+        grp = dosimetry._gcr_integral(6, 12, 400.0, 10.0, 300.0)
+        self.assertNotAlmostEqual(elem, grp, places=4)
 
-    def test_flood_baseline_model_collapses_perelement(self):
+    def test_flood_baseline_model_maps_perelement_to_matthia(self):
         dosimetry.set_perelement_model("perelement")
         with dosimetry.flood_baseline_model():
+            self.assertEqual(os.environ.get("LUNARSIM_GCR_PERELEMENT"), "matthia2013")
             self.assertAlmostEqual(dosimetry._gcr_integral(6, 12, 400.0), self.base_C, places=6)
             self.assertAlmostEqual(dosimetry._gcr_integral(14, 28, 400.0), self.base_Si, places=6)
             self.assertAlmostEqual(dosimetry._gcr_integral(26, 56, 400.0), self.base_Fe, places=6)
+            self.assertEqual(dosimetry.active_composition(400.0), self.base_comp)
         # restored for the thin kernel after the block
         self.assertEqual(os.environ.get("LUNARSIM_GCR_PERELEMENT"), "perelement")
-        self.assertAlmostEqual(dosimetry._gcr_integral(6, 12, 400.0), 2.0, places=6)
+        self.assertAlmostEqual(dosimetry._gcr_integral(6, 12, 400.0), self.elem_C, places=6)
 
     def test_flood_baseline_model_noop_for_matthia(self):
         # matthia2013 is a coherent abundance+spectrum pair: the guard must NOT
@@ -1201,12 +1209,11 @@ class TestFloodPerelementIsolation(unittest.TestCase):
         outside = dosimetry._gcr_integral(6, 12, 400.0)
         self.assertAlmostEqual(inside, outside, places=9)
 
-    def test_assess_composition_uses_baseline_flux_under_perelement(self):
+    def test_assess_composition_uses_matthia_flux_under_perelement(self):
         # End-to-end through the real flood assessment: under the perelement env the
-        # per-species flux must be abundance * BASELINE integral, not * 2.0.
+        # per-species flux must be abundance * the matthia2013 GROUP integral.
         spec = _cyl_spec()
-        comp = dosimetry.GCR_COMPOSITION
-        crow = next(r for r in comp if r[2] == 6)          # the carbon row
+        crow = next(r for r in self.base_comp if r[2] == 6)   # the carbon row
         _n, _p, z, a, ab, _g = crow
         fake = types.SimpleNamespace(
             dose_gy=1.0e-12, skin_dose_gy=1.0e-12, fluence_outside=1.0e-3,
@@ -1217,9 +1224,64 @@ class TestFloodPerelementIsolation(unittest.TestCase):
         self.assertIsNotNone(res)
         c = next(x for x in res.contributions if x["species"] == crow[0])
         self.assertAlmostEqual(c["flux_cm2_s"], ab * self.base_C, places=9)
-        self.assertNotAlmostEqual(c["flux_cm2_s"], ab * 2.0, places=9)
         # the assessment must restore the thin-kernel env on the way out
         self.assertEqual(os.environ.get("LUNARSIM_GCR_PERELEMENT"), "perelement")
+
+
+class TestMatthiaAbsoluteNormalisation(unittest.TestCase):
+    """Under the Matthiae models the GCR flux keeps the model's own ABSOLUTE
+    normalisation (PAMELA Dec-2009 validated) -- the calibration is only the 2*pi sr
+    hemisphere. The legacy proton-clone 'none' model keeps the 2.0 /cm^2/s pin.
+    Checks fluxes only, never a dose (target-blind). No TOPAS."""
+
+    def setUp(self):
+        self._saved_env = os.environ.get("LUNARSIM_GCR_PERELEMENT")
+        self._saved_lis = os.environ.get("LUNARSIM_GCR_LIS")
+
+    def tearDown(self):
+        dosimetry.set_perelement_model(self._saved_env or "none")
+        if self._saved_lis is None:
+            os.environ.pop("LUNARSIM_GCR_LIS", None)
+            dosimetry._load_make_source.cache_clear()
+            dosimetry._calibration_factor.cache_clear()
+        else:
+            dosimetry.set_lis_form(self._saved_lis)
+
+    def test_legacy_none_keeps_pin(self):
+        dosimetry.set_perelement_model("none")
+        for form in (dosimetry.FLOOD_LIS_FORM, dosimetry.KERNEL_LIS_FORM):
+            dosimetry.set_lis_form(form)
+            self.assertAlmostEqual(dosimetry._gcr_integral(1, 1, 400.0),
+                                   dosimetry.GCR_PROTON_FLUX_REF_2PI, places=9)
+
+    def test_matthia_models_use_hemisphere_only(self):
+        ms = dosimetry._load_make_source()
+        for model in ("matthia2013", "perelement"):
+            dosimetry.set_perelement_model(model)
+            for form in (dosimetry.FLOOD_LIS_FORM, dosimetry.KERNEL_LIS_FORM):
+                dosimetry.set_lis_form(form)
+                ms = dosimetry._load_make_source()
+                self.assertEqual(dosimetry._calibration_factor(),
+                                 dosimetry.UPPER_HEMISPHERE_SR)
+                W = ms.matthia_W_for_phi(400.0)
+                absolute = 2.0 * math.pi * ms._mattia_group_integral(
+                    1, W, 10.0, ms.GCR_EMAX_PER_NUC, 4000)
+                self.assertAlmostEqual(dosimetry._gcr_integral(1, 1, 400.0),
+                                       absolute, places=6)
+
+    def test_matthia_absolute_exceeds_legacy_pin(self):
+        # Matthiae absolute 2pi proton flux at solar min is ~2.4-2.5 /cm^2/s,
+        # i.e. the legacy 2.0 pin under-reads the measured spectrum by ~20%.
+        dosimetry.set_perelement_model("matthia2013")
+        dosimetry.set_lis_form(dosimetry.FLOOD_LIS_FORM)
+        f = dosimetry._gcr_integral(1, 1, 400.0)
+        self.assertTrue(2.3 < f < 2.6, f)
+
+    def test_modulation_still_lowers_flux(self):
+        dosimetry.set_perelement_model("matthia2013")
+        dosimetry.set_lis_form(dosimetry.FLOOD_LIS_FORM)
+        lo, hi = dosimetry._gcr_integral(1, 1, 400.0), dosimetry._gcr_integral(1, 1, 1100.0)
+        self.assertLess(hi, lo)
 
 
 if __name__ == "__main__":

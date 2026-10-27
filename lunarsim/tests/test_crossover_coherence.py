@@ -119,17 +119,21 @@ class TestCrossoverCoherence(unittest.TestCase):
         self.assertGreater(self.base[19.0]["qbar"], 3.5)
 
     def test_gate_headline_matches_validated_shielded_dome(self):
-        # per-element E at the gate reproduces the validated ~130 mSv/yr shielded
-        # dome (memory perelement-kernel-activation: lumped over-read was ~539).
-        self.assertAlmostEqual(self.perel[19.0]["E_msv_yr"], 130.0, delta=15.0)
+        # per-element E at the gate (memory perelement-kernel-activation: lumped
+        # over-read was ~539). Was ~130 mSv/yr under the legacy 2.0 /cm^2/s proton
+        # pin; since 2026-10-27 the Matthiae models keep their own PAMELA-validated
+        # absolute flux (dosimetry._calibration_factor), x1.215 on the kernel's
+        # rigidity form -> ~158. Regression anchor, not a target.
+        self.assertAlmostEqual(self.perel[19.0]["E_msv_yr"], 158.0, delta=15.0)
         self.assertGreater(self.base[19.0]["E_msv_yr"], 450.0)
 
     def test_organ_absorbed_in_self_shielding_band(self):
-        # per-element organ-absorbed is ~0.55x the OLTARIS bare point -- the
-        # expected organ-vs-point self-shielding factor, not a defect.
+        # per-element organ-absorbed vs the OLTARIS bare point. Was ~0.56x under the
+        # legacy 2.0 proton pin; x1.215 since the Matthiae absolute normalisation
+        # (2026-10-27) -> ~0.68x. Still below the point: organ self-shielding.
         r = self.perel[50.0]["D_mgy_day"] / OLTARIS_D_MGY_DAY
-        self.assertTrue(0.45 <= r <= 0.62, f"organ/point absorbed ratio {r:.3f} "
-                        "outside the 0.50-0.56 self-shielding band")
+        self.assertTrue(0.58 <= r <= 0.78, f"organ/point absorbed ratio {r:.3f} "
+                        "outside the 0.58-0.78 self-shielding band")
 
     def test_perelement_requires_env_gate(self):
         # Double-gate footgun: with the env off, fold falls back to the lumped
