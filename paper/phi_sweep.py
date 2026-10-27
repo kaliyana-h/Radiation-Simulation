@@ -218,6 +218,7 @@ def run_mc(phis, rel_err: float, max_batches: int, min_batches: int,
               f"absorbed {da.annual_mgy:7.3f} mGy/yr   Q-bar {da.quality_factor:5.3f}"
               f"   (rel_err {da.rel_err if da.rel_err is None else f'{da.rel_err:.3f}'})")
 
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(results[0].keys()))
         w.writeheader()
