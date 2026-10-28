@@ -77,9 +77,20 @@ def jul22_spec() -> HabitatSpec:
                        walls=[WallLayer("aluminium", 5.0), WallLayer("regolith", 5.0)])
 
 
+def bare3m_spec() -> HabitatSpec:
+    """Same near-bare 0.5 cm Al wall as [lnd] but on a 3 m dome, so the skin
+    lining is large enough to sample the heavy-ion tail. [lnd]'s R=30 cm lining
+    was sized for the normalisation-invariant neutron fraction f; its absolute
+    dose under-samples (2026-10-28: 8.25 uGy/h at rel_err 0.063, below the
+    22.4 g/cm2 point -- the wrong ordering)."""
+    return HabitatSpec(name="lnd_bare_3m", shape="dome", inner_radius_cm=300.0,
+                       walls=[WallLayer("aluminium", 0.5)])
+
+
 POINTS = {
     "lnd": lambda: lnd_analogue_spec(0.5, 30.0),
     "jul22": jul22_spec,
+    "bare3m": bare3m_spec,
 }
 
 
