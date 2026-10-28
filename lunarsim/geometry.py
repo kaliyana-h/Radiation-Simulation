@@ -569,6 +569,23 @@ s:Sc/SkinDoseEqNeutron/Quantity   = "DoseEquivalent_ICRP_Neutron"
 s:Sc/SkinDoseEqNeutron/Component  = "CrewSkin"
 s:Sc/SkinDoseEqNeutron/OutputFile = "skin_doseeq_neutron"
 s:Sc/SkinDoseEqNeutron/IfOutputFileAlreadyExists = "Overwrite"
+
+# Entry-channel split of the skin ABSORBED dose (EntryChannelDose extension):
+# a deposit counts when the particle that carried its lineage INTO the lining was
+# neutral (n + gamma + other) / a neutron. The in-volume analogue of Chang'E-4
+# LND's anticoincidence charged/neutral split (Zhang 2020). Same CrewSkin lining
+# as SkinDose, so each / skin_dose is a normalisation-invariant fraction.
+s:Sc/SkinDoseNeutral/Quantity   = "EntryChannelDose"
+s:Sc/SkinDoseNeutral/Component  = "CrewSkin"
+s:Sc/SkinDoseNeutral/Channel    = "Neutral"
+s:Sc/SkinDoseNeutral/OutputFile = "skin_dose_neutral"
+s:Sc/SkinDoseNeutral/IfOutputFileAlreadyExists = "Overwrite"
+
+s:Sc/SkinDoseNeutronAbs/Quantity   = "EntryChannelDose"
+s:Sc/SkinDoseNeutronAbs/Component  = "CrewSkin"
+s:Sc/SkinDoseNeutronAbs/Channel    = "Neutron"
+s:Sc/SkinDoseNeutronAbs/OutputFile = "skin_dose_neutron_abs"
+s:Sc/SkinDoseNeutronAbs/IfOutputFileAlreadyExists = "Overwrite"
 """
 
     # Shape-specific secondary linings, folded into the reported skin dose by

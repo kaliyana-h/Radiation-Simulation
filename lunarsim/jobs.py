@@ -51,6 +51,8 @@ class ConvergedResult:
     skin_doseeq_sv: Optional[float] = None      # same lining, LET-weighted (ICRP-60 Q)
     skin_doseeq_nasa_sv: Optional[float] = None  # same lining, NASA/Cucinotta Q twin
     neutron_doseeq_fraction: Optional[float] = None  # H_neutron / H_total on the skin lining
+    neutral_dose_fraction: Optional[float] = None    # D_neutral-entry / D_total, skin
+    neutron_abs_fraction: Optional[float] = None     # D_neutron-entry / D_total, skin
     dose_rel_err: Optional[float] = None        # standard error / mean
     skin_dose_rel_err: Optional[float] = None   # standard error / mean (skin)
     fluence_inside: Optional[float] = None
@@ -86,6 +88,8 @@ def _combine(spec: HabitatSpec, tier: RunTier,
     skineq = [b.skin_doseeq_sv for b in batches if b.skin_doseeq_sv is not None]
     skineq_n = [b.skin_doseeq_nasa_sv for b in batches if b.skin_doseeq_nasa_sv is not None]
     neu_frac = [b.neutron_doseeq_fraction for b in batches if b.neutron_doseeq_fraction is not None]
+    ntl_frac = [b.neutral_dose_fraction for b in batches if b.neutral_dose_fraction is not None]
+    nab_frac = [b.neutron_abs_fraction for b in batches if b.neutron_abs_fraction is not None]
     fin = [b.fluence_inside for b in batches if b.fluence_inside is not None]
     fout = [b.fluence_outside for b in batches if b.fluence_outside is not None]
     n = len(doses)
@@ -110,6 +114,8 @@ def _combine(spec: HabitatSpec, tier: RunTier,
         skin_doseeq_nasa_sv=statistics.fmean(skineq_n) if skineq_n else None,
         # a stable per-species ratio across batches -- a plain mean is fine
         neutron_doseeq_fraction=statistics.fmean(neu_frac) if neu_frac else None,
+        neutral_dose_fraction=statistics.fmean(ntl_frac) if ntl_frac else None,
+        neutron_abs_fraction=statistics.fmean(nab_frac) if nab_frac else None,
         fluence_inside=statistics.fmean(fin) if fin else None,
         fluence_outside=statistics.fmean(fout) if fout else None,
         per_batch_dose=doses,

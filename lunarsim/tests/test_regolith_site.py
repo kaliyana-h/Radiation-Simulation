@@ -184,5 +184,39 @@ class TestRegolithWallFollowsSite(unittest.TestCase):
                                    high.shell_mass_kg(), places=9)
 
 
+# --------------------------------------------------------------------------
+# Layer geometry (shared by every site -- only the material changes)
+# --------------------------------------------------------------------------
+class TestRegolithLayerEdges(unittest.TestCase):
+    """The REDMoon profile (Dobynde & Guo 2021) in lunar_environment.txt: 1.76
+    g/cm3 to 22 cm, a 49 cm THICK 2.11 band to 71 cm, 1.78 to 300 cm. Guards the
+    2026-10-28 fix (the band used to stop at 49 cm, ~7 g/cm2 short) and that the
+    three boxes stay contiguous and gap-free."""
+
+    def _boxes(self):
+        import re
+        txt = (_REPO_ROOT / "lunar_environment.txt").read_text()
+        out = {}
+        for n in (1, 2, 3):
+            hlz = float(re.search(rf"d:Ge/RegolithL{n}/HLZ\s*=\s*([-\d.]+) cm", txt).group(1))
+            tz = float(re.search(rf"d:Ge/RegolithL{n}/TransZ\s*=\s*([-\d.]+) cm", txt).group(1))
+            out[n] = (-(tz + hlz), -(tz - hlz))    # (top depth, bottom depth) cm
+        return out
+
+    def test_layer_edges(self):
+        b = self._boxes()
+        for n, (top, bot) in {1: (0.0, 22.0), 2: (22.0, 71.0), 3: (71.0, 300.0)}.items():
+            self.assertAlmostEqual(b[n][0], top, places=6, msg=f"L{n} top")
+            self.assertAlmostEqual(b[n][1], bot, places=6, msg=f"L{n} bottom")
+
+    def test_burial_sweep_profile_matches_environment(self):
+        from lunarsim import regolith_sweep as rs
+        b = self._boxes()
+        for (_, _, top, bot), n in zip(rs.REGOLITH_LAYERS, (1, 2, 3)):
+            self.assertAlmostEqual(top, b[n][0], places=6)
+            if n < 3:                               # sweep's last layer is open-ended
+                self.assertAlmostEqual(bot, b[n][1], places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

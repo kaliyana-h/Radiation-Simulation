@@ -15,8 +15,10 @@
 #       doi:10.1029/2021JE006930), collapsed to 3 distinct slabs
 #       because their layers 3 & 4 share rho = 1.78 g/cm3:
 #         0  -> 22 cm   rho = 1.76 g/cm3
-#         22 -> 49 cm   rho = 2.11 g/cm3   (compacted band)
-#         49 -> 300 cm  rho = 1.78 g/cm3   (to saturation depth)
+#         22 -> 71 cm   rho = 2.11 g/cm3   (compacted band, 49 cm THICK)
+#         71 -> 300 cm  rho = 1.78 g/cm3   (to saturation depth)
+#       (2026-10-28: the 2.11 band was previously 22 -> 49 cm, i.e. 27 cm thick;
+#       Dobynde & Guo give it 49 cm thick, so its bottom edge is at 71 cm.)
 #       Top face at Z = 0 (habitat floor level); 700 cm XY half-width.
 #
 # Pull into a habitat file with:  includeFile = lunar_environment.txt
@@ -127,28 +129,28 @@ d:Ge/RegolithL1/TransZ       = -11.0 cm
 s:Ge/RegolithL1/Color        = "yellow"
 s:Ge/RegolithL1/DrawingStyle = "Solid"
 
-# ---- Layer 2:  -22 -> -49 cm  (rho 2.11, compacted) -------
+# ---- Layer 2:  -22 -> -71 cm  (rho 2.11, compacted) -------
 s:Ge/RegolithL2/Type         = "TsBox"
 s:Ge/RegolithL2/Parent       = "World"
 # Material set per-run by the host file (see header) -- NOT set here.
 d:Ge/RegolithL2/HLX          = 700.0 cm
 d:Ge/RegolithL2/HLY          = 700.0 cm
-d:Ge/RegolithL2/HLZ          = 13.5 cm
+d:Ge/RegolithL2/HLZ          = 24.5 cm
 d:Ge/RegolithL2/TransX       = 0.0 cm
 d:Ge/RegolithL2/TransY       = 0.0 cm
-d:Ge/RegolithL2/TransZ       = -35.5 cm
+d:Ge/RegolithL2/TransZ       = -46.5 cm
 s:Ge/RegolithL2/Color        = "orange"
 s:Ge/RegolithL2/DrawingStyle = "Solid"
 
-# ---- Layer 3:  -49 -> -300 cm  (rho 1.78, to saturation) --
+# ---- Layer 3:  -71 -> -300 cm  (rho 1.78, to saturation) --
 s:Ge/RegolithL3/Type         = "TsBox"
 s:Ge/RegolithL3/Parent       = "World"
 # Material set per-run by the host file (see header) -- NOT set here.
 d:Ge/RegolithL3/HLX          = 700.0 cm
 d:Ge/RegolithL3/HLY          = 700.0 cm
-d:Ge/RegolithL3/HLZ          = 125.5 cm
+d:Ge/RegolithL3/HLZ          = 114.5 cm
 d:Ge/RegolithL3/TransX       = 0.0 cm
 d:Ge/RegolithL3/TransY       = 0.0 cm
-d:Ge/RegolithL3/TransZ       = -174.5 cm
+d:Ge/RegolithL3/TransZ       = -185.5 cm
 s:Ge/RegolithL3/Color        = "brown"
 s:Ge/RegolithL3/DrawingStyle = "Solid"

@@ -498,6 +498,12 @@ class DoseAssessment:
     rel_err: Optional[float] = None         # statistical rel. error of the dose rate
     contributions: Optional[list] = None    # per-species dose-rate breakdown (composition)
     neutron_fraction: Optional[float] = None  # fraction of H carried by wall-bred secondary neutrons
+    # LND-style entry-channel split of the SKIN absorbed dose (EntryChannelDose
+    # scorer): share deposited by lineages that entered the lining neutral / as a
+    # neutron. Charged share = 1 - neutral_dose_fraction. None for older runs and
+    # for the kernel path.
+    neutral_dose_fraction: Optional[float] = None
+    neutron_abs_fraction: Optional[float] = None
     regime: Optional[str] = None            # None=flood MC path; "thinwall"=phantom-matched kernel fold
 
     # ---- absorbed dose ----
@@ -603,6 +609,8 @@ def assess(result: RunResult,
         quality_factor=eff_q,
         mission_days=mission_days,
         neutron_fraction=getattr(result, "neutron_doseeq_fraction", None),
+        neutral_dose_fraction=getattr(result, "neutral_dose_fraction", None),
+        neutron_abs_fraction=getattr(result, "neutron_abs_fraction", None),
     )
 
 
@@ -631,6 +639,11 @@ def assess_composition(species_results: list,
     total_eqrate = 0.0       # LET-weighted dose-equivalent rate (Sv/s)
     total_neu_eqrate = 0.0   # neutron-lineage part of that dose-equivalent rate
     neu_eqrate_denom = 0.0   # dose-eq rate summed only over species that reported a fraction
+    # entry-channel split: per-species skin fractions weighted by that species'
+    # SKIN absorbed rate (the basis the fraction was measured on, whichever
+    # target `skin` selects for the headline)
+    split_num = {"neutral_dose_fraction": 0.0, "neutron_abs_fraction": 0.0}
+    split_den = {"neutral_dose_fraction": 0.0, "neutron_abs_fraction": 0.0}
     total_flux = 0.0
     var = 0.0                # sum of (rate_i * relerr_i)^2  for combined error
     have_doseeq = True       # both targets carry a dose-eq scorer; cleared if any species lacks it
@@ -680,6 +693,14 @@ def assess_composition(species_results: list,
                 neu_eqrate_denom += eqrate_i
         else:
             have_doseeq = False                              # a species is missing it
+        if result.skin_dose_gy:
+            skin_rate_i = (result.skin_dose_gy * flux_i / sim_fluence_cm2
+                           * OUTER_GAUGE_ANCHOR_CAL * gc)
+            for key in split_num:
+                frac_i = getattr(result, key, None)
+                if frac_i is not None:
+                    split_num[key] += frac_i * skin_rate_i
+                    split_den[key] += skin_rate_i
         contributions.append({
             "species": name, "particle": particle, "group": group,
             "flux_cm2_s": flux_i, "dose_rate_gy_s": rate_i,
@@ -713,6 +734,8 @@ def assess_composition(species_results: list,
         rel_err=rel_err,
         contributions=contributions,
         neutron_fraction=neutron_fraction,
+        **{k: (split_num[k] / split_den[k] if split_den[k] > 0 else None)
+           for k in split_num},
     )
 
 

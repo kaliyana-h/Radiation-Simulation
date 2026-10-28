@@ -9,7 +9,7 @@ never silently drift from the spectrum the runs were generated with. The default
 475 MV matches Akisheva & Gourinat (OLTARIS / Badhwar-O'Neill-2014) for the
 cross-code overlay; pass `--phi 400` for the project-standard/SSDW modulation. The
 committed thin-wall response kernel spans only ~2-19 g/cm^2; 0.3-3 m of regolith is
-~55-542 g/cm^2, which needs full MC transport -- this module builds it.
+~55-550 g/cm^2, which needs full MC transport -- this module builds it.
 
 Design (both forks pinned with the user, 2026-08-25)
 ----------------------------------------------------
@@ -39,7 +39,7 @@ batch on the PC (assistant builds the harness, user drives the MC). Then:
 Regolith column
 ---------------
 The REDMoon Apollo-17 3-layer profile (lunar_environment.txt): 0-22 cm @ 1.76,
-22-49 cm @ 2.11, 49+ cm @ 1.78 g/cm^3, measured as DEPTH BELOW THE SURFACE. The
+22-71 cm @ 2.11, 71+ cm @ 1.78 g/cm^3, measured as DEPTH BELOW THE SURFACE. The
 phantom sits at depth `d`; the column above it is the top `d` cm of that profile
 (surface layer at the top of the slab, deep layer against the phantom).
 """
@@ -95,8 +95,8 @@ _REG_FRACTIONS = "8 0.4184 0.0026 0.0585 0.0604 0.1885 0.0773 0.0569 0.1374"
 # (material name, density g/cm^3, depth_top_cm, depth_bottom_cm below surface)
 REGOLITH_LAYERS = [
     ("LunarReg176", 1.76, 0.0, 22.0),
-    ("LunarReg211", 2.11, 22.0, 49.0),
-    ("LunarReg178", 1.78, 49.0, float("inf")),
+    ("LunarReg211", 2.11, 22.0, 71.0),     # 49 cm thick (Dobynde & Guo 2021)
+    ("LunarReg178", 1.78, 71.0, float("inf")),
 ]
 
 

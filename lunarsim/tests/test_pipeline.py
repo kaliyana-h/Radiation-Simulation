@@ -221,6 +221,18 @@ class TestScorerEmission(unittest.TestCase):
             self.assertIn('Sc/SkinDoseEqNeutron/Component  = "CrewSkin"', sc)
             self.assertIn('Sc/SkinDoseEqNeutron/OutputFile = "skin_doseeq_neutron"', sc)
 
+    def test_entry_channel_scorers_on_crewskin_every_shape(self):
+        # LND-style absorbed split: two EntryChannelDose twins of SkinDose.
+        for spec in (_dome_spec(), _cyl_spec(), _quon_spec(), _buried_spec()):
+            sc = geometry.build_scorers(spec)
+            for name, chan, out in (("SkinDoseNeutral", "Neutral", "skin_dose_neutral"),
+                                    ("SkinDoseNeutronAbs", "Neutron", "skin_dose_neutron_abs")):
+                self.assertIn(f'Sc/{name}/Quantity   = "EntryChannelDose"', sc,
+                              f"{name} missing for {spec.shape}")
+                self.assertIn(f'Sc/{name}/Component  = "CrewSkin"', sc)
+                self.assertIn(f'Sc/{name}/Channel    = "{chan}"', sc)
+                self.assertIn(f'Sc/{name}/OutputFile = "{out}"', sc)
+
     def test_cylinder_gets_roof_scorers_only(self):
         sc = geometry.build_scorers(_cyl_spec())
         self.assertIn('Sc/RoofDose/Component  = "CrewRoof"', sc)
@@ -579,6 +591,33 @@ class TestCsvParsing(unittest.TestCase):
             out = bridge.parse_results(run)
             self.assertAlmostEqual(out["skin_doseeq_neutron_sv"], 3.7e-13, places=25)
 
+    def test_entry_channel_csvs_become_skin_fractions(self):
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d)
+            (run / "skin_dose.csv").write_text("# h\n0, 4.0e-13\n")
+            (run / "skin_dose_neutral.csv").write_text("# h\n0, 1.0e-13\n")
+            (run / "skin_dose_neutron_abs.csv").write_text("# h\n0, 6.0e-14\n")
+            out = bridge.parse_results(run)
+            bridge._pop_entry_channel_fractions(out)
+            self.assertAlmostEqual(out["neutral_dose_fraction"], 0.25, places=12)
+            self.assertAlmostEqual(out["neutron_abs_fraction"], 0.15, places=12)
+            self.assertNotIn("skin_dose_neutral_gy", out)
+            self.assertNotIn("skin_dose_neutron_abs_gy", out)
+            # the produced keys must be RunResult fields
+            import dataclasses
+            fields = {f.name for f in dataclasses.fields(bridge.RunResult)}
+            self.assertLessEqual({"neutral_dose_fraction", "neutron_abs_fraction"}, fields)
+
+    def test_entry_channel_missing_csvs_give_none(self):
+        # older builds without the EntryChannelDose extension write no CSV
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d)
+            (run / "skin_dose.csv").write_text("# h\n0, 4.0e-13\n")
+            out = bridge.parse_results(run)
+            bridge._pop_entry_channel_fractions(out)
+            self.assertIsNone(out["neutral_dose_fraction"])
+            self.assertIsNone(out["neutron_abs_fraction"])
+
 
 class _FakeSpeciesRun:
     """Minimal ConvergedResult stand-in for the dosimetry dose-weighting path."""
@@ -590,6 +629,35 @@ class _FakeSpeciesRun:
         self.skin_doseeq_sv = self.skin_doseeq_nasa_sv = doseeq
         self.phantom_doseeq_sv = self.phantom_doseeq_nasa_sv = doseeq
         self.neutron_doseeq_fraction = frac
+
+
+class TestEntryChannelSplit(unittest.TestCase):
+    """LND-style absorbed split: per-species skin fractions combine weighted by
+    each species' skin absorbed rate."""
+
+    def _run(self, dose, neutral, neutron):
+        r = _FakeSpeciesRun(_dome_spec(), 1.0e-12, None, dose=dose)
+        r.neutral_dose_fraction, r.neutron_abs_fraction = neutral, neutron
+        return r
+
+    def test_absorbed_weighting(self):
+        H = dosimetry.GCR_COMPOSITION[0]
+        sr = [(H, self._run(1.0e-13, 0.6, 0.5)), (H, self._run(3.0e-13, 0.2, 0.1))]
+        a = dosimetry.assess_composition(sr, skin=True)
+        self.assertAlmostEqual(a.neutral_dose_fraction, (0.6 + 3 * 0.2) / 4, places=12)
+        self.assertAlmostEqual(a.neutron_abs_fraction, (0.5 + 3 * 0.1) / 4, places=12)
+
+    def test_missing_split_is_none(self):
+        H = dosimetry.GCR_COMPOSITION[0]
+        a = dosimetry.assess_composition([(H, _FakeSpeciesRun(_dome_spec(), 1.0e-12, 0.3))],
+                                         skin=True)
+        self.assertIsNone(a.neutral_dose_fraction)
+        self.assertIsNone(a.neutron_abs_fraction)
+
+    def test_assess_passes_split_through(self):
+        a = dosimetry.assess(self._run(1.0e-13, 0.22, 0.18), phi_MV=400.0, skin=True)
+        self.assertAlmostEqual(a.neutral_dose_fraction, 0.22, places=12)
+        self.assertAlmostEqual(a.neutron_abs_fraction, 0.18, places=12)
 
 
 class TestNeutronFraction(unittest.TestCase):
@@ -1072,10 +1140,11 @@ class TestRegolithSweep(unittest.TestCase):
         self.rs = rs
 
     def test_areal_density_hand_values(self):
-        # REDMoon column: 22 cm @1.76, 27 cm @2.11, rest @1.78 (below surface).
+        # REDMoon column: 22 cm @1.76, 49 cm @2.11, rest @1.78 (below surface).
         cases = {0.0: 0.0, 0.30: 22 * 1.76 + 8 * 2.11,
-                 0.50: 22 * 1.76 + 27 * 2.11 + 1 * 1.78,
-                 3.00: 22 * 1.76 + 27 * 2.11 + 251 * 1.78}
+                 0.50: 22 * 1.76 + 28 * 2.11,
+                 1.00: 22 * 1.76 + 49 * 2.11 + 29 * 1.78,
+                 3.00: 22 * 1.76 + 49 * 2.11 + 229 * 1.78}
         for depth_m, expect in cases.items():
             _, areal = self.rs.column_for_depth(depth_m * 100)
             self.assertAlmostEqual(areal, expect, places=3, msg=f"depth={depth_m}")
@@ -1119,7 +1188,7 @@ class TestRegolithSweep(unittest.TestCase):
         fe = next(s for s in dosimetry.GCR_COMPOSITION if s[0] == "Fe")
         txt = self.rs.build_param_file(3.0, fe, histories=8, seed=1)
         self.assertIn('BeamParticle = "GenericIon(26,56)"', txt)  # full string, no crash
-        self.assertIn("542.5 g/cm^2", txt)
+        self.assertIn("549.7 g/cm^2", txt)   # 22@1.76 + 49@2.11 + 229@1.78
         # 100 GeV/n ceiling -> top TOTAL energy = 1e5 * A.
         self.assertIn(f"{self.rs.EMAX_PER_NUC_MEV * 56:g} MeV", txt)
         for organ in ("skin", "core"):

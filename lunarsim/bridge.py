@@ -261,6 +261,8 @@ class RunResult:
     skin_doseeq_sv: Optional[float] = None       # inner-wall lining, LET-weighted (ICRP-60 Q)
     skin_doseeq_nasa_sv: Optional[float] = None  # same lining, NASA/Cucinotta Q twin
     neutron_doseeq_fraction: Optional[float] = None  # H_neutron / H_total on the skin lining
+    neutral_dose_fraction: Optional[float] = None    # D_neutral-entry / D_total, skin (LND-style split)
+    neutron_abs_fraction: Optional[float] = None     # D_neutron-entry / D_total, skin
     fluence_inside: Optional[float] = None
     fluence_outside: Optional[float] = None
     log_tail: str = ""
@@ -438,6 +440,18 @@ def _read_scalar_csv(path: Path) -> Optional[float]:
     return None
 
 
+def _pop_entry_channel_fractions(results: dict) -> None:
+    """Turn the EntryChannelDose CSV values into fractions of the PRIMARY CrewSkin
+    absorbed dose (same lining, same run, so normalisation cancels), in place.
+    Must run before _fold_secondary_into_skin, like the neutron dose-eq fraction.
+    Charged share = 1 - neutral_dose_fraction. None when either side is missing."""
+    base = results.get("skin_dose_gy")
+    for key, out in (("skin_dose_neutral_gy", "neutral_dose_fraction"),
+                     ("skin_dose_neutron_abs_gy", "neutron_abs_fraction")):
+        part = results.pop(key, None)
+        results[out] = part / base if (part is not None and base) else None
+
+
 def parse_results(run_dir: Path) -> dict:
     return {
         "dose_gy": _read_scalar_csv(run_dir / "phantom_dose.csv"),
@@ -449,6 +463,10 @@ def parse_results(run_dir: Path) -> dict:
         # neutron-lineage twin of skin_doseeq (same CrewSkin lining); consumed into
         # neutron_doseeq_fraction below and popped before RunResult construction.
         "skin_doseeq_neutron_sv": _read_scalar_csv(run_dir / "skin_doseeq_neutron.csv"),
+        # entry-channel absorbed-dose split of skin_dose (same lining); consumed
+        # into neutral_dose_fraction / neutron_abs_fraction below and popped.
+        "skin_dose_neutral_gy": _read_scalar_csv(run_dir / "skin_dose_neutral.csv"),
+        "skin_dose_neutron_abs_gy": _read_scalar_csv(run_dir / "skin_dose_neutron_abs.csv"),
         "fluence_inside": _read_scalar_csv(run_dir / "fluence_inside.csv"),
         "fluence_outside": _read_scalar_csv(run_dir / "fluence_outside.csv"),
         # Shape-specific secondary linings, folded into skin_* below and popped
@@ -656,6 +674,7 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     _base_eq = results.get("skin_doseeq_sv")
     results["neutron_doseeq_fraction"] = (
         _neu / _base_eq if (_neu is not None and _base_eq) else None)
+    _pop_entry_channel_fractions(results)
     _fold_secondary_into_skin(spec, results)
     log_tail = "\n".join(out_text.splitlines()[-25:])
     result = RunResult(spec=spec, tier=tier, run_dir=run_dir,

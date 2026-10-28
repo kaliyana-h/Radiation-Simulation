@@ -59,8 +59,13 @@ from paper.neutron_lnd_validate import build_spec as lnd_analogue_spec
 LND_TOTAL_UGY_H_SI = 13.2         # +- 1, total absorbed, silicon
 LND_TOTAL_ERR_SI = 1.0
 LND_NEUTRAL_UGY_H_SI = 3.1        # +- 0.5
+LND_NEUTRAL_ERR_SI = 0.5
+LND_CHARGED_UGY_H_SI = 10.2       # +- 1.1
+LND_CHARGED_ERR_SI = 1.1
 SI_TO_WATER = 1.30                # Zhang 2020 constant conversion (CRaTER: 1.33)
 LND_TOTAL_UGY_H_WATER = LND_TOTAL_UGY_H_SI * SI_TO_WATER     # 17.16
+LND_CHARGED_UGY_H_WATER = LND_CHARGED_UGY_H_SI * SI_TO_WATER  # 13.26 -- 1.30 is a charged factor
+LND_NEUTRAL_FRACTION = LND_NEUTRAL_UGY_H_SI / LND_TOTAL_UGY_H_SI  # 0.235, in Si
 LND_QBAR_CHARGED = 4.3            # +- 0.7, charged only, LET in water
 LND_HDOT_CHARGED_USV_H = 57.1     # +- 10.6, charged only, water
 
@@ -120,6 +125,14 @@ def run_point(key: str, args) -> dict:
         "hdot_usv_h": da.equiv_rate_msv_day * 1000.0 / 24.0,
         "annual_msv": da.annual_msv,
         "neutron_fraction": da.neutron_fraction,
+        # LND-style entry-channel split (EntryChannelDose scorer; None on a build
+        # without the extension). Charged share = 1 - neutral.
+        "neutral_dose_fraction": da.neutral_dose_fraction,
+        "neutron_abs_fraction": da.neutron_abs_fraction,
+        "charged_tissue_ugy_h": (None if da.neutral_dose_fraction is None
+                                 else tissue_ugy_h * (1.0 - da.neutral_dose_fraction)),
+        "neutral_tissue_ugy_h": (None if da.neutral_dose_fraction is None
+                                 else tissue_ugy_h * da.neutral_dose_fraction),
         "rel_err": da.rel_err,
         "per_species": {c["species"]: c.get("dose_fraction")
                         for c in (da.contributions or [])},
@@ -178,6 +191,27 @@ def main(argv=None) -> int:
               f"{r['ratio_to_lnd']:>6.2f} {r['qbar']:>6.2f} {_f(r['neutron_fraction'], '6.3f')} "
               f"{r['annual_msv']:>7.0f} {_f(r['rel_err'], '6.3f')}")
 
+    split = [r for r in rows if r.get("ok") and r.get("neutral_dose_fraction") is not None]
+    if split:
+        print(f"\nLND-style charged/neutral split (entry channel; LND charged "
+              f"{LND_CHARGED_UGY_H_SI} +- {LND_CHARGED_ERR_SI} Si x {SI_TO_WATER} = "
+              f"{LND_CHARGED_UGY_H_WATER:.2f} water, neutral {LND_NEUTRAL_UGY_H_SI} +- "
+              f"{LND_NEUTRAL_ERR_SI} Si = {LND_NEUTRAL_FRACTION:.3f} of total):")
+        print(f"{'point':>6} {'charged':>8} {'/LND':>6} {'neutral':>8} {'/LND-Si':>8} "
+              f"{'f_neutral':>9} {'f_n,abs':>8}")
+        for r in split:
+            ch, nt = r["charged_tissue_ugy_h"], r["neutral_tissue_ugy_h"]
+            print(f"{r['point']:>6} {ch:>8.2f} {ch / LND_CHARGED_UGY_H_WATER:>6.2f} "
+                  f"{nt:>8.2f} {nt / LND_NEUTRAL_UGY_H_SI:>8.2f} "
+                  f"{r['neutral_dose_fraction']:>9.3f} {_f(r['neutron_abs_fraction'], '8.3f')}")
+        print("  charged is compared in water (LND's 1.30 is a charged-particle factor);"
+              " neutral is tissue vs LND SILICON -- no agreed Si->tissue factor for"
+              " neutrals (H-rich tissue reads neutrons HIGHER), so read /LND-Si as an"
+              " upper-side ratio. Zhang 2020 call LND's neutral 'remarkably high'"
+              " (lander/RHU secondaries the tool does not model).")
+    elif any(r.get("ok") for r in rows):
+        print("\n(no charged/neutral split: build lacks the EntryChannelDose extension)")
+
     lo, hi = CONSISTENT_BAND
     print(f"\nPOST-HOC reading (band {lo}-{hi} on tissue/LND-water, see BASIS):")
     for r in rows:
@@ -198,6 +232,8 @@ def main(argv=None) -> int:
     out.write_text(json.dumps({"model": model, "cal": D.OUTER_GAUGE_ANCHOR_CAL,
                                "phi_mv": FULL_RUN.phi_mv,
                                "lnd_water_ugy_h": LND_TOTAL_UGY_H_WATER,
+                               "lnd_charged_water_ugy_h": LND_CHARGED_UGY_H_WATER,
+                               "lnd_neutral_si_ugy_h": LND_NEUTRAL_UGY_H_SI,
                                "rows": rows}, indent=2))
     print(f"\nwrote {out}")
     return 0
