@@ -368,7 +368,7 @@ def set_lis_form(form: str) -> None:
 
 
 # ----------------------------------------------------------------------
-# Per-element GCR LIS model -- opt-in (see make_source.GCR_PERELEMENT)
+# Per-element GCR LIS model -- default 'perelement' (see make_source.GCR_PERELEMENT)
 # ----------------------------------------------------------------------
 # The shipped baseline represents every non-proton species with the proton LIS
 # shape scaled per nucleon and modulated by Phi=(Z/A)*phi (the "proton-clone"
@@ -385,7 +385,10 @@ def set_lis_form(form: str) -> None:
 # integral and its absolute calibration recompute together; make_source reads the
 # env var once at import and subprocesses inherit os.environ, so the sampled beam
 # spectrum and the flux normalization cannot drift apart.
-PERELEMENT_MODEL = os.environ.get("LUNARSIM_GCR_PERELEMENT", "none")
+# Default "perelement" (since 2026-10-28; was "none"): the CLI now runs the same
+# validated Matthiae model the GUI service sets. "none" stays selectable as the
+# explicit legacy option. Must match make_source.GCR_PERELEMENT's default.
+PERELEMENT_MODEL = os.environ.get("LUNARSIM_GCR_PERELEMENT", "perelement")
 # "perelement": each GCR species is a single element carried individually (the
 # 10-ion set H/He/C/N/O/Ne/Mg/Si/Ca/Fe), with its own single-element Matthiae
 # spectrum AND its own Geant4 fragmentation. Unlike "matthia2013" this is NOT a

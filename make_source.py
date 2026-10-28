@@ -131,7 +131,7 @@ GCR_LIS_VAR = os.environ.get("LUNARSIM_GCR_LIS", "rigidity")
 
 # Per-element GCR LIS model selector -- the thin-wall <Q> over-read fix.
 #
-#   "none"        (default, shipped baseline): every species borrows the proton
+#   "none"        (legacy baseline, default until 2026-10-28): every species borrows the proton
 #                 LIS shape scaled per nucleon with species modulation
 #                 Phi=(Z/A)*phi (the "proton-clone" ansatz). Byte-for-byte the
 #                 validated behaviour. lis_proton + gcr_spectrum(shape=...) as before.
@@ -162,7 +162,10 @@ GCR_LIS_VAR = os.environ.get("LUNARSIM_GCR_LIS", "rigidity")
 # as GCR_LIS_VAR). The proton ABSOLUTE calibration is untouched: dosimetry pins
 # H to the reference flux, and the per-element structure comes from the model's
 # own coefficients.
-GCR_PERELEMENT = os.environ.get("LUNARSIM_GCR_PERELEMENT", "none")
+# Default "perelement" (since 2026-10-28; was "none") -- must match
+# dosimetry.PERELEMENT_MODEL's default, or a subprocess launched without the env
+# would sample a different spectrum than the parent normalises.
+GCR_PERELEMENT = os.environ.get("LUNARSIM_GCR_PERELEMENT", "perelement")
 
 
 # --------------------------------------------------------------------------
