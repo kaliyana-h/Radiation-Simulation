@@ -37,8 +37,16 @@ Other known differences: LND sits inside the lander payload compartment (extra
 local mass + structure neutrons the tool does not model) and measured
 Jan-Feb 2019 near phi ~400 MV; the tool's ceiling is 20 GeV/n (~-7.6% surface).
 
-Usage (repo root ~/topas, PC, TOPAS_G4_DATA_DIR set, inside tmux):
-    export LUNARSIM_GCR_PERELEMENT=perelement
+GATE (2026-10-29). When the build has the EntryChannelDose scorer, the verdict is
+read on the CHARGED channel: tool charged (water) vs LND charged 10.2 +- 1.1 Si x
+1.30, in sigma units combining LND's +-10.8% with the run's rel_err. The neutral
+channel is not a valid gate -- it depends on lining-to-regolith geometry (the
+neutron-fraction radius sweep) and LND's neutral includes lander/RHU secondaries
+the tool does not model -- so the TOTAL band below is printed for context only.
+Without the scorer, the total band is the verdict as before.
+
+Usage (repo root ~/topas, PC, TOPAS_G4_DATA_DIR set, inside tmux; the per-element
+model is the default since 2026-10-28, no export needed):
     python3 -u -m paper.lnd_absolute_recheck
     python3 -u -m paper.lnd_absolute_recheck --points lnd --max-batches 12
 """
@@ -73,6 +81,10 @@ LND_HDOT_CHARGED_USV_H = 57.1     # +- 10.6, charged only, water
 # combined with the charged-only Si->water factor applied to a total that is
 # ~23% neutral.
 CONSISTENT_BAND = (0.85, 1.20)
+# Charged-channel gate: |z| <= CHARGED_SIGMA_OK is consistent, where z is the
+# charged ratio's distance from 1 in combined sigma (LND +-10.8%, MC rel_err).
+LND_CHARGED_REL_ERR = LND_CHARGED_ERR_SI / LND_CHARGED_UGY_H_SI
+CHARGED_SIGMA_OK = 2.0
 
 
 def jul22_spec() -> HabitatSpec:
@@ -147,6 +159,20 @@ def _f(x, fmt):
     return format(x, fmt) if x is not None else "n/a"
 
 
+def charged_z(row: dict):
+    """(ratio, sigma, z) of the tool's charged dose vs LND charged (water), or
+    None without the split. sigma propagates LND's relative error and the run's
+    rel_err onto the ratio; the total dose's rel_err stands in for the charged
+    channel's, which carries ~75-90% of it."""
+    ch = row.get("charged_tissue_ugy_h")
+    if ch is None:
+        return None
+    ratio = ch / LND_CHARGED_UGY_H_WATER
+    mc = row.get("rel_err") or 0.0
+    sigma = ratio * (LND_CHARGED_REL_ERR ** 2 + mc ** 2) ** 0.5
+    return ratio, sigma, (ratio - 1.0) / sigma
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -172,7 +198,7 @@ def main(argv=None) -> int:
     print(f"LUNARSIM_GCR_PERELEMENT = {model}   (flood runs {D.flood_model_for(model)})")
     if model == "none":
         print("WARNING: 'none' = legacy 2.0 pin + hand-set heavies, NOT the new basis.\n"
-              "         export LUNARSIM_GCR_PERELEMENT=perelement and re-run.")
+              "         unset LUNARSIM_GCR_PERELEMENT (default perelement) and re-run.")
     print(f"CAL = {D.OUTER_GAUGE_ANCHOR_CAL:.5f} (not re-fit)   phi = {FULL_RUN.phi_mv:g} MV")
     print(f"LND total {LND_TOTAL_UGY_H_SI} +- {LND_TOTAL_ERR_SI} uGy/h Si x {SI_TO_WATER} "
           f"= {LND_TOTAL_UGY_H_WATER:.2f} uGy/h water  (post-hoc reference)")
@@ -213,7 +239,21 @@ def main(argv=None) -> int:
         print("\n(no charged/neutral split: build lacks the EntryChannelDose extension)")
 
     lo, hi = CONSISTENT_BAND
-    print(f"\nPOST-HOC reading (band {lo}-{hi} on tissue/LND-water, see BASIS):")
+    if split:
+        print(f"\nPOST-HOC verdict on the CHARGED channel (|z| <= {CHARGED_SIGMA_OK:g} "
+              f"consistent; LND +-{LND_CHARGED_REL_ERR:.1%} with run rel_err, see GATE):")
+        for r in split:
+            ratio, sigma, z = charged_z(r)
+            v = ("CONSISTENT" if abs(z) <= CHARGED_SIGMA_OK else
+                 "LOW -- tension (do NOT re-fit CAL)" if z < 0 else
+                 "HIGH -- tension (do NOT re-fit CAL)")
+            r["charged_ratio"], r["charged_sigma"], r["charged_z"] = ratio, sigma, z
+            print(f"  [{r['point']}] charged {ratio:.2f} +- {sigma:.2f} x LND "
+                  f"(z = {z:+.1f})  -> {v}")
+        print(f"  context only -- TOTAL tissue/LND-water vs band {lo}-{hi} (neutral "
+              "channel is geometry/lander dependent, not a gate):")
+    else:
+        print(f"\nPOST-HOC reading (band {lo}-{hi} on tissue/LND-water, see BASIS):")
     for r in rows:
         if not r.get("ok"):
             continue
