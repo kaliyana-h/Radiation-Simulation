@@ -507,6 +507,11 @@ class DoseAssessment:
     # for the kernel path.
     neutral_dose_fraction: Optional[float] = None
     neutron_abs_fraction: Optional[float] = None
+    # Harness-only thin Si detector on the same wall face (LUNARSIM_SI_DETECTOR_UM):
+    # D_Si / D_skin and its charged-entry part, so dose-to-silicon = skin absorbed
+    # rate x ratio, comparable with Si instruments with no conversion factor.
+    si_to_skin_ratio: Optional[float] = None
+    si_charged_to_skin_ratio: Optional[float] = None
     regime: Optional[str] = None            # None=flood MC path; "thinwall"=phantom-matched kernel fold
 
     # ---- absorbed dose ----
@@ -614,6 +619,8 @@ def assess(result: RunResult,
         neutron_fraction=getattr(result, "neutron_doseeq_fraction", None),
         neutral_dose_fraction=getattr(result, "neutral_dose_fraction", None),
         neutron_abs_fraction=getattr(result, "neutron_abs_fraction", None),
+        si_to_skin_ratio=getattr(result, "si_to_skin_ratio", None),
+        si_charged_to_skin_ratio=getattr(result, "si_charged_to_skin_ratio", None),
     )
 
 
@@ -645,8 +652,10 @@ def assess_composition(species_results: list,
     # entry-channel split: per-species skin fractions weighted by that species'
     # SKIN absorbed rate (the basis the fraction was measured on, whichever
     # target `skin` selects for the headline)
-    split_num = {"neutral_dose_fraction": 0.0, "neutron_abs_fraction": 0.0}
-    split_den = {"neutral_dose_fraction": 0.0, "neutron_abs_fraction": 0.0}
+    # (the thin-Si ratios are also relative to skin dose, so they weight the same way)
+    split_num = {"neutral_dose_fraction": 0.0, "neutron_abs_fraction": 0.0,
+                 "si_to_skin_ratio": 0.0, "si_charged_to_skin_ratio": 0.0}
+    split_den = dict.fromkeys(split_num, 0.0)
     total_flux = 0.0
     var = 0.0                # sum of (rate_i * relerr_i)^2  for combined error
     have_doseeq = True       # both targets carry a dose-eq scorer; cleared if any species lacks it

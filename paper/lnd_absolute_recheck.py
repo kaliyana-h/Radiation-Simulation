@@ -26,12 +26,22 @@ BASIS (read before judging). Zhang et al. 2020 (Sci. Adv. 6 eaaz1334) report
 13.2 +- 1 uGy/h TOTAL absorbed in SILICON (charged 10.2, neutral 3.1), and convert
 Si -> water with a constant factor 1.30 (CRaTER uses 1.33). Their <Q> = 4.3 and
 the headline 1369 uSv/day (= 57.1 uSv/h) are CHARGED-ONLY and WATER-referenced
-(10.2 x 1.30 x 4.3). The tool scores TOTAL absorbed dose in a TISSUE lining, so
-the like-for-like comparand is 13.2 x 1.30 = 17.2 uGy/h water (0.41 mGy/d).
-The constant 1.30 is a charged-particle factor; the neutral share converts
-differently (hydrogen makes tissue more neutron-sensitive), so a tool/LND ratio
-of ~1.0-1.15 is consistent, not an over-read. (The 2026-07-20 anchor divided by
-1.5, which overstated the agreement; with 1.30 its 19.79 uGy/h tissue was 1.15x.)
+(10.2 x 1.30 x 4.3). The tool scores absorbed dose in a TISSUE lining, so LND
+must be moved to water -- and the factor is spectrum-dependent. Since 2026-10-30
+the harness uses the tool's OWN factor, SI_TO_WATER = 1.227 at phi 400: Bethe
+mass stopping power folded over the tool's input spectrum (paper.si_water_factor;
+target-blind, no dose value enters). Matthiae & Berger 2024 (Space Weather 22
+e2024SW004095) model-compute 1.21 for the same field, so Zhang's 1.30 overstates
+the water comparand by ~6% and is printed for reference only. The factor is a
+charged-particle one; the neutral share converts differently (hydrogen makes
+tissue more neutron-sensitive). (The 2026-07-20 anchor divided by 1.5, which
+overstated the agreement.)
+
+SILICON DETECTOR (--si-detector UM, 2026-10-30). Removes the conversion entirely:
+a thin G4_Si shell (300 um ~ LND / M&B 2024) on the inner wall face, scored with
+DoseToMedium + EntryChannelDose "Charged", so the tool's charged dose-to-SILICON
+compares with LND's 10.2 directly. The lining moves inward by the detector
+thickness (negligible). Harness-only, via LUNARSIM_SI_DETECTOR_UM (dome only).
 
 Other known differences: LND sits inside the lander payload compartment (extra
 local mass + structure neutrons the tool does not model) and measured
@@ -39,7 +49,8 @@ Jan-Feb 2019 near phi ~400 MV; the tool's ceiling is 20 GeV/n (~-7.6% surface).
 
 GATE (2026-10-29). When the build has the EntryChannelDose scorer, the verdict is
 read on the CHARGED channel: tool charged (water) vs LND charged 10.2 +- 1.1 Si x
-1.30, in sigma units combining LND's +-10.8% with the run's rel_err. The neutral
+SI_TO_WATER -- or, with the Si detector, tool charged Si vs 10.2 directly -- in
+sigma units combining LND's +-10.8% with the run's rel_err. The neutral
 channel is not a valid gate -- it depends on lining-to-regolith geometry (the
 neutron-fraction radius sweep) and LND's neutral includes lander/RHU secondaries
 the tool does not model -- so the TOTAL band below is printed for context only.
@@ -49,9 +60,11 @@ Usage (repo root ~/topas, PC, TOPAS_G4_DATA_DIR set, inside tmux; the per-elemen
 model is the default since 2026-10-28, no export needed):
     python3 -u -m paper.lnd_absolute_recheck
     python3 -u -m paper.lnd_absolute_recheck --points lnd --max-batches 12
+    python3 -u -m paper.lnd_absolute_recheck --points bare3m --si-detector 300
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -59,7 +72,9 @@ from lunarsim.spec import HabitatSpec, WallLayer
 from lunarsim import jobs
 from lunarsim.bridge import FULL_RUN
 from lunarsim import dosimetry as D
+from lunarsim import geometry as G
 from paper.neutron_lnd_validate import build_spec as lnd_analogue_spec
+from paper.si_water_factor import si_to_water_factor
 
 # ---------------------------------------------------------------------------
 # POST-HOC references, Zhang et al. 2020 Sci. Adv. 6 eaaz1334 (never fit targets)
@@ -70,9 +85,12 @@ LND_NEUTRAL_UGY_H_SI = 3.1        # +- 0.5
 LND_NEUTRAL_ERR_SI = 0.5
 LND_CHARGED_UGY_H_SI = 10.2       # +- 1.1
 LND_CHARGED_ERR_SI = 1.1
-SI_TO_WATER = 1.30                # Zhang 2020 constant conversion (CRaTER: 1.33)
-LND_TOTAL_UGY_H_WATER = LND_TOTAL_UGY_H_SI * SI_TO_WATER     # 17.16
-LND_CHARGED_UGY_H_WATER = LND_CHARGED_UGY_H_SI * SI_TO_WATER  # 13.26 -- 1.30 is a charged factor
+# Si -> water: the tool's own spectrum-folded factor (see BASIS), not a fit.
+SI_TO_WATER = si_to_water_factor(FULL_RUN.phi_mv)            # 1.227 at phi 400
+SI_TO_WATER_ZHANG = 1.30          # Zhang 2020 constant (CRaTER: 1.33) -- reference only
+SI_TO_WATER_MB2024 = 1.21         # Matthiae & Berger 2024 model-computed, charged
+LND_TOTAL_UGY_H_WATER = LND_TOTAL_UGY_H_SI * SI_TO_WATER     # 16.2 (17.16 with 1.30)
+LND_CHARGED_UGY_H_WATER = LND_CHARGED_UGY_H_SI * SI_TO_WATER  # 12.5 (13.26 with 1.30)
 LND_NEUTRAL_FRACTION = LND_NEUTRAL_UGY_H_SI / LND_TOTAL_UGY_H_SI  # 0.235, in Si
 LND_QBAR_CHARGED = 4.3            # +- 0.7, charged only, LET in water
 LND_HDOT_CHARGED_USV_H = 57.1     # +- 10.6, charged only, water
@@ -141,6 +159,11 @@ def run_point(key: str, args) -> dict:
         # without the extension). Charged share = 1 - neutral.
         "neutral_dose_fraction": da.neutral_dose_fraction,
         "neutron_abs_fraction": da.neutron_abs_fraction,
+        # thin Si detector (--si-detector): dose to SILICON, no conversion factor
+        "si_ugy_h": (None if da.si_to_skin_ratio is None
+                     else tissue_ugy_h * da.si_to_skin_ratio),
+        "si_charged_ugy_h": (None if da.si_charged_to_skin_ratio is None
+                             else tissue_ugy_h * da.si_charged_to_skin_ratio),
         "charged_tissue_ugy_h": (None if da.neutral_dose_fraction is None
                                  else tissue_ugy_h * (1.0 - da.neutral_dose_fraction)),
         "neutral_tissue_ugy_h": (None if da.neutral_dose_fraction is None
@@ -152,6 +175,9 @@ def run_point(key: str, args) -> dict:
     print(f"     skin {tissue_ugy_h:.2f} uGy/h tissue (= {row['skin_si_equiv_ugy_h']:.2f} Si-equiv), "
           f"Q-bar {da.quality_factor:.2f}, rel_err "
           f"{'n/a' if da.rel_err is None else f'{da.rel_err:.3f}'}", flush=True)
+    if row["si_ugy_h"] is not None:
+        print(f"     Si detector {row['si_ugy_h']:.2f} uGy/h Si "
+              f"(charged {_f(row['si_charged_ugy_h'], '.2f')})", flush=True)
     return row
 
 
@@ -159,15 +185,17 @@ def _f(x, fmt):
     return format(x, fmt) if x is not None else "n/a"
 
 
-def charged_z(row: dict):
-    """(ratio, sigma, z) of the tool's charged dose vs LND charged (water), or
-    None without the split. sigma propagates LND's relative error and the run's
-    rel_err onto the ratio; the total dose's rel_err stands in for the charged
-    channel's, which carries ~75-90% of it."""
-    ch = row.get("charged_tissue_ugy_h")
+def charged_z(row: dict, silicon: bool = False):
+    """(ratio, sigma, z) of the tool's charged dose vs LND charged, or None
+    without the split: water lining vs LND x SI_TO_WATER, or (silicon=True) the
+    thin Si detector vs LND's 10.2 Si directly. sigma propagates LND's relative
+    error and the run's rel_err onto the ratio; the total skin dose's rel_err
+    stands in for the charged channel's, which carries ~75-90% of it (the thin
+    detector's own scatter is larger -- read its z as optimistic)."""
+    ch = row.get("si_charged_ugy_h" if silicon else "charged_tissue_ugy_h")
     if ch is None:
         return None
-    ratio = ch / LND_CHARGED_UGY_H_WATER
+    ratio = ch / (LND_CHARGED_UGY_H_SI if silicon else LND_CHARGED_UGY_H_WATER)
     mc = row.get("rel_err") or 0.0
     sigma = ratio * (LND_CHARGED_REL_ERR ** 2 + mc ** 2) ** 0.5
     return ratio, sigma, (ratio - 1.0) / sigma
@@ -183,8 +211,15 @@ def main(argv=None) -> int:
     ap.add_argument("--min-batches", type=int, default=2)
     ap.add_argument("--max-batches", type=int, default=10,
                     help="the R=30 cm lining is small and converges slowly (default 10)")
+    ap.add_argument("--si-detector", type=float, default=0.0, metavar="UM",
+                    help="add a thin Si detector of UM micrometres (e.g. 300) on the "
+                         "inner wall face and compare its charged dose with LND in Si "
+                         "directly (dome points; default off)")
     ap.add_argument("--out", default="runs/lnd_recheck/lnd_recheck.json")
     args = ap.parse_args(argv)
+    if args.si_detector:
+        os.environ[G.SI_DETECTOR_ENV] = f"{args.si_detector:g}"
+        G.si_detector_um()        # validate the range before any run starts
 
     keys = [k.strip() for k in args.points.split(",") if k.strip()]
     bad = [k for k in keys if k not in POINTS]
@@ -200,8 +235,14 @@ def main(argv=None) -> int:
         print("WARNING: 'none' = legacy 2.0 pin + hand-set heavies, NOT the new basis.\n"
               "         unset LUNARSIM_GCR_PERELEMENT (default perelement) and re-run.")
     print(f"CAL = {D.OUTER_GAUGE_ANCHOR_CAL:.5f} (not re-fit)   phi = {FULL_RUN.phi_mv:g} MV")
-    print(f"LND total {LND_TOTAL_UGY_H_SI} +- {LND_TOTAL_ERR_SI} uGy/h Si x {SI_TO_WATER} "
-          f"= {LND_TOTAL_UGY_H_WATER:.2f} uGy/h water  (post-hoc reference)")
+    print(f"Si->water {SI_TO_WATER:.3f} (tool spectrum, paper.si_water_factor; Zhang "
+          f"constant {SI_TO_WATER_ZHANG}, M&B 2024 model {SI_TO_WATER_MB2024})")
+    print(f"LND total {LND_TOTAL_UGY_H_SI} +- {LND_TOTAL_ERR_SI} uGy/h Si x {SI_TO_WATER:.3f} "
+          f"= {LND_TOTAL_UGY_H_WATER:.2f} uGy/h water  (post-hoc reference; "
+          f"{LND_TOTAL_UGY_H_SI * SI_TO_WATER_ZHANG:.2f} with 1.30)")
+    if args.si_detector:
+        print(f"thin Si detector {args.si_detector:g} um on the inner wall face "
+              f"({G.SI_DETECTOR_ENV})")
 
     rows = [run_point(k, args) for k in keys]
 
@@ -220,7 +261,7 @@ def main(argv=None) -> int:
     split = [r for r in rows if r.get("ok") and r.get("neutral_dose_fraction") is not None]
     if split:
         print(f"\nLND-style charged/neutral split (entry channel; LND charged "
-              f"{LND_CHARGED_UGY_H_SI} +- {LND_CHARGED_ERR_SI} Si x {SI_TO_WATER} = "
+              f"{LND_CHARGED_UGY_H_SI} +- {LND_CHARGED_ERR_SI} Si x {SI_TO_WATER:.3f} = "
               f"{LND_CHARGED_UGY_H_WATER:.2f} water, neutral {LND_NEUTRAL_UGY_H_SI} +- "
               f"{LND_NEUTRAL_ERR_SI} Si = {LND_NEUTRAL_FRACTION:.3f} of total):")
         print(f"{'point':>6} {'charged':>8} {'/LND':>6} {'neutral':>8} {'/LND-Si':>8} "
@@ -230,7 +271,7 @@ def main(argv=None) -> int:
             print(f"{r['point']:>6} {ch:>8.2f} {ch / LND_CHARGED_UGY_H_WATER:>6.2f} "
                   f"{nt:>8.2f} {nt / LND_NEUTRAL_UGY_H_SI:>8.2f} "
                   f"{r['neutral_dose_fraction']:>9.3f} {_f(r['neutron_abs_fraction'], '8.3f')}")
-        print("  charged is compared in water (LND's 1.30 is a charged-particle factor);"
+        print("  charged is compared in water (the Si->water factor is a charged one);"
               " neutral is tissue vs LND SILICON -- no agreed Si->tissue factor for"
               " neutrals (H-rich tissue reads neutrons HIGHER), so read /LND-Si as an"
               " upper-side ratio. Zhang 2020 call LND's neutral 'remarkably high'"
@@ -250,6 +291,19 @@ def main(argv=None) -> int:
             r["charged_ratio"], r["charged_sigma"], r["charged_z"] = ratio, sigma, z
             print(f"  [{r['point']}] charged {ratio:.2f} +- {sigma:.2f} x LND "
                   f"(z = {z:+.1f})  -> {v}")
+        si_rows = [r for r in split if r.get("si_charged_ugy_h") is not None]
+        if si_rows:
+            print(f"  thin Si detector, charged dose to SILICON vs LND {LND_CHARGED_UGY_H_SI}"
+                  " Si (no conversion factor):")
+        for r in si_rows:
+            ratio, sigma, z = charged_z(r, silicon=True)
+            v = ("CONSISTENT" if abs(z) <= CHARGED_SIGMA_OK else
+                 "LOW -- tension (do NOT re-fit CAL)" if z < 0 else
+                 "HIGH -- tension (do NOT re-fit CAL)")
+            r["si_charged_ratio"], r["si_charged_sigma"], r["si_charged_z"] = ratio, sigma, z
+            print(f"  [{r['point']}] Si charged {r['si_charged_ugy_h']:.2f} uGy/h = "
+                  f"{ratio:.2f} +- {sigma:.2f} x LND (z = {z:+.1f})  -> {v}; "
+                  f"implied Si->water {r['charged_tissue_ugy_h'] / r['si_charged_ugy_h']:.3f}")
         print(f"  context only -- TOTAL tissue/LND-water vs band {lo}-{hi} (neutral "
               "channel is geometry/lander dependent, not a gate):")
     else:
@@ -264,13 +318,16 @@ def main(argv=None) -> int:
         print(f"  [{r['point']}] {x:.2f}x LND  -> {v}")
     print(f"  Q-bar is total (incl. neutrons) vs LND charged-only {LND_QBAR_CHARGED} +- 0.7:"
           " context, not a gate.")
-    print("  Primary comparand is [lnd] (near-bare, lining at the regolith); [jul22]"
-          " is continuity with the 2026-07-20 anchor.")
+    print("  Trusted absolute comparand is [bare3m] (near-bare wall, 3 m lining samples"
+          " the heavy-ion tail); [lnd]'s R=30 cm lining is valid for ratios only;"
+          " [jul22] is continuity with the 2026-07-20 anchor.")
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"model": model, "cal": D.OUTER_GAUGE_ANCHOR_CAL,
                                "phi_mv": FULL_RUN.phi_mv,
+                               "si_to_water": SI_TO_WATER,
+                               "si_detector_um": args.si_detector,
                                "lnd_water_ugy_h": LND_TOTAL_UGY_H_WATER,
                                "lnd_charged_water_ugy_h": LND_CHARGED_UGY_H_WATER,
                                "lnd_neutral_si_ugy_h": LND_NEUTRAL_UGY_H_SI,

@@ -619,6 +619,78 @@ class TestCsvParsing(unittest.TestCase):
             self.assertIsNone(out["neutron_abs_fraction"])
 
 
+class TestSiDetector(unittest.TestCase):
+    """Harness-only thin Si detector: off by default (production geometry and
+    scorers unchanged); on, it takes the wall face and its doses come back as
+    ratios to the skin dose."""
+
+    def setUp(self):
+        self._saved = os.environ.pop(geometry.SI_DETECTOR_ENV, None)
+
+    def tearDown(self):
+        os.environ.pop(geometry.SI_DETECTOR_ENV, None)
+        if self._saved is not None:
+            os.environ[geometry.SI_DETECTOR_ENV] = self._saved
+
+    def test_off_by_default(self):
+        spec = _dome_spec()
+        self.assertEqual(geometry.si_detector_um(), 0.0)
+        self.assertNotIn("SiDetector", geometry.build_geometry(spec))
+        self.assertNotIn("SiDetector", geometry.build_scorers(spec))
+        self.assertIn("d:Ge/CrewSkin/RMax         = 300.000 cm", geometry.build_geometry(spec))
+
+    def test_on_places_si_at_wall_face(self):
+        os.environ[geometry.SI_DETECTOR_ENV] = "300"
+        spec = _dome_spec()
+        geo = geometry.build_geometry(spec)
+        self.assertIn('s:Ge/SiDetector/Material     = "G4_Si"', geo)
+        self.assertIn("d:Ge/SiDetector/RMin         = 299.970 cm", geo)
+        self.assertIn("d:Ge/SiDetector/RMax         = 300.000 cm", geo)
+        self.assertIn("d:Ge/CrewSkin/RMin         = 297.970 cm", geo)
+        self.assertIn("d:Ge/CrewSkin/RMax         = 299.970 cm", geo)
+        sc = geometry.build_scorers(spec)
+        self.assertIn('s:Sc/SiDose/Component  = "SiDetector"', sc)
+        self.assertIn('s:Sc/SiDoseCharged/Channel    = "Charged"', sc)
+
+    def test_non_dome_gets_no_si_scorer(self):
+        os.environ[geometry.SI_DETECTOR_ENV] = "300"
+        self.assertNotIn("SiDetector", geometry.build_scorers(_buried_spec()))
+
+    def test_bad_value_raises(self):
+        os.environ[geometry.SI_DETECTOR_ENV] = "-5"
+        with self.assertRaises(ValueError):
+            geometry.si_detector_um()
+
+    def test_si_csvs_become_skin_ratios(self):
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d)
+            (run / "skin_dose.csv").write_text("# h\n0, 4.0e-13\n")
+            (run / "si_dose.csv").write_text("# h\n0, 3.2e-13\n")
+            (run / "si_dose_charged.csv").write_text("# h\n0, 3.0e-13\n")
+            out = bridge.parse_results(run)
+            bridge._pop_entry_channel_fractions(out)
+            self.assertAlmostEqual(out["si_to_skin_ratio"], 0.8, places=12)
+            self.assertAlmostEqual(out["si_charged_to_skin_ratio"], 0.75, places=12)
+            self.assertNotIn("si_dose_gy", out)
+            import dataclasses
+            from lunarsim import jobs
+            for cls in (bridge.RunResult, jobs.ConvergedResult, dosimetry.DoseAssessment):
+                fields = {f.name for f in dataclasses.fields(cls)}
+                self.assertLessEqual({"si_to_skin_ratio", "si_charged_to_skin_ratio"},
+                                     fields, cls.__name__)
+
+    def test_assess_composition_weights_si_ratio(self):
+        H = dosimetry.GCR_COMPOSITION[0]
+        runs = []
+        for dose, ratio in ((1.0e-13, 0.9), (3.0e-13, 0.7)):
+            r = _FakeSpeciesRun(_dome_spec(), 1.0e-12, None, dose=dose)
+            r.si_to_skin_ratio = ratio
+            runs.append((H, r))
+        a = dosimetry.assess_composition(runs, skin=True)
+        self.assertAlmostEqual(a.si_to_skin_ratio, (0.9 + 3 * 0.7) / 4, places=12)
+        self.assertIsNone(a.si_charged_to_skin_ratio)
+
+
 class _FakeSpeciesRun:
     """Minimal ConvergedResult stand-in for the dosimetry dose-weighting path."""
     def __init__(self, spec, doseeq, frac, dose=1.0e-13, fout=1.0, relerr=0.05):

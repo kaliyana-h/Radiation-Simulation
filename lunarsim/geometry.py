@@ -11,9 +11,31 @@ vs out; a 20 cm water sphere at crew height scores DoseToMedium.
 from __future__ import annotations
 
 import math
+import os
 
 from .spec import (HabitatSpec, MATERIALS, regolith_layer_materials,
                    wall_topas_material)
+
+
+# Harness-only thin SILICON detector (dome only), for comparing against Si
+# instruments (Chang'E-4 LND, CRaTER) in their own medium with no Si->water
+# factor. Thickness in micrometres; unset / 0 = off, and the production geometry
+# and scorers are byte-identical. When on, the Si shell sits directly on the inner
+# wall face and the CrewSkin lining moves inward by the same thickness, so the
+# detector sees the wall-transmitted field with no water in front of it. See
+# paper/lnd_absolute_recheck.py --si-detector.
+SI_DETECTOR_ENV = "LUNARSIM_SI_DETECTOR_UM"
+
+
+def si_detector_um() -> float:
+    """Thin Si detector thickness (um) from LUNARSIM_SI_DETECTOR_UM; 0.0 = off."""
+    raw = os.environ.get(SI_DETECTOR_ENV, "").strip()
+    if not raw:
+        return 0.0
+    um = float(raw)
+    if not 0.0 <= um <= 5000.0:
+        raise ValueError(f"{SI_DETECTOR_ENV}={raw!r}: expected 0-5000 um")
+    return um
 
 
 # Standoff (cm) between an oversized habitat's enclosing radius and the outer gauge.
@@ -205,9 +227,17 @@ def _dome(spec: HabitatSpec) -> tuple[str, list[str]]:
     # giving a habitat-wide dose with far better statistics (much larger target).
     # Same material as the phantom (water) so the two dose numbers differ only by
     # geometry / self-shielding, not tissue model. Touches the wall at r=inner.
+    # The optional thin Si detector (si_detector_um) takes the wall face and the
+    # lining moves inward by its thickness; t = 0 leaves the lining untouched.
+    t_si = si_detector_um() * 1.0e-4
+    if t_si:
+        lines.append(f"# harness-only thin silicon detector ({t_si * 1e4:g} um)")
+        lines.append(_sphere_shell("SiDetector", "World", "G4_Si",
+                                   inner - t_si, inner, "yellow", style="Wireframe"))
     lines.append("# holistic crew-dose shell (tissue-equivalent inner-wall lining)")
     lines.append(_sphere_shell("CrewSkin", "World", "G4_WATER",
-                               inner - 2.0, inner, "blue", style="Wireframe"))
+                               inner - 2.0 - t_si, inner - t_si, "blue",
+                               style="Wireframe"))
 
     # crew phantom at standing trunk height (fixed, not scaled with the dome)
     lines.append("# tissue-equivalent crew phantom")
@@ -586,6 +616,24 @@ s:Sc/SkinDoseNeutronAbs/Component  = "CrewSkin"
 s:Sc/SkinDoseNeutronAbs/Channel    = "Neutron"
 s:Sc/SkinDoseNeutronAbs/OutputFile = "skin_dose_neutron_abs"
 s:Sc/SkinDoseNeutronAbs/IfOutputFileAlreadyExists = "Overwrite"
+"""
+
+    # Harness-only thin Si detector (see si_detector_um): absorbed dose to SILICON
+    # (DoseToMedium scores in the component's own material) plus its charged-entry
+    # share, the LND "charged" channel. Read back as ratios to skin_dose, so the
+    # run normalisation cancels exactly as for the entry-channel split.
+    if spec.shape == "dome" and si_detector_um():
+        scorers += """
+s:Sc/SiDose/Quantity   = "DoseToMedium"
+s:Sc/SiDose/Component  = "SiDetector"
+s:Sc/SiDose/OutputFile = "si_dose"
+s:Sc/SiDose/IfOutputFileAlreadyExists = "Overwrite"
+
+s:Sc/SiDoseCharged/Quantity   = "EntryChannelDose"
+s:Sc/SiDoseCharged/Component  = "SiDetector"
+s:Sc/SiDoseCharged/Channel    = "Charged"
+s:Sc/SiDoseCharged/OutputFile = "si_dose_charged"
+s:Sc/SiDoseCharged/IfOutputFileAlreadyExists = "Overwrite"
 """
 
     # Shape-specific secondary linings, folded into the reported skin dose by

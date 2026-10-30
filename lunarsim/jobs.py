@@ -53,6 +53,8 @@ class ConvergedResult:
     neutron_doseeq_fraction: Optional[float] = None  # H_neutron / H_total on the skin lining
     neutral_dose_fraction: Optional[float] = None    # D_neutral-entry / D_total, skin
     neutron_abs_fraction: Optional[float] = None     # D_neutron-entry / D_total, skin
+    si_to_skin_ratio: Optional[float] = None          # D_Si / D_skin (thin Si detector)
+    si_charged_to_skin_ratio: Optional[float] = None  # D_Si,charged-entry / D_skin
     dose_rel_err: Optional[float] = None        # standard error / mean
     skin_dose_rel_err: Optional[float] = None   # standard error / mean (skin)
     fluence_inside: Optional[float] = None
@@ -90,6 +92,9 @@ def _combine(spec: HabitatSpec, tier: RunTier,
     neu_frac = [b.neutron_doseeq_fraction for b in batches if b.neutron_doseeq_fraction is not None]
     ntl_frac = [b.neutral_dose_fraction for b in batches if b.neutral_dose_fraction is not None]
     nab_frac = [b.neutron_abs_fraction for b in batches if b.neutron_abs_fraction is not None]
+    si_rat = [b.si_to_skin_ratio for b in batches if b.si_to_skin_ratio is not None]
+    sic_rat = [b.si_charged_to_skin_ratio for b in batches
+               if b.si_charged_to_skin_ratio is not None]
     fin = [b.fluence_inside for b in batches if b.fluence_inside is not None]
     fout = [b.fluence_outside for b in batches if b.fluence_outside is not None]
     n = len(doses)
@@ -116,6 +121,8 @@ def _combine(spec: HabitatSpec, tier: RunTier,
         neutron_doseeq_fraction=statistics.fmean(neu_frac) if neu_frac else None,
         neutral_dose_fraction=statistics.fmean(ntl_frac) if ntl_frac else None,
         neutron_abs_fraction=statistics.fmean(nab_frac) if nab_frac else None,
+        si_to_skin_ratio=statistics.fmean(si_rat) if si_rat else None,
+        si_charged_to_skin_ratio=statistics.fmean(sic_rat) if sic_rat else None,
         fluence_inside=statistics.fmean(fin) if fin else None,
         fluence_outside=statistics.fmean(fout) if fout else None,
         per_batch_dose=doses,
