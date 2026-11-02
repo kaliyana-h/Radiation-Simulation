@@ -690,6 +690,82 @@ class TestSiDetector(unittest.TestCase):
         self.assertAlmostEqual(a.si_to_skin_ratio, (0.9 + 3 * 0.7) / 4, places=12)
         self.assertIsNone(a.si_charged_to_skin_ratio)
 
+    def test_combine_gives_si_its_own_error(self):
+        # The Si error comes from the per-batch Si dose (skin x ratio), so a
+        # detector that scatters while the skin is steady gets a real error bar.
+        import statistics
+        from lunarsim import jobs
+        spec = _dome_spec()
+        ratios = (0.70, 0.90, 0.80, 0.60)
+        batches = [bridge.RunResult(spec=spec, tier=bridge.FULL_RUN, run_dir=Path("."),
+                                    returncode=0, wall_seconds=1.0, dose_gy=1.0e-13,
+                                    skin_dose_gy=1.0e-13, si_charged_to_skin_ratio=q)
+                   for q in ratios]
+        c = jobs._combine(spec, bridge.FULL_RUN, batches)
+        self.assertEqual(c.skin_dose_rel_err, 0.0)
+        expect = statistics.stdev(ratios) / 2.0 / statistics.fmean(ratios)
+        self.assertAlmostEqual(c.si_charged_rel_err, expect, places=12)
+        one = jobs._combine(spec, bridge.FULL_RUN, batches[:1])
+        self.assertIsNone(one.si_charged_rel_err)
+
+    def test_assess_composition_si_error_in_quadrature(self):
+        H = dosimetry.GCR_COMPOSITION[0]
+        runs = []
+        for dose, ratio, err in ((1.0e-13, 0.9, 0.10), (3.0e-13, 0.7, 0.04)):
+            r = _FakeSpeciesRun(_dome_spec(), 1.0e-12, None, dose=dose)
+            r.si_charged_to_skin_ratio, r.si_charged_rel_err = ratio, err
+            runs.append((H, r))
+        a = dosimetry.assess_composition(runs, skin=True)
+        w1, w2 = 1 * 0.9, 3 * 0.7          # relative Si charged rates (same flux)
+        expect = ((w1 * 0.10) ** 2 + (w2 * 0.04) ** 2) ** 0.5 / (w1 + w2)
+        self.assertAlmostEqual(a.si_charged_rel_err, expect, places=12)
+        runs[1][1].si_charged_rel_err = None   # unknown for one species -> unknown
+        self.assertIsNone(dosimetry.assess_composition(runs, skin=True).si_charged_rel_err)
+
+
+class TestLndHarnessSiGate(unittest.TestCase):
+    """lnd_absolute_recheck: the Si detector is the primary charged check, with
+    its own error bar, and is on by default for [bare3m]."""
+
+    @classmethod
+    def setUpClass(cls):
+        from paper import lnd_absolute_recheck as h
+        cls.h = h
+
+    def test_silicon_z_uses_detector_error(self):
+        h = self.h
+        row = {"si_charged_ugy_h": 0.87 * h.LND_CHARGED_UGY_H_SI,
+               "si_charged_rel_err": 0.05, "rel_err": 0.014}
+        ratio, sigma, z = h.charged_z(row, silicon=True)
+        self.assertAlmostEqual(ratio, 0.87, places=12)
+        self.assertAlmostEqual(sigma, 0.87 * (h.LND_CHARGED_REL_ERR ** 2 + 0.05 ** 2) ** 0.5,
+                               places=12)
+        row["si_charged_rel_err"] = None       # <2 batches: skin error borrowed
+        _, sigma_b, _ = h.charged_z(row, silicon=True)
+        self.assertAlmostEqual(sigma_b, 0.87 * (h.LND_CHARGED_REL_ERR ** 2 + 0.014 ** 2) ** 0.5,
+                               places=12)
+
+    def test_water_z_ignores_detector_error(self):
+        h = self.h
+        row = {"charged_tissue_ugy_h": h.LND_CHARGED_UGY_H_WATER,
+               "si_charged_rel_err": 0.5, "rel_err": 0.02}
+        ratio, sigma, z = h.charged_z(row)
+        self.assertAlmostEqual(sigma, (h.LND_CHARGED_REL_ERR ** 2 + 0.02 ** 2) ** 0.5, places=12)
+        self.assertEqual(z, 0.0)
+
+    def test_detector_default_follows_bare3m(self):
+        h = self.h
+        self.assertEqual(h.resolve_si_detector(None, ["bare3m"]), h.SI_DETECTOR_DEFAULT_UM)
+        self.assertEqual(h.resolve_si_detector(None, ["lnd", "jul22"]), 0.0)
+        self.assertEqual(h.resolve_si_detector(0.0, ["bare3m"]), 0.0)
+        self.assertEqual(h.resolve_si_detector(150.0, ["lnd"]), 150.0)
+
+    def test_verdict_strings(self):
+        h = self.h
+        self.assertEqual(h._charged_verdict(-1.4), "CONSISTENT")
+        self.assertTrue(h._charged_verdict(-2.3).startswith("LOW"))
+        self.assertTrue(h._charged_verdict(2.3).startswith("HIGH"))
+
 
 class _FakeSpeciesRun:
     """Minimal ConvergedResult stand-in for the dosimetry dose-weighting path."""

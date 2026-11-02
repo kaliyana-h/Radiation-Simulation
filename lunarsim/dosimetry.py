@@ -512,7 +512,8 @@ class DoseAssessment:
     # rate x ratio, comparable with Si instruments with no conversion factor.
     si_to_skin_ratio: Optional[float] = None
     si_charged_to_skin_ratio: Optional[float] = None
-    regime: Optional[str] = None            # None=flood MC path; "thinwall"=phantom-matched kernel fold
+    si_charged_rel_err: Optional[float] = None  # the Si charged dose's own statistical rel. error
+    regime: Optional[str] = None           # None=flood MC path; "thinwall"=phantom-matched kernel fold
 
     # ---- absorbed dose ----
     @property
@@ -621,6 +622,7 @@ def assess(result: RunResult,
         neutron_abs_fraction=getattr(result, "neutron_abs_fraction", None),
         si_to_skin_ratio=getattr(result, "si_to_skin_ratio", None),
         si_charged_to_skin_ratio=getattr(result, "si_charged_to_skin_ratio", None),
+        si_charged_rel_err=getattr(result, "si_charged_rel_err", None),
     )
 
 
@@ -656,6 +658,8 @@ def assess_composition(species_results: list,
     split_num = {"neutral_dose_fraction": 0.0, "neutron_abs_fraction": 0.0,
                  "si_to_skin_ratio": 0.0, "si_charged_to_skin_ratio": 0.0}
     split_den = dict.fromkeys(split_num, 0.0)
+    si_ch_rate = si_ch_var = 0.0  # Si charged rate and its variance, summed like `var`
+    have_si_relerr = True
     total_flux = 0.0
     var = 0.0                # sum of (rate_i * relerr_i)^2  for combined error
     have_doseeq = True       # both targets carry a dose-eq scorer; cleared if any species lacks it
@@ -713,6 +717,12 @@ def assess_composition(species_results: list,
                 if frac_i is not None:
                     split_num[key] += frac_i * skin_rate_i
                     split_den[key] += skin_rate_i
+            sic_i = getattr(result, "si_charged_to_skin_ratio", None)
+            if sic_i is not None:
+                sic_relerr_i = getattr(result, "si_charged_rel_err", None)
+                have_si_relerr = have_si_relerr and sic_relerr_i is not None
+                si_ch_rate += sic_i * skin_rate_i
+                si_ch_var += (sic_i * skin_rate_i * (sic_relerr_i or 0.0)) ** 2
         contributions.append({
             "species": name, "particle": particle, "group": group,
             "flux_cm2_s": flux_i, "dose_rate_gy_s": rate_i,
@@ -748,6 +758,9 @@ def assess_composition(species_results: list,
         neutron_fraction=neutron_fraction,
         **{k: (split_num[k] / split_den[k] if split_den[k] > 0 else None)
            for k in split_num},
+        # unknown (None), not zero, while any species lacks a Si error -- as rel_err
+        si_charged_rel_err=(si_ch_var ** 0.5 / si_ch_rate
+                            if have_si_relerr and si_ch_rate > 0 else None),
     )
 
 

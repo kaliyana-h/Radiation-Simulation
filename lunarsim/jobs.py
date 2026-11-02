@@ -57,6 +57,7 @@ class ConvergedResult:
     si_charged_to_skin_ratio: Optional[float] = None  # D_Si,charged-entry / D_skin
     dose_rel_err: Optional[float] = None        # standard error / mean
     skin_dose_rel_err: Optional[float] = None   # standard error / mean (skin)
+    si_charged_rel_err: Optional[float] = None  # standard error / mean (Si charged dose)
     fluence_inside: Optional[float] = None
     fluence_outside: Optional[float] = None
     per_batch_dose: list[float] = field(default_factory=list)
@@ -107,6 +108,14 @@ def _combine(spec: HabitatSpec, tier: RunTier,
     skin_rel = None
     if len(skin) >= 2 and skin_mean:
         skin_rel = statistics.stdev(skin) / (len(skin) ** 0.5) / skin_mean
+    # The thin Si detector's own scatter: per-batch Si charged dose (skin x ratio,
+    # so the skin/Si correlation is kept), not the skin's error borrowed.
+    sic_dose = [b.skin_dose_gy * b.si_charged_to_skin_ratio for b in batches
+                if b.skin_dose_gy is not None and b.si_charged_to_skin_ratio is not None]
+    sic_mean = statistics.fmean(sic_dose) if sic_dose else None
+    sic_rel = None
+    if len(sic_dose) >= 2 and sic_mean:
+        sic_rel = statistics.stdev(sic_dose) / (len(sic_dose) ** 0.5) / sic_mean
     return ConvergedResult(
         spec=spec, tier=tier, n_batches=len(batches),
         total_primaries=tier.total_primaries * len(batches),
@@ -123,6 +132,7 @@ def _combine(spec: HabitatSpec, tier: RunTier,
         neutron_abs_fraction=statistics.fmean(nab_frac) if nab_frac else None,
         si_to_skin_ratio=statistics.fmean(si_rat) if si_rat else None,
         si_charged_to_skin_ratio=statistics.fmean(sic_rat) if sic_rat else None,
+        si_charged_rel_err=sic_rel,
         fluence_inside=statistics.fmean(fin) if fin else None,
         fluence_outside=statistics.fmean(fout) if fout else None,
         per_batch_dose=doses,
