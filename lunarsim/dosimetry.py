@@ -518,6 +518,12 @@ class DoseAssessment:
     si_neutron_to_skin_ratio: Optional[float] = None
     si_gamma_to_skin_ratio: Optional[float] = None
     si_neutral_rel_err: Optional[float] = None
+    # charged-entry Si dose-equivalent (ICRP-60 Q of the WATER LET, per step) and the
+    # charged Si dose split into geometry.SI_LET_EDGES_KEV_UM water-LET bins, both
+    # relative to skin dose: <Q>_charged = H / D_charged, LET spectrum = bins / sum
+    si_doseeq_charged_to_skin_ratio: Optional[float] = None
+    si_doseeq_charged_rel_err: Optional[float] = None
+    si_charged_let_ratios: Optional[tuple] = None
     regime: Optional[str] = None           # None=flood MC path; "thinwall"=phantom-matched kernel fold
 
     # ---- absorbed dose ----
@@ -632,6 +638,9 @@ def assess(result: RunResult,
         si_neutron_to_skin_ratio=getattr(result, "si_neutron_to_skin_ratio", None),
         si_gamma_to_skin_ratio=getattr(result, "si_gamma_to_skin_ratio", None),
         si_neutral_rel_err=getattr(result, "si_neutral_rel_err", None),
+        si_doseeq_charged_to_skin_ratio=getattr(result, "si_doseeq_charged_to_skin_ratio", None),
+        si_doseeq_charged_rel_err=getattr(result, "si_doseeq_charged_rel_err", None),
+        si_charged_let_ratios=getattr(result, "si_charged_let_ratios", None),
     )
 
 
@@ -667,11 +676,16 @@ def assess_composition(species_results: list,
     split_num = {"neutral_dose_fraction": 0.0, "neutron_abs_fraction": 0.0,
                  "si_to_skin_ratio": 0.0, "si_charged_to_skin_ratio": 0.0,
                  "si_neutral_to_skin_ratio": 0.0, "si_neutron_to_skin_ratio": 0.0,
-                 "si_gamma_to_skin_ratio": 0.0}
+                 "si_gamma_to_skin_ratio": 0.0, "si_doseeq_charged_to_skin_ratio": 0.0}
     split_den = dict.fromkeys(split_num, 0.0)
+    # the LET-binned charged Si ratios, weighted bin-wise the same way; dropped
+    # (None) unless every species that reached the skin carries a full spectrum
+    let_num = None
+    let_den = 0.0
+    let_complete = True
     # Si channel rates and their variances, summed like `var`; a channel's error is
     # unknown (None) once any species lacks it
-    si_chan = ("charged", "neutral")
+    si_chan = ("charged", "neutral", "doseeq_charged")
     si_rate = dict.fromkeys(si_chan, 0.0)
     si_var = dict.fromkeys(si_chan, 0.0)
     have_si_relerr = dict.fromkeys(si_chan, True)
@@ -732,6 +746,13 @@ def assess_composition(species_results: list,
                 if frac_i is not None:
                     split_num[key] += frac_i * skin_rate_i
                     split_den[key] += skin_rate_i
+            let_i = getattr(result, "si_charged_let_ratios", None)
+            if let_i is None or (let_num is not None and len(let_i) != len(let_num)):
+                let_complete = False
+            else:
+                let_num = [(let_num[k] if let_num else 0.0) + r * skin_rate_i
+                           for k, r in enumerate(let_i)]
+                let_den += skin_rate_i
             for ch in si_chan:
                 ratio_i = getattr(result, f"si_{ch}_to_skin_ratio", None)
                 if ratio_i is not None:
@@ -778,6 +799,8 @@ def assess_composition(species_results: list,
         **{f"si_{ch}_rel_err": (si_var[ch] ** 0.5 / si_rate[ch]
                                 if have_si_relerr[ch] and si_rate[ch] > 0 else None)
            for ch in si_chan},
+        si_charged_let_ratios=(tuple(v / let_den for v in let_num)
+                               if let_complete and let_num and let_den > 0 else None),
     )
 
 

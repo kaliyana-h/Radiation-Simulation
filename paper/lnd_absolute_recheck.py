@@ -57,6 +57,21 @@ measured on the ground (Aug 2018, no neutron multiplication; Zhang fn 20), and
 Zhang fn 22 attributes its height to multiplication and lander/LND structure
 secondaries -- platform terms no lunar-environment model carries.
 
+SILICON CHARGED <Q> AND LET SPECTRUM (2026-11-02, post-hoc, NOT a gate). The
+detector also carries a charged EntryChannelDose with WeightByQ (ICRP-60 Q of each
+step's unrestricted electronic LET IN WATER -- G4EmCalculator, G4_WATER) and the
+charged dose split into half-decade water-LET bins (geometry.SI_LET_EDGES_KEV_UM,
+0.1..1000 keV/um, open-ended first/last). So <Q>_charged = H_Si,ch / D_Si,ch compares
+with LND's 4.3 +- 0.7, and the factor-free dose equivalent D_Si,ch x <Q> with
+LND's 57.1 / 1.30 = 43.9 uSv/h (Zhang's H is 10.2 Si x 1.30 x 4.3; dividing their
+own constant back out leaves Si-basis x <Q>, error +-18.6%). The bins should sum to
+the charged Si dose (closure printed). Method differences, stated not corrected:
+LND infers LET from a coincidence-telescope dE/dx in Si scaled to water by the
+constant 1.3, the tool takes per-step water LET of the stepping particle; the
+tool's <Q> weights are Si dose, LND's are water dose (the Si->water stopping
+ratio is ~flat in LET, so this is a small bias); delta-ray energy deposited by a
+secondary electron is binned at the ELECTRON's LET.
+
 Other known differences: LND sits inside the lander payload compartment (extra
 local mass + structure neutrons the tool does not model) and measured
 Jan-Feb 2019 near phi ~400 MV; the tool's ceiling is 20 GeV/n (~-7.6% surface).
@@ -197,6 +212,12 @@ def run_point(key: str, args) -> dict:
         "si_gamma_ugy_h": (None if da.si_gamma_to_skin_ratio is None
                            else tissue_ugy_h * da.si_gamma_to_skin_ratio),
         "si_neutral_rel_err": da.si_neutral_rel_err,
+        # charged ICRP-60 dose equivalent in Si (water-LET Q) and its LET spectrum
+        "si_doseeq_charged_usv_h": (None if da.si_doseeq_charged_to_skin_ratio is None
+                                    else tissue_ugy_h * da.si_doseeq_charged_to_skin_ratio),
+        "si_doseeq_charged_rel_err": da.si_doseeq_charged_rel_err,
+        "si_let_charged_ugy_h": (None if da.si_charged_let_ratios is None
+                                 else [tissue_ugy_h * r for r in da.si_charged_let_ratios]),
         "charged_tissue_ugy_h": (None if da.neutral_dose_fraction is None
                                  else tissue_ugy_h * (1.0 - da.neutral_dose_fraction)),
         "neutral_tissue_ugy_h": (None if da.neutral_dose_fraction is None
@@ -257,6 +278,53 @@ def si_neutral_report(row: dict):
             "to_mb2024": nt / MB2024_NEUTRAL_UGY_H_SI,
             "neutron_share": (n / nt if (n is not None and nt) else None),
             "gamma_share": (g / nt if (g is not None and nt) else None)}
+
+
+LND_QBAR_CHARGED_ERR = 0.7
+LND_HDOT_CHARGED_ERR = 10.6
+# factor-free: Zhang's water H with their own constant 1.30 divided back out
+LND_HDOT_CHARGED_SI_BASIS = LND_HDOT_CHARGED_USV_H / SI_TO_WATER_ZHANG   # 43.9
+LET_HIGH_KEV_UM = 10.0            # "high-LET" split for the printed fraction
+
+
+def let_bin_edges() -> list:
+    """(lo, hi) water-LET edges, keV/um, of each Si charged LET bin; None = open."""
+    e = (None,) + tuple(G.SI_LET_EDGES_KEV_UM) + (None,)
+    return [(e[k], e[k + 1]) for k in range(G.SI_LET_NBINS)]
+
+
+def si_charged_q_report(row: dict):
+    """The Si detector's charged <Q>, factor-free dose equivalent and water-LET
+    spectrum against LND, or None without the dose-eq scorer. Post-hoc, NOT a gate
+    (see SILICON CHARGED <Q> AND LET SPECTRUM). The <Q> z carries only LND's +-0.7
+    (H and D share the same hits, so the MC part largely cancels); the H z combines
+    LND's +-18.6% with the detector's own H error."""
+    h, d = row.get("si_doseeq_charged_usv_h"), row.get("si_charged_ugy_h")
+    if h is None or not d:
+        return None
+    q = h / d
+    h_ratio = h / LND_HDOT_CHARGED_SI_BASIS
+    h_sigma = h_ratio * ((LND_HDOT_CHARGED_ERR / LND_HDOT_CHARGED_USV_H) ** 2
+                         + (row.get("si_doseeq_charged_rel_err") or 0.0) ** 2) ** 0.5
+    out = {"qbar": q, "q_ratio": q / LND_QBAR_CHARGED,
+           "q_z": (q - LND_QBAR_CHARGED) / LND_QBAR_CHARGED_ERR,
+           "h_usv_h": h, "h_ratio": h_ratio, "h_sigma": h_sigma,
+           "h_z": (h_ratio - 1.0) / h_sigma,
+           "let_fractions": None, "let_closure": None, "high_let_fraction": None,
+           "high_let_h_share": None}
+    bins = row.get("si_let_charged_ugy_h")
+    if bins:
+        tot = sum(bins)
+        if tot > 0:
+            fr = [b / tot for b in bins]
+            edges = let_bin_edges()
+            hi = [k for k, (lo, _) in enumerate(edges)
+                  if lo is not None and lo >= LET_HIGH_KEV_UM]
+            out["let_fractions"] = fr
+            out["let_closure"] = tot / d
+            out["high_let_fraction"] = sum(fr[k] for k in hi)
+        out["let_edges"] = let_bin_edges()
+    return out
 
 
 def _charged_verdict(z: float) -> str:
@@ -393,6 +461,26 @@ def main(argv=None) -> int:
                   f"{LND_NEUTRAL_GROSS_UGY_H_SI});  {rep['to_mb2024']:.2f}x M&B 2024 Geant4 "
                   f"{MB2024_NEUTRAL_UGY_H_SI} (which is itself "
                   f"{MB2024_NEUTRAL_UGY_H_SI / LND_NEUTRAL_UGY_H_SI:.3f}x LND)")
+        for r in split:
+            qr = si_charged_q_report(r)
+            if qr is None:
+                continue
+            r["si_charged_q"] = qr
+            print(f"  [{r['point']}] Si detector charged <Q> {qr['qbar']:.2f} vs LND "
+                  f"{LND_QBAR_CHARGED} +- {LND_QBAR_CHARGED_ERR} = {qr['q_ratio']:.2f}x "
+                  f"(z = {qr['q_z']:+.1f}) -- post-hoc, NOT a gate")
+            print(f"         H = D_Si,ch x <Q> = {qr['h_usv_h']:.1f} uSv/h vs LND "
+                  f"{LND_HDOT_CHARGED_USV_H}/{SI_TO_WATER_ZHANG} = "
+                  f"{LND_HDOT_CHARGED_SI_BASIS:.1f} (factor-free) = {qr['h_ratio']:.2f} +- "
+                  f"{qr['h_sigma']:.2f}x (z = {qr['h_z']:+.1f}; H rel_err "
+                  f"{_f(r.get('si_doseeq_charged_rel_err'), '.3f')})")
+            if qr["let_fractions"] is not None:
+                print(f"         charged Si dose by water LET (keV/um); bins sum to "
+                      f"{qr['let_closure']:.3f}x the charged Si dose (expect 1); "
+                      f">= {LET_HIGH_KEV_UM:g} keV/um carries {qr['high_let_fraction']:.1%}:")
+                for (lo, hi), fr in zip(qr["let_edges"], qr["let_fractions"]):
+                    lab = f"[{_f(lo, '.3g') if lo else '0'}, {_f(hi, '.3g') if hi else 'inf'})"
+                    print(f"           {lab:>16} {fr:>7.2%}")
         print(f"  context only -- TOTAL tissue/LND-water vs band {lo}-{hi} (neutral "
               "channel is geometry/lander dependent, not a gate):")
     else:
@@ -405,8 +493,9 @@ def main(argv=None) -> int:
              "LOW -- investigate (do NOT re-fit CAL)" if x < lo else
              "HIGH -- investigate (do NOT re-fit CAL)")
         print(f"  [{r['point']}] {x:.2f}x LND  -> {v}")
-    print(f"  Q-bar is total (incl. neutrons) vs LND charged-only {LND_QBAR_CHARGED} +- 0.7:"
-          " context, not a gate.")
+    print(f"  Q-bar column is skin total (incl. neutrons), not LND's charged-only "
+          f"{LND_QBAR_CHARGED} +- {LND_QBAR_CHARGED_ERR}; the Si charged <Q> above is the"
+          " like-for-like read. Context, not a gate.")
     print("  Trusted absolute comparand is [bare3m] (near-bare wall, 3 m lining samples"
           " the heavy-ion tail), read through its Si detector; [lnd]'s R=30 cm lining is valid for ratios only;"
           " [jul22] is continuity with the 2026-07-20 anchor.")

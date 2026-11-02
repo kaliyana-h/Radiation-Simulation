@@ -26,6 +26,19 @@
 //
 // Tracks born inside the volume whose parent was never seen there (should not
 // happen) default to charged, which can only UNDER-count the neutral share.
+//
+// Optional, for the LND LET / <Q> comparison (all off by default, so a plain
+// channel scorer is unchanged):
+//   u:Sc/<name>/LETMin, LETMax -- keep only deposits whose stepping particle has
+//       unrestricted electronic LET IN WATER in [LETMin, LETMax) keV/um. LND
+//       converts its LET spectrum to water before applying Q (Zhang 2020), so the
+//       LET is computed in G4_WATER whatever the scored material; a neutral
+//       stepping particle has LET 0. A set of windows tiling [0, inf) splits the
+//       channel dose into a dose-weighted LET spectrum.
+//   b:Sc/<name>/WeightByQ -- weight each deposit by ICRP-60 Q(L) of that water
+//       LET (as DoseEquivalent_ICRP, which uses the local material's LET); the
+//       result is numerically Sv, and this / the unweighted channel dose = <Q>.
+// G4_WATER must already be in the material table (the CrewSkin lining is water).
 
 #include "EntryChannelDose.hh"
 
@@ -38,15 +51,31 @@
 #include "G4Event.hh"
 #include "G4LogicalVolume.hh"
 #include "G4VPhysicalVolume.hh"
+#include "G4Material.hh"
+#include "G4SystemOfUnits.hh"
 
 #include <algorithm>
 #include <cctype>
+#include <cfloat>
+#include <cmath>
+
+namespace {
+	// ICRP Publication 60 quality factor Q(L); L is unrestricted LET in water in
+	// keV/micrometre (same as DoseEquivalentICRP).
+	G4double QualityFactor(G4double let)
+	{
+		if (let < 10.)   return 1.0;
+		if (let <= 100.) return 0.32 * let - 2.2;
+		return 300.0 / std::sqrt(let);
+	}
+}
 
 EntryChannelDose::EntryChannelDose(TsParameterManager* pM, TsMaterialManager* mM, TsGeometryManager* gM,
 								   TsScoringManager* scM, TsExtensionManager* eM,
 								   G4String scorerName, G4String quantity, G4String outFileName, G4bool isSubScorer)
 	: TsVBinnedScorer(pM, mM, gM, scM, eM, scorerName, quantity, outFileName, isSubScorer),
-	  fChannelName("neutral"), fEventID(-1)
+	  fChannelName("neutral"), fEventID(-1),
+	  fLetMin(0.), fLetMax(DBL_MAX), fWeightByQ(false), fNeedLet(false), fWater(nullptr)
 {
 	SetUnit("Gy");
 	if (fPm->ParameterExists(GetFullParmName("Channel"))) {
@@ -59,6 +88,22 @@ EntryChannelDose::EntryChannelDose(TsParameterManager* pM, TsMaterialManager* mM
 		G4cerr << "Topas is exiting due to a serious error in scoring setup." << G4endl;
 		G4cerr << GetFullParmName("Channel") << " = " << fChannelName
 			   << " -- must be Neutral, Neutron, Gamma or Charged." << G4endl;
+		fPm->AbortSession(1);
+	}
+	if (fPm->ParameterExists(GetFullParmName("LETMin"))) {
+		fLetMin = fPm->GetUnitlessParameter(GetFullParmName("LETMin"));
+		fNeedLet = true;
+	}
+	if (fPm->ParameterExists(GetFullParmName("LETMax"))) {
+		fLetMax = fPm->GetUnitlessParameter(GetFullParmName("LETMax"));
+		fNeedLet = true;
+	}
+	if (fPm->ParameterExists(GetFullParmName("WeightByQ")))
+		fWeightByQ = fPm->GetBooleanParameter(GetFullParmName("WeightByQ"));
+	fNeedLet = fNeedLet || fWeightByQ;
+	if (fLetMin < 0. || fLetMax <= fLetMin) {
+		G4cerr << "Topas is exiting due to a serious error in scoring setup." << G4endl;
+		G4cerr << GetFullParmName("LETMin") << " / LETMax must satisfy 0 <= LETMin < LETMax." << G4endl;
 		fPm->AbortSession(1);
 	}
 }
@@ -103,6 +148,24 @@ G4bool EntryChannelDose::Selected(G4int channel) const
 	return channel == kCharged;
 }
 
+G4double EntryChannelDose::WaterLet(const G4Step* aStep)
+{
+	const G4ParticleDefinition* particle = aStep->GetTrack()->GetParticleDefinition();
+	if (particle->GetPDGCharge() == 0.) return 0.;
+	if (!fWater) {
+		// looked up lazily: the material table is complete once a run is stepping
+		fWater = G4Material::GetMaterial("G4_WATER", false);
+		if (!fWater) {
+			G4cerr << "Topas is exiting due to a serious error in scoring." << G4endl;
+			G4cerr << GetName() << ": LETMin/LETMax/WeightByQ need G4_WATER in the geometry." << G4endl;
+			fPm->AbortSession(1);
+		}
+	}
+	G4double kinE = aStep->GetPreStepPoint()->GetKineticEnergy();
+	G4double dedx = fEmCalculator.ComputeElectronicDEDX(kinE, particle, fWater);
+	return dedx > 0. ? dedx / (keV / um) : 0.;
+}
+
 G4bool EntryChannelDose::ProcessHits(G4Step* aStep, G4TouchableHistory*)
 {
 	if (!fIsActive) {
@@ -118,12 +181,19 @@ G4bool EntryChannelDose::ProcessHits(G4Step* aStep, G4TouchableHistory*)
 	if (edep <= 0.) return false;
 	if (!Selected(channel)) return false;
 
+	G4double weight = 1.0;
+	if (fNeedLet) {
+		const G4double let = WaterLet(aStep);
+		if (let < fLetMin || let >= fLetMax) return false;
+		if (fWeightByQ) weight = QualityFactor(let);
+	}
+
 	ResolveSolid(aStep);
 
 	G4StepPoint* preStep = aStep->GetPreStepPoint();
 	G4double mass = preStep->GetMaterial()->GetDensity() * GetCubicVolume(aStep);
 	if (mass <= 0.) return false;
 
-	AccumulateHit(aStep, (edep / mass) * preStep->GetWeight());
+	AccumulateHit(aStep, (edep * weight / mass) * preStep->GetWeight());
 	return true;
 }

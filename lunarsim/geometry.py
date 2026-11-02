@@ -25,6 +25,11 @@ from .spec import (HabitatSpec, MATERIALS, regolith_layer_materials,
 # detector sees the wall-transmitted field with no water in front of it. See
 # paper/lnd_absolute_recheck.py --si-detector.
 SI_DETECTOR_ENV = "LUNARSIM_SI_DETECTOR_UM"
+# Water-LET bin edges (keV/um) for the Si detector's charged-channel LET spectrum:
+# half-decades 0.1..1000, so the bins tile [0, 0.1), [0.1, 0.316), ... [1000, inf).
+# Bin k is scorer SiLetCharged{k:02d} -> si_let_charged_{k:02d}.csv.
+SI_LET_EDGES_KEV_UM = tuple(10.0 ** (k / 2) for k in range(-2, 7))
+SI_LET_NBINS = len(SI_LET_EDGES_KEV_UM) + 1
 
 
 def si_detector_um() -> float:
@@ -654,6 +659,27 @@ s:Sc/SiDoseGamma/Channel    = "Gamma"
 s:Sc/SiDoseGamma/OutputFile = "si_dose_gamma"
 s:Sc/SiDoseGamma/IfOutputFileAlreadyExists = "Overwrite"
 """
+        # charged-channel dose-equivalent (ICRP-60 Q of the water LET) and the
+        # charged dose split into water-LET bins: LND's <Q> and LET spectrum
+        scorers += """
+s:Sc/SiDoseEqCharged/Quantity   = "EntryChannelDose"
+s:Sc/SiDoseEqCharged/Component  = "SiDetector"
+s:Sc/SiDoseEqCharged/Channel    = "Charged"
+b:Sc/SiDoseEqCharged/WeightByQ  = "True"
+s:Sc/SiDoseEqCharged/OutputFile = "si_doseeq_charged"
+s:Sc/SiDoseEqCharged/IfOutputFileAlreadyExists = "Overwrite"
+"""
+        edges = (None,) + SI_LET_EDGES_KEV_UM + (None,)
+        for k in range(SI_LET_NBINS):
+            lo, hi = edges[k], edges[k + 1]
+            name = f"SiLetCharged{k:02d}"
+            scorers += (f'\ns:Sc/{name}/Quantity   = "EntryChannelDose"\n'
+                        f's:Sc/{name}/Component  = "SiDetector"\n'
+                        f's:Sc/{name}/Channel    = "Charged"\n'
+                        + (f"u:Sc/{name}/LETMin     = {lo:.6g}\n" if lo is not None else "")
+                        + (f"u:Sc/{name}/LETMax     = {hi:.6g}\n" if hi is not None else "")
+                        + f's:Sc/{name}/OutputFile = "si_let_charged_{k:02d}"\n'
+                        f's:Sc/{name}/IfOutputFileAlreadyExists = "Overwrite"\n')
 
     # Shape-specific secondary linings, folded into the reported skin dose by
     # run_design. The dome hemisphere already envelops its crew with one shell, so

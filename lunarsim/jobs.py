@@ -58,10 +58,13 @@ class ConvergedResult:
     si_neutral_to_skin_ratio: Optional[float] = None  # D_Si,neutral-entry / D_skin
     si_neutron_to_skin_ratio: Optional[float] = None  # D_Si,neutron-entry / D_skin
     si_gamma_to_skin_ratio: Optional[float] = None    # D_Si,gamma-entry / D_skin
+    si_doseeq_charged_to_skin_ratio: Optional[float] = None  # H_Si,charged / D_skin
+    si_charged_let_ratios: Optional[tuple] = None     # per water-LET bin D_Si,charged / D_skin
     dose_rel_err: Optional[float] = None        # standard error / mean
     skin_dose_rel_err: Optional[float] = None   # standard error / mean (skin)
     si_charged_rel_err: Optional[float] = None  # standard error / mean (Si charged dose)
     si_neutral_rel_err: Optional[float] = None  # standard error / mean (Si neutral dose)
+    si_doseeq_charged_rel_err: Optional[float] = None  # standard error / mean (Si charged H)
     fluence_inside: Optional[float] = None
     fluence_outside: Optional[float] = None
     per_batch_dose: list[float] = field(default_factory=list)
@@ -99,9 +102,15 @@ def _combine(spec: HabitatSpec, tier: RunTier,
     nab_frac = [b.neutron_abs_fraction for b in batches if b.neutron_abs_fraction is not None]
     si_ratios = {}
     for key in ("si_to_skin_ratio", "si_charged_to_skin_ratio", "si_neutral_to_skin_ratio",
-                "si_neutron_to_skin_ratio", "si_gamma_to_skin_ratio"):
+                "si_neutron_to_skin_ratio", "si_gamma_to_skin_ratio",
+                "si_doseeq_charged_to_skin_ratio"):
         vals = [getattr(b, key, None) for b in batches if getattr(b, key, None) is not None]
         si_ratios[key] = statistics.fmean(vals) if vals else None
+    # LET spectrum: bin-wise mean, only when every batch carries a full spectrum
+    let = [getattr(b, "si_charged_let_ratios", None) for b in batches]
+    si_ratios["si_charged_let_ratios"] = (
+        tuple(statistics.fmean(col) for col in zip(*let))
+        if let and all(t is not None for t in let) else None)
     fin = [b.fluence_inside for b in batches if b.fluence_inside is not None]
     fout = [b.fluence_outside for b in batches if b.fluence_outside is not None]
     n = len(doses)
@@ -140,6 +149,7 @@ def _combine(spec: HabitatSpec, tier: RunTier,
         **si_ratios,
         si_charged_rel_err=si_rel("si_charged_to_skin_ratio"),
         si_neutral_rel_err=si_rel("si_neutral_to_skin_ratio"),
+        si_doseeq_charged_rel_err=si_rel("si_doseeq_charged_to_skin_ratio"),
         fluence_inside=statistics.fmean(fin) if fin else None,
         fluence_outside=statistics.fmean(fout) if fout else None,
         per_batch_dose=doses,

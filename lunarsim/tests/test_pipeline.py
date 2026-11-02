@@ -784,6 +784,95 @@ class TestSiDetector(unittest.TestCase):
         runs[0][1].si_neutral_rel_err = None
         self.assertIsNone(dosimetry.assess_composition(runs, skin=True).si_neutral_rel_err)
 
+    def test_q_and_let_scorers_ride_with_detector(self):
+        spec = _dome_spec()
+        sc = geometry.build_scorers(spec)
+        self.assertNotIn("SiDoseEqCharged", sc)
+        self.assertNotIn("SiLetCharged", sc)
+        os.environ[geometry.SI_DETECTOR_ENV] = "300"
+        sc = geometry.build_scorers(spec)
+        self.assertIn('b:Sc/SiDoseEqCharged/WeightByQ  = "True"', sc)
+        self.assertIn('s:Sc/SiDoseEqCharged/Channel    = "Charged"', sc)
+        n = geometry.SI_LET_NBINS
+        self.assertEqual(n, 10)
+        self.assertEqual(sc.count('/Channel    = "Charged"'), 2 + n)
+        # first bin open below, last open above, inner bins share edges
+        self.assertNotIn("SiLetCharged00/LETMin", sc)
+        self.assertIn("u:Sc/SiLetCharged00/LETMax     = 0.1\n", sc)
+        self.assertIn("u:Sc/SiLetCharged01/LETMin     = 0.1\n", sc)
+        self.assertIn("u:Sc/SiLetCharged04/LETMax     = 10\n", sc)
+        self.assertIn("u:Sc/SiLetCharged05/LETMin     = 10\n", sc)
+        self.assertIn(f"u:Sc/SiLetCharged{n - 1:02d}/LETMin     = 1000\n", sc)
+        self.assertNotIn(f"SiLetCharged{n - 1:02d}/LETMax", sc)
+        self.assertIn(f's:Sc/SiLetCharged{n - 1:02d}/OutputFile = "si_let_charged_{n - 1:02d}"', sc)
+
+    def test_q_and_let_csvs_become_skin_ratios(self):
+        n = geometry.SI_LET_NBINS
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d)
+            (run / "skin_dose.csv").write_text("# h\n0, 4.0e-13\n")
+            (run / "si_doseeq_charged.csv").write_text("# h\n0, 1.2e-12\n")
+            for k in range(n - 1):
+                (run / f"si_let_charged_{k:02d}.csv").write_text("# h\n0, 4.0e-14\n")
+            out = bridge.parse_results(run)
+            bridge._pop_entry_channel_fractions(out)
+            self.assertAlmostEqual(out["si_doseeq_charged_to_skin_ratio"], 3.0, places=12)
+            self.assertIsNone(out["si_charged_let_ratios"])     # last bin missing
+            self.assertNotIn("si_let_charged_gy", out)
+            (run / f"si_let_charged_{n - 1:02d}.csv").write_text("# h\n0, 0\n")
+            out = bridge.parse_results(run)
+            bridge._pop_entry_channel_fractions(out)
+            self.assertEqual(len(out["si_charged_let_ratios"]), n)
+            self.assertAlmostEqual(out["si_charged_let_ratios"][0], 0.1, places=12)
+            self.assertEqual(out["si_charged_let_ratios"][-1], 0.0)
+            import dataclasses
+            from lunarsim import jobs
+            keys = {"si_doseeq_charged_to_skin_ratio", "si_charged_let_ratios"}
+            for cls in (bridge.RunResult, jobs.ConvergedResult, dosimetry.DoseAssessment):
+                self.assertLessEqual(keys, {f.name for f in dataclasses.fields(cls)},
+                                     cls.__name__)
+
+    def test_combine_averages_let_bins_and_errors_doseeq(self):
+        import statistics
+        from lunarsim import jobs
+        spec = _dome_spec()
+        hs = (3.0, 3.4, 2.6, 3.0)
+        lets = ((0.1, 0.5), (0.3, 0.7), (0.2, 0.6), (0.2, 0.6))
+        batches = [bridge.RunResult(spec=spec, tier=bridge.FULL_RUN, run_dir=Path("."),
+                                    returncode=0, wall_seconds=1.0, dose_gy=1.0e-13,
+                                    skin_dose_gy=1.0e-13, si_doseeq_charged_to_skin_ratio=h,
+                                    si_charged_let_ratios=t)
+                   for h, t in zip(hs, lets)]
+        c = jobs._combine(spec, bridge.FULL_RUN, batches)
+        self.assertAlmostEqual(c.si_doseeq_charged_to_skin_ratio, 3.0, places=12)
+        self.assertAlmostEqual(c.si_doseeq_charged_rel_err,
+                               statistics.stdev(hs) / 2.0 / 3.0, places=12)
+        self.assertAlmostEqual(c.si_charged_let_ratios[0], 0.2, places=12)
+        self.assertAlmostEqual(c.si_charged_let_ratios[1], 0.6, places=12)
+        batches[2].si_charged_let_ratios = None        # one batch lacks the spectrum
+        self.assertIsNone(jobs._combine(spec, bridge.FULL_RUN, batches).si_charged_let_ratios)
+
+    def test_assess_composition_weights_doseeq_and_let(self):
+        H = dosimetry.GCR_COMPOSITION[0]
+        runs = []
+        for dose, h, t, err in ((1.0e-13, 3.0, (0.2, 0.6), 0.1),
+                                (3.0e-13, 2.0, (0.6, 0.2), 0.05)):
+            r = _FakeSpeciesRun(_dome_spec(), 1.0e-12, None, dose=dose)
+            r.si_doseeq_charged_to_skin_ratio, r.si_doseeq_charged_rel_err = h, err
+            r.si_charged_let_ratios = t
+            runs.append((H, r))
+        a = dosimetry.assess_composition(runs, skin=True)
+        self.assertAlmostEqual(a.si_doseeq_charged_to_skin_ratio, (3.0 + 3 * 2.0) / 4,
+                               places=12)
+        w1, w2 = 1 * 3.0, 3 * 2.0
+        self.assertAlmostEqual(a.si_doseeq_charged_rel_err,
+                               ((w1 * 0.1) ** 2 + (w2 * 0.05) ** 2) ** 0.5 / (w1 + w2),
+                               places=12)
+        self.assertAlmostEqual(a.si_charged_let_ratios[0], (0.2 + 3 * 0.6) / 4, places=12)
+        self.assertAlmostEqual(a.si_charged_let_ratios[1], (0.6 + 3 * 0.2) / 4, places=12)
+        runs[1][1].si_charged_let_ratios = None
+        self.assertIsNone(dosimetry.assess_composition(runs, skin=True).si_charged_let_ratios)
+
 
 class TestLndHarnessSiGate(unittest.TestCase):
     """lnd_absolute_recheck: the Si detector is the primary charged check, with
@@ -842,6 +931,27 @@ class TestLndHarnessSiGate(unittest.TestCase):
         partial = h.si_neutral_report({"si_neutral_ugy_h": 0.20})
         self.assertIsNone(partial["other"])
         self.assertIsNone(partial["neutron_share"])
+
+    def test_charged_q_report(self):
+        h = self.h
+        self.assertIsNone(h.si_charged_q_report({"si_charged_ugy_h": 8.9}))
+        n = len(h.let_bin_edges())
+        bins = [0.0] * n
+        bins[2], bins[5], bins[n - 1] = 6.0, 2.0, 1.0      # [0.316,1), [10,31.6), [1000,inf)
+        row = {"si_charged_ugy_h": 9.0, "si_doseeq_charged_usv_h": 36.0,
+               "si_doseeq_charged_rel_err": 0.05, "si_let_charged_ugy_h": bins}
+        rep = h.si_charged_q_report(row)
+        self.assertAlmostEqual(rep["qbar"], 4.0, places=12)
+        self.assertAlmostEqual(rep["q_z"], (4.0 - 4.3) / 0.7, places=12)
+        ratio = 36.0 / (57.1 / 1.30)
+        self.assertAlmostEqual(rep["h_ratio"], ratio, places=12)
+        self.assertAlmostEqual(rep["h_sigma"],
+                               ratio * ((10.6 / 57.1) ** 2 + 0.05 ** 2) ** 0.5, places=12)
+        self.assertAlmostEqual(rep["let_closure"], 1.0, places=12)
+        self.assertAlmostEqual(rep["high_let_fraction"], 3.0 / 9.0, places=12)
+        self.assertEqual(h.let_bin_edges()[0][0], None)
+        self.assertEqual(h.let_bin_edges()[-1][1], None)
+        self.assertAlmostEqual(h.let_bin_edges()[5][0], 10.0, places=12)
 
 
 class _FakeSpeciesRun:

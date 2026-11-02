@@ -29,7 +29,7 @@ from typing import Callable, Optional
 
 from .spec import HabitatSpec, regolith_layer_materials
 from .geometry import (build_geometry, build_scorers, _outer_gauge_radius,
-                       _enclosing_radius_cm)
+                       _enclosing_radius_cm, SI_LET_NBINS)
 
 # ----------------------------------------------------------------------
 # Environment / install locations (override via env vars for other hosts)
@@ -268,6 +268,8 @@ class RunResult:
     si_neutral_to_skin_ratio: Optional[float] = None  # D_Si,neutral-entry / D_skin
     si_neutron_to_skin_ratio: Optional[float] = None  # D_Si,neutron-entry / D_skin
     si_gamma_to_skin_ratio: Optional[float] = None    # D_Si,gamma-entry / D_skin
+    si_doseeq_charged_to_skin_ratio: Optional[float] = None  # H_Si,charged (ICRP-60 Q) / D_skin
+    si_charged_let_ratios: Optional[tuple] = None     # per water-LET bin D_Si,charged / D_skin
     fluence_inside: Optional[float] = None
     fluence_outside: Optional[float] = None
     log_tail: str = ""
@@ -459,9 +461,16 @@ def _pop_entry_channel_fractions(results: dict) -> None:
                      ("si_dose_charged_gy", "si_charged_to_skin_ratio"),
                      ("si_dose_neutral_gy", "si_neutral_to_skin_ratio"),
                      ("si_dose_neutron_gy", "si_neutron_to_skin_ratio"),
-                     ("si_dose_gamma_gy", "si_gamma_to_skin_ratio")):
+                     ("si_dose_gamma_gy", "si_gamma_to_skin_ratio"),
+                     ("si_doseeq_charged_sv", "si_doseeq_charged_to_skin_ratio")):
         part = results.pop(key, None)
         results[out] = part / base if (part is not None and base) else None
+    # charged-channel LET spectrum: one ratio per SI_LET_EDGES_KEV_UM bin, or None
+    # unless every bin's CSV was read (a partial spectrum would mis-normalise).
+    bins = results.pop("si_let_charged_gy", None)
+    results["si_charged_let_ratios"] = (
+        tuple(b / base for b in bins)
+        if (bins and base and all(b is not None for b in bins)) else None)
 
 
 def parse_results(run_dir: Path) -> dict:
@@ -486,6 +495,9 @@ def parse_results(run_dir: Path) -> dict:
         "si_dose_neutral_gy": _read_scalar_csv(run_dir / "si_dose_neutral.csv"),
         "si_dose_neutron_gy": _read_scalar_csv(run_dir / "si_dose_neutron.csv"),
         "si_dose_gamma_gy": _read_scalar_csv(run_dir / "si_dose_gamma.csv"),
+        "si_doseeq_charged_sv": _read_scalar_csv(run_dir / "si_doseeq_charged.csv"),
+        "si_let_charged_gy": [_read_scalar_csv(run_dir / f"si_let_charged_{k:02d}.csv")
+                              for k in range(SI_LET_NBINS)],
         "fluence_inside": _read_scalar_csv(run_dir / "fluence_inside.csv"),
         "fluence_outside": _read_scalar_csv(run_dir / "fluence_outside.csv"),
         # Shape-specific secondary linings, folded into skin_* below and popped
