@@ -265,6 +265,9 @@ class RunResult:
     neutron_abs_fraction: Optional[float] = None     # D_neutron-entry / D_total, skin
     si_to_skin_ratio: Optional[float] = None          # D_Si / D_skin (thin Si detector, harness-only)
     si_charged_to_skin_ratio: Optional[float] = None  # D_Si,charged-entry / D_skin
+    si_neutral_to_skin_ratio: Optional[float] = None  # D_Si,neutral-entry / D_skin
+    si_neutron_to_skin_ratio: Optional[float] = None  # D_Si,neutron-entry / D_skin
+    si_gamma_to_skin_ratio: Optional[float] = None    # D_Si,gamma-entry / D_skin
     fluence_inside: Optional[float] = None
     fluence_outside: Optional[float] = None
     log_tail: str = ""
@@ -453,7 +456,10 @@ def _pop_entry_channel_fractions(results: dict) -> None:
     for key, out in (("skin_dose_neutral_gy", "neutral_dose_fraction"),
                      ("skin_dose_neutron_abs_gy", "neutron_abs_fraction"),
                      ("si_dose_gy", "si_to_skin_ratio"),
-                     ("si_dose_charged_gy", "si_charged_to_skin_ratio")):
+                     ("si_dose_charged_gy", "si_charged_to_skin_ratio"),
+                     ("si_dose_neutral_gy", "si_neutral_to_skin_ratio"),
+                     ("si_dose_neutron_gy", "si_neutron_to_skin_ratio"),
+                     ("si_dose_gamma_gy", "si_gamma_to_skin_ratio")):
         part = results.pop(key, None)
         results[out] = part / base if (part is not None and base) else None
 
@@ -477,6 +483,9 @@ def parse_results(run_dir: Path) -> dict:
         # consumed into si_*_to_skin_ratio below and popped.
         "si_dose_gy": _read_scalar_csv(run_dir / "si_dose.csv"),
         "si_dose_charged_gy": _read_scalar_csv(run_dir / "si_dose_charged.csv"),
+        "si_dose_neutral_gy": _read_scalar_csv(run_dir / "si_dose_neutral.csv"),
+        "si_dose_neutron_gy": _read_scalar_csv(run_dir / "si_dose_neutron.csv"),
+        "si_dose_gamma_gy": _read_scalar_csv(run_dir / "si_dose_gamma.csv"),
         "fluence_inside": _read_scalar_csv(run_dir / "fluence_inside.csv"),
         "fluence_outside": _read_scalar_csv(run_dir / "fluence_outside.csv"),
         # Shape-specific secondary linings, folded into skin_* below and popped

@@ -619,9 +619,10 @@ s:Sc/SkinDoseNeutronAbs/IfOutputFileAlreadyExists = "Overwrite"
 """
 
     # Harness-only thin Si detector (see si_detector_um): absorbed dose to SILICON
-    # (DoseToMedium scores in the component's own material) plus its charged-entry
-    # share, the LND "charged" channel. Read back as ratios to skin_dose, so the
-    # run normalisation cancels exactly as for the entry-channel split.
+    # (DoseToMedium scores in the component's own material) plus its entry-channel
+    # split: charged (LND "charged") and neutral (LND C1 "neutral"), the latter
+    # split again into neutron and gamma entry. Read back as ratios to skin_dose,
+    # so the run normalisation cancels exactly as for the skin entry-channel split.
     if spec.shape == "dome" and si_detector_um():
         scorers += """
 s:Sc/SiDose/Quantity   = "DoseToMedium"
@@ -634,6 +635,24 @@ s:Sc/SiDoseCharged/Component  = "SiDetector"
 s:Sc/SiDoseCharged/Channel    = "Charged"
 s:Sc/SiDoseCharged/OutputFile = "si_dose_charged"
 s:Sc/SiDoseCharged/IfOutputFileAlreadyExists = "Overwrite"
+
+s:Sc/SiDoseNeutral/Quantity   = "EntryChannelDose"
+s:Sc/SiDoseNeutral/Component  = "SiDetector"
+s:Sc/SiDoseNeutral/Channel    = "Neutral"
+s:Sc/SiDoseNeutral/OutputFile = "si_dose_neutral"
+s:Sc/SiDoseNeutral/IfOutputFileAlreadyExists = "Overwrite"
+
+s:Sc/SiDoseNeutron/Quantity   = "EntryChannelDose"
+s:Sc/SiDoseNeutron/Component  = "SiDetector"
+s:Sc/SiDoseNeutron/Channel    = "Neutron"
+s:Sc/SiDoseNeutron/OutputFile = "si_dose_neutron"
+s:Sc/SiDoseNeutron/IfOutputFileAlreadyExists = "Overwrite"
+
+s:Sc/SiDoseGamma/Quantity   = "EntryChannelDose"
+s:Sc/SiDoseGamma/Component  = "SiDetector"
+s:Sc/SiDoseGamma/Channel    = "Gamma"
+s:Sc/SiDoseGamma/OutputFile = "si_dose_gamma"
+s:Sc/SiDoseGamma/IfOutputFileAlreadyExists = "Overwrite"
 """
 
     # Shape-specific secondary linings, folded into the reported skin dose by

@@ -46,6 +46,17 @@ On by default (300 um) whenever [bare3m] is requested; --si-detector 0 turns it 
 Its z uses the detector's OWN batch-to-batch error (si_charged_rel_err), not the
 skin's: the 300 um shell catches far fewer hits than the 2 cm lining.
 
+SILICON NEUTRAL CHANNEL (2026-11-02, reported, NOT a gate). The detector also
+carries EntryChannelDose "Neutral" (LND's C1 anticoincidence channel: Si recoils +
+low-energy gammas, nothing charged entering) and its "Neutron" / "Gamma" split, so
+the tool's neutral dose-to-silicon is scored directly (no total-minus-charged
+subtraction). It is printed against LND's 3.1 +- 0.5 AND against Matthiae & Berger
+2024's same-environment Geant4 value, 0.073 uGy/h Si (their Table 3): the published
+model is ~42x below LND too. LND's neutral is after a 1.7 +- 0.4 RTG/RHU background
+measured on the ground (Aug 2018, no neutron multiplication; Zhang fn 20), and
+Zhang fn 22 attributes its height to multiplication and lander/LND structure
+secondaries -- platform terms no lunar-environment model carries.
+
 Other known differences: LND sits inside the lander payload compartment (extra
 local mass + structure neutrons the tool does not model) and measured
 Jan-Feb 2019 near phi ~400 MV; the tool's ceiling is 20 GeV/n (~-7.6% surface).
@@ -93,6 +104,11 @@ LND_NEUTRAL_UGY_H_SI = 3.1        # +- 0.5
 LND_NEUTRAL_ERR_SI = 0.5
 LND_CHARGED_UGY_H_SI = 10.2       # +- 1.1
 LND_CHARGED_ERR_SI = 1.1
+LND_NEUTRAL_GROSS_UGY_H_SI = 4.7  # +- 0.1, neutral BEFORE the RTG/RHU subtraction
+LND_NEUTRAL_BKG_UGY_H_SI = 1.7    # +- 0.4, RTG + 3 RHU, measured on ground Aug 2018
+# Matthiae & Berger 2024 Table 3: their Geant4 neutral (n + gamma) at LND, in Si --
+# the published same-environment model, for the cross-code read of the neutral row
+MB2024_NEUTRAL_UGY_H_SI = 0.0730
 # Si -> water: the tool's own spectrum-folded factor (see BASIS), not a fit.
 SI_TO_WATER = si_to_water_factor(FULL_RUN.phi_mv)            # 1.227 at phi 400
 SI_TO_WATER_ZHANG = 1.30          # Zhang 2020 constant (CRaTER: 1.33) -- reference only
@@ -174,6 +190,13 @@ def run_point(key: str, args) -> dict:
         "si_charged_ugy_h": (None if da.si_charged_to_skin_ratio is None
                              else tissue_ugy_h * da.si_charged_to_skin_ratio),
         "si_charged_rel_err": da.si_charged_rel_err,
+        "si_neutral_ugy_h": (None if da.si_neutral_to_skin_ratio is None
+                             else tissue_ugy_h * da.si_neutral_to_skin_ratio),
+        "si_neutron_ugy_h": (None if da.si_neutron_to_skin_ratio is None
+                             else tissue_ugy_h * da.si_neutron_to_skin_ratio),
+        "si_gamma_ugy_h": (None if da.si_gamma_to_skin_ratio is None
+                           else tissue_ugy_h * da.si_gamma_to_skin_ratio),
+        "si_neutral_rel_err": da.si_neutral_rel_err,
         "charged_tissue_ugy_h": (None if da.neutral_dose_fraction is None
                                  else tissue_ugy_h * (1.0 - da.neutral_dose_fraction)),
         "neutral_tissue_ugy_h": (None if da.neutral_dose_fraction is None
@@ -188,7 +211,9 @@ def run_point(key: str, args) -> dict:
     if row["si_ugy_h"] is not None:
         print(f"     Si detector {row['si_ugy_h']:.2f} uGy/h Si "
               f"(charged {_f(row['si_charged_ugy_h'], '.2f')}, rel_err "
-              f"{_f(row['si_charged_rel_err'], '.3f')})", flush=True)
+              f"{_f(row['si_charged_rel_err'], '.3f')}; neutral "
+              f"{_f(row['si_neutral_ugy_h'], '.3f')}, rel_err "
+              f"{_f(row['si_neutral_rel_err'], '.3f')})", flush=True)
     return row
 
 
@@ -213,6 +238,25 @@ def charged_z(row: dict, silicon: bool = False):
         mc = row.get("rel_err") or 0.0
     sigma = ratio * (LND_CHARGED_REL_ERR ** 2 + mc ** 2) ** 0.5
     return ratio, sigma, (ratio - 1.0) / sigma
+
+
+def si_neutral_report(row: dict):
+    """The Si detector's neutral channel against LND and M&B 2024, or None without
+    the scorer. REPORTED, not a gate (see SILICON NEUTRAL CHANNEL): the ratios are
+    context for a platform-contaminated measurement. 'other' is the neutral entry
+    that is neither neutron nor gamma (e.g. neutral pions/kaons), by difference."""
+    nt = row.get("si_neutral_ugy_h")
+    if nt is None:
+        return None
+    n, g = row.get("si_neutron_ugy_h"), row.get("si_gamma_ugy_h")
+    other = nt - n - g if (n is not None and g is not None) else None
+    return {"neutral": nt, "neutron": n, "gamma": g, "other": other,
+            "rel_err": row.get("si_neutral_rel_err"),
+            "to_lnd": nt / LND_NEUTRAL_UGY_H_SI,
+            "to_lnd_gross": nt / LND_NEUTRAL_GROSS_UGY_H_SI,
+            "to_mb2024": nt / MB2024_NEUTRAL_UGY_H_SI,
+            "neutron_share": (n / nt if (n is not None and nt) else None),
+            "gamma_share": (g / nt if (g is not None and nt) else None)}
 
 
 def _charged_verdict(z: float) -> str:
@@ -334,6 +378,21 @@ def main(argv=None) -> int:
                   f"{SI_TO_WATER:.3f} (z = {z:+.1f}); tissue/Si "
                   f"{r['charged_tissue_ugy_h'] / r['si_charged_ugy_h']:.3f} is NOT a Si->water"
                   " factor (2 cm tissue lining vs Si at the face)")
+        for r in split:
+            rep = si_neutral_report(r)
+            if rep is None:
+                continue
+            r["si_neutral"] = rep
+            print(f"  [{r['point']}] Si detector NEUTRAL {rep['neutral']:.3f} uGy/h Si "
+                  f"(rel_err {_f(rep['rel_err'], '.3f')}; neutron {_f(rep['neutron'], '.3f')}"
+                  f" [{_f(rep['neutron_share'], '.0%')}], gamma {_f(rep['gamma'], '.3f')}"
+                  f" [{_f(rep['gamma_share'], '.0%')}], other {_f(rep['other'], '.3f')}) "
+                  "-- REPORTED, NOT A GATE:")
+            print(f"         {rep['to_lnd']:.3f}x LND {LND_NEUTRAL_UGY_H_SI} (after RTG/RHU "
+                  f"{LND_NEUTRAL_BKG_UGY_H_SI} subtracted; {rep['to_lnd_gross']:.3f}x the gross "
+                  f"{LND_NEUTRAL_GROSS_UGY_H_SI});  {rep['to_mb2024']:.2f}x M&B 2024 Geant4 "
+                  f"{MB2024_NEUTRAL_UGY_H_SI} (which is itself "
+                  f"{MB2024_NEUTRAL_UGY_H_SI / LND_NEUTRAL_UGY_H_SI:.3f}x LND)")
         print(f"  context only -- TOTAL tissue/LND-water vs band {lo}-{hi} (neutral "
               "channel is geometry/lander dependent, not a gate):")
     else:
@@ -361,6 +420,7 @@ def main(argv=None) -> int:
                                "lnd_water_ugy_h": LND_TOTAL_UGY_H_WATER,
                                "lnd_charged_water_ugy_h": LND_CHARGED_UGY_H_WATER,
                                "lnd_neutral_si_ugy_h": LND_NEUTRAL_UGY_H_SI,
+                               "mb2024_neutral_si_ugy_h": MB2024_NEUTRAL_UGY_H_SI,
                                "rows": rows}, indent=2))
     print(f"\nwrote {out}")
     return 0

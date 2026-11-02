@@ -722,6 +722,68 @@ class TestSiDetector(unittest.TestCase):
         runs[1][1].si_charged_rel_err = None   # unknown for one species -> unknown
         self.assertIsNone(dosimetry.assess_composition(runs, skin=True).si_charged_rel_err)
 
+    def test_neutral_scorers_ride_with_detector(self):
+        spec = _dome_spec()
+        self.assertNotIn("SiDoseNeutral", geometry.build_scorers(spec))
+        os.environ[geometry.SI_DETECTOR_ENV] = "300"
+        sc = geometry.build_scorers(spec)
+        for name, chan in (("SiDoseNeutral", "Neutral"), ("SiDoseNeutron", "Neutron"),
+                           ("SiDoseGamma", "Gamma")):
+            self.assertIn(f's:Sc/{name}/Component  = "SiDetector"', sc)
+            self.assertIn(f's:Sc/{name}/Channel    = "{chan}"', sc)
+
+    def test_neutral_csvs_become_skin_ratios(self):
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d)
+            (run / "skin_dose.csv").write_text("# h\n0, 4.0e-13\n")
+            (run / "si_dose_neutral.csv").write_text("# h\n0, 0.8e-14\n")
+            (run / "si_dose_neutron.csv").write_text("# h\n0, 0.6e-14\n")
+            (run / "si_dose_gamma.csv").write_text("# h\n0, 0.2e-14\n")
+            out = bridge.parse_results(run)
+            bridge._pop_entry_channel_fractions(out)
+            self.assertAlmostEqual(out["si_neutral_to_skin_ratio"], 0.02, places=12)
+            self.assertAlmostEqual(out["si_neutron_to_skin_ratio"], 0.015, places=12)
+            self.assertAlmostEqual(out["si_gamma_to_skin_ratio"], 0.005, places=12)
+            import dataclasses
+            from lunarsim import jobs
+            keys = {"si_neutral_to_skin_ratio", "si_neutron_to_skin_ratio",
+                    "si_gamma_to_skin_ratio"}
+            for cls in (bridge.RunResult, jobs.ConvergedResult, dosimetry.DoseAssessment):
+                fields = {f.name for f in dataclasses.fields(cls)}
+                self.assertLessEqual(keys, fields, cls.__name__)
+            for cls in (jobs.ConvergedResult, dosimetry.DoseAssessment):
+                self.assertIn("si_neutral_rel_err", {f.name for f in dataclasses.fields(cls)})
+
+    def test_combine_gives_si_neutral_its_own_error(self):
+        import statistics
+        from lunarsim import jobs
+        spec = _dome_spec()
+        ratios = (0.02, 0.03, 0.01, 0.02)
+        batches = [bridge.RunResult(spec=spec, tier=bridge.FULL_RUN, run_dir=Path("."),
+                                    returncode=0, wall_seconds=1.0, dose_gy=1.0e-13,
+                                    skin_dose_gy=1.0e-13, si_neutral_to_skin_ratio=q)
+                   for q in ratios]
+        c = jobs._combine(spec, bridge.FULL_RUN, batches)
+        self.assertAlmostEqual(c.si_neutral_to_skin_ratio, statistics.fmean(ratios), places=12)
+        expect = statistics.stdev(ratios) / 2.0 / statistics.fmean(ratios)
+        self.assertAlmostEqual(c.si_neutral_rel_err, expect, places=12)
+        self.assertIsNone(c.si_charged_rel_err)          # no charged scorer -> no error
+
+    def test_assess_composition_neutral_error_in_quadrature(self):
+        H = dosimetry.GCR_COMPOSITION[0]
+        runs = []
+        for dose, ratio, err in ((1.0e-13, 0.02, 0.20), (3.0e-13, 0.01, 0.10)):
+            r = _FakeSpeciesRun(_dome_spec(), 1.0e-12, None, dose=dose)
+            r.si_neutral_to_skin_ratio, r.si_neutral_rel_err = ratio, err
+            runs.append((H, r))
+        a = dosimetry.assess_composition(runs, skin=True)
+        w1, w2 = 1 * 0.02, 3 * 0.01
+        self.assertAlmostEqual(a.si_neutral_to_skin_ratio, (w1 + w2) / 4, places=12)
+        expect = ((w1 * 0.20) ** 2 + (w2 * 0.10) ** 2) ** 0.5 / (w1 + w2)
+        self.assertAlmostEqual(a.si_neutral_rel_err, expect, places=12)
+        runs[0][1].si_neutral_rel_err = None
+        self.assertIsNone(dosimetry.assess_composition(runs, skin=True).si_neutral_rel_err)
+
 
 class TestLndHarnessSiGate(unittest.TestCase):
     """lnd_absolute_recheck: the Si detector is the primary charged check, with
@@ -765,6 +827,21 @@ class TestLndHarnessSiGate(unittest.TestCase):
         self.assertEqual(h._charged_verdict(-1.4), "CONSISTENT")
         self.assertTrue(h._charged_verdict(-2.3).startswith("LOW"))
         self.assertTrue(h._charged_verdict(2.3).startswith("HIGH"))
+
+    def test_neutral_report_is_context_only(self):
+        h = self.h
+        self.assertIsNone(h.si_neutral_report({"si_charged_ugy_h": 8.9}))
+        rep = h.si_neutral_report({"si_neutral_ugy_h": 0.20, "si_neutron_ugy_h": 0.12,
+                                   "si_gamma_ugy_h": 0.05, "si_neutral_rel_err": 0.1})
+        self.assertAlmostEqual(rep["other"], 0.03, places=12)
+        self.assertAlmostEqual(rep["to_lnd"], 0.20 / h.LND_NEUTRAL_UGY_H_SI, places=12)
+        self.assertAlmostEqual(rep["to_lnd_gross"], 0.20 / 4.7, places=12)
+        self.assertAlmostEqual(rep["to_mb2024"], 0.20 / 0.0730, places=12)
+        self.assertAlmostEqual(rep["neutron_share"], 0.6, places=12)
+        self.assertAlmostEqual(rep["gamma_share"], 0.25, places=12)
+        partial = h.si_neutral_report({"si_neutral_ugy_h": 0.20})
+        self.assertIsNone(partial["other"])
+        self.assertIsNone(partial["neutron_share"])
 
 
 class _FakeSpeciesRun:

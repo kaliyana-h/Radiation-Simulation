@@ -55,9 +55,13 @@ class ConvergedResult:
     neutron_abs_fraction: Optional[float] = None     # D_neutron-entry / D_total, skin
     si_to_skin_ratio: Optional[float] = None          # D_Si / D_skin (thin Si detector)
     si_charged_to_skin_ratio: Optional[float] = None  # D_Si,charged-entry / D_skin
+    si_neutral_to_skin_ratio: Optional[float] = None  # D_Si,neutral-entry / D_skin
+    si_neutron_to_skin_ratio: Optional[float] = None  # D_Si,neutron-entry / D_skin
+    si_gamma_to_skin_ratio: Optional[float] = None    # D_Si,gamma-entry / D_skin
     dose_rel_err: Optional[float] = None        # standard error / mean
     skin_dose_rel_err: Optional[float] = None   # standard error / mean (skin)
     si_charged_rel_err: Optional[float] = None  # standard error / mean (Si charged dose)
+    si_neutral_rel_err: Optional[float] = None  # standard error / mean (Si neutral dose)
     fluence_inside: Optional[float] = None
     fluence_outside: Optional[float] = None
     per_batch_dose: list[float] = field(default_factory=list)
@@ -93,9 +97,11 @@ def _combine(spec: HabitatSpec, tier: RunTier,
     neu_frac = [b.neutron_doseeq_fraction for b in batches if b.neutron_doseeq_fraction is not None]
     ntl_frac = [b.neutral_dose_fraction for b in batches if b.neutral_dose_fraction is not None]
     nab_frac = [b.neutron_abs_fraction for b in batches if b.neutron_abs_fraction is not None]
-    si_rat = [b.si_to_skin_ratio for b in batches if b.si_to_skin_ratio is not None]
-    sic_rat = [b.si_charged_to_skin_ratio for b in batches
-               if b.si_charged_to_skin_ratio is not None]
+    si_ratios = {}
+    for key in ("si_to_skin_ratio", "si_charged_to_skin_ratio", "si_neutral_to_skin_ratio",
+                "si_neutron_to_skin_ratio", "si_gamma_to_skin_ratio"):
+        vals = [getattr(b, key, None) for b in batches if getattr(b, key, None) is not None]
+        si_ratios[key] = statistics.fmean(vals) if vals else None
     fin = [b.fluence_inside for b in batches if b.fluence_inside is not None]
     fout = [b.fluence_outside for b in batches if b.fluence_outside is not None]
     n = len(doses)
@@ -108,14 +114,15 @@ def _combine(spec: HabitatSpec, tier: RunTier,
     skin_rel = None
     if len(skin) >= 2 and skin_mean:
         skin_rel = statistics.stdev(skin) / (len(skin) ** 0.5) / skin_mean
-    # The thin Si detector's own scatter: per-batch Si charged dose (skin x ratio,
+    # The thin Si detector's own scatter: per-batch Si channel dose (skin x ratio,
     # so the skin/Si correlation is kept), not the skin's error borrowed.
-    sic_dose = [b.skin_dose_gy * b.si_charged_to_skin_ratio for b in batches
-                if b.skin_dose_gy is not None and b.si_charged_to_skin_ratio is not None]
-    sic_mean = statistics.fmean(sic_dose) if sic_dose else None
-    sic_rel = None
-    if len(sic_dose) >= 2 and sic_mean:
-        sic_rel = statistics.stdev(sic_dose) / (len(sic_dose) ** 0.5) / sic_mean
+    def si_rel(key):
+        dose = [b.skin_dose_gy * getattr(b, key, None) for b in batches
+                if b.skin_dose_gy is not None and getattr(b, key, None) is not None]
+        m = statistics.fmean(dose) if dose else None
+        if len(dose) >= 2 and m:
+            return statistics.stdev(dose) / (len(dose) ** 0.5) / m
+        return None
     return ConvergedResult(
         spec=spec, tier=tier, n_batches=len(batches),
         total_primaries=tier.total_primaries * len(batches),
@@ -130,9 +137,9 @@ def _combine(spec: HabitatSpec, tier: RunTier,
         neutron_doseeq_fraction=statistics.fmean(neu_frac) if neu_frac else None,
         neutral_dose_fraction=statistics.fmean(ntl_frac) if ntl_frac else None,
         neutron_abs_fraction=statistics.fmean(nab_frac) if nab_frac else None,
-        si_to_skin_ratio=statistics.fmean(si_rat) if si_rat else None,
-        si_charged_to_skin_ratio=statistics.fmean(sic_rat) if sic_rat else None,
-        si_charged_rel_err=sic_rel,
+        **si_ratios,
+        si_charged_rel_err=si_rel("si_charged_to_skin_ratio"),
+        si_neutral_rel_err=si_rel("si_neutral_to_skin_ratio"),
         fluence_inside=statistics.fmean(fin) if fin else None,
         fluence_outside=statistics.fmean(fout) if fout else None,
         per_batch_dose=doses,
