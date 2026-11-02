@@ -478,8 +478,10 @@ def main(argv=None) -> int:
                 print(f"         charged Si dose by water LET (keV/um); bins sum to "
                       f"{qr['let_closure']:.3f}x the charged Si dose (expect 1); "
                       f">= {LET_HIGH_KEV_UM:g} keV/um carries {qr['high_let_fraction']:.1%}:")
-                for (lo, hi), fr in zip(qr["let_edges"], qr["let_fractions"]):
-                    lab = f"[{_f(lo, '.3g') if lo else '0'}, {_f(hi, '.3g') if hi else 'inf'})"
+                # (e_lo, e_hi: lo/hi hold CONSISTENT_BAND for the total reading below)
+                for (e_lo, e_hi), fr in zip(qr["let_edges"], qr["let_fractions"]):
+                    lab = (f"[{_f(e_lo, '.3g') if e_lo else '0'}, "
+                           f"{_f(e_hi, '.3g') if e_hi else 'inf'})")
                     print(f"           {lab:>16} {fr:>7.2%}")
         print(f"  context only -- TOTAL tissue/LND-water vs band {lo}-{hi} (neutral "
               "channel is geometry/lander dependent, not a gate):")
