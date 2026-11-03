@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
+import datetime
 import sys
 from pathlib import Path
 
@@ -122,7 +123,8 @@ def _run_depth(gcm2: float, run_dir: Path, tier, args) -> dict:
           f"{(a_phan.rel_err or 0)*100:4.1f}%),  skin {skin:7.1f} mSv/yr "
           f"(rel_err {(a_skin.rel_err or 0)*100:4.1f}%),  "
           f"wall {comp.wall_seconds/60:.1f} min", flush=True)
-    note = (f"2026-09-16 full-comp flood sweep (750cm dome, both-converged); "
+    note = (f"{datetime.date.today().isoformat()} full-comp flood sweep "
+            f"(750cm dome, both-converged); "
             f"phantom rel_err {(a_phan.rel_err or 0)*100:.1f}%, "
             f"skin rel_err {(a_skin.rel_err or 0)*100:.1f}%")
     return {"areal_gcm2": f"{gcm2:g}", "al_cm": f"{t_cm:.2f}",
@@ -174,9 +176,13 @@ def main(argv=None) -> None:
                   f"{existing['flood_eff_mSv_yr']}); skip (use --force to redo).")
             continue
         row = _run_depth(g, outdir / f"al{g:g}", tier, args)
-        # preserve any pre-existing hand note by appending
+        # keep a pre-existing hand note, but drop earlier sweep notes: a --force
+        # re-run supersedes them, and leaving them reads as if they still apply
         if existing and (existing.get("note") or "").strip():
-            row["note"] = existing["note"].strip() + " | " + row["note"]
+            hand = [n.strip() for n in existing["note"].split(" | ")
+                    if n.strip() and "flood sweep" not in n]
+            if hand:
+                row["note"] = " | ".join(hand) + " | " + row["note"]
         rows[key] = row
         _write_csv(rows)            # checkpoint after every depth (resumable)
         print(f"  [{g:g}] written.\n")
