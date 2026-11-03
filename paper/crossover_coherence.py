@@ -158,7 +158,8 @@ def main() -> int:
           "over-read behind the retired 2-3x confidence note")
     s4 = qgap < 0.10
     print(f"    -> {'PASS' if s4 else 'CONCERN'}: per-element <Q> handoff is "
-          "seamless in <Q> (flood side at the gate not re-measured by MC)")
+          "seamless in <Q> (E still steps: flood MC @19 skin 218 vs "
+          "kernel ~158 mSv/yr, ~1.4x; paper/accuracy_flood_sweep.py 2026-11-03)")
     print(f"    (per-element E @gate {pg['E_msv_yr']:.0f} mSv/yr reproduces the "
           f"~158 shielded-dome headline under the Matthiae absolute normalisation; "
           f"~130 under the legacy 2.0 pin; lumped read {bg['E_msv_yr']:.0f})")

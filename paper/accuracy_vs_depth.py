@@ -106,9 +106,9 @@ def main() -> None:
     ap.add_argument("--flood-col", choices=["skin", "eff"], default="skin",
                     help="which flood scorer to plot above the gate: "
                          "'skin' = wall-lining dose equiv (OLTARIS-validated basis, "
-                         "rel_err ~0.5%, smooth/monotonic; the production headline) "
+                         "rel_err ~0.5%%, smooth/monotonic; the production headline) "
                          "or 'eff' = crew-phantom effective dose (Bragg-noisy, "
-                         "rel_err 9-16%, non-monotonic diagnostic). Default: skin.")
+                         "rel_err 9-16%%, non-monotonic diagnostic). Default: skin.")
     ap.add_argument("--plot", action="store_true", help="write F13 figure")
     ap.add_argument("--write-kernel", action="store_true",
                     help="dump computed kernel column to accuracy_al_kernel.csv")

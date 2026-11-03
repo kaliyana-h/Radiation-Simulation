@@ -1065,11 +1065,13 @@ def areal_density_confidence(ad_gcm2: float) -> dict:
       * 12 < ad < 40 -> LOW: straddles the 19 g/cm^2 kernel/flood handoff. The
                        kernel side is measured (E 158 = ~0.7x OLTARIS at the
                        gate; <Q> 2.16 continuous with OLTARIS deep, paper.
-                       crossover_coherence). The flood side has NOT been
-                       re-measured at the gate since the 2026-10 per-element /
-                       Matthiae input fixes; the old "kernel 0.52x vs flood 2.6x,
-                       2-3x off" figures predate both and are retired, so the
-                       size of the engine step is currently unquantified.
+                       crossover_coherence). Flood side MEASURED on the PC
+                       2026-11-03 (paper/accuracy_flood_sweep.py, 750 cm Al dome,
+                       full composition): skin 218.4 mSv/yr = 0.96x OLTARIS,
+                       phantom 203.6 +/-12% = 0.89x. So crossing the gate the
+                       headline steps UP ~1.3-1.4x, from an optimistic kernel to a
+                       near-OLTARIS flood. (The old "kernel 0.52x vs flood 2.6x,
+                       2-3x off" figures predate the 2026-10 fixes and are retired.)
 
     Returns {level, label, message} for a GUI banner. Purely advisory -- it
     changes no computed dose. Boundaries are soft engineering cut points, not
@@ -1090,9 +1092,9 @@ def areal_density_confidence(ad_gcm2: float) -> dict:
             "message": ("Areal density straddles the ~19 g/cm^2 hand-off "
                         "between the thin-wall and thick-wall dose engines -- "
                         "the least-certain band. Near the hand-off the thin-wall "
-                        "engine reads ~0.7x OLTARIS (optimistic), and the step "
-                        "to the thick-wall engine has not been re-measured since "
-                        "the latest GCR-input update. Treat as indicative; a "
+                        "engine reads ~0.7x OLTARIS (optimistic) while the "
+                        "thick-wall engine reads ~0.9-1.0x, so the number jumps "
+                        "up ~1.3-1.4x across the hand-off. Treat as indicative; a "
                         "clearly thicker or thinner wall gives a firmer number.")}
 
 
