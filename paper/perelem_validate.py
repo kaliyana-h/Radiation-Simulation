@@ -21,17 +21,20 @@ What it checks, per anchor wall [0, 2.025, 10, 50 g/cm2 Al-equiv]:
       <Q> to the arbiter; compare the water-point <Q> here.
 
   (C) Absolute-dose anchors printed inline for the human:
-        - Chang'E-4 LND: 13.2 uGy/h Si ~ 0.41 mGy/day tissue (converged 22.4 g/cm2
-          anchor, <Q> 4.04, SILICON-referenced dose-equivalent).
+        - Chang'E-4 LND (Zhang 2020): 13.2 +- 1 uGy/h TOTAL absorbed in SILICON
+          (charged 10.2, neutral 3.1); charged <Q> 4.3 +- 0.7 (LET in water). The
+          like-for-like check is the thin-Si detector in paper/lnd_absolute_recheck
+          (charged 0.90x, <Q> 0.92x LND), not this fold.
         - OLTARIS: 0.296 mGy/day TOTAL at 54 g/cm2 Al (lunar surface). The thin-wall
-          ORGAN absorbed dose is ~0.5-0.56x the OLTARIS BARE-POINT by self-shielding,
-          so a thin-wall anchor that lands ~half the bare point is EXPECTED, not a
+          ORGAN absorbed dose is ~0.58-0.78x the OLTARIS BARE-POINT (self-shielding,
+          on the Matthiae-absolute normalisation; same band as paper.crossover_
+          coherence), so a thin-wall anchor below the bare point is EXPECTED, not a
           miss. The point-like match to OLTARIS lives on the FLOOD side (>19 g/cm2),
           checked separately by anchor_crosscheck (command printed at the end).
 
 CAVEATS enforced in the output:
   * water-point vs organ geometry (never call the organ-vs-arbiter gap a defect);
-  * thin-wall organ absorbed ~0.5-0.56x OLTARIS bare-point (self-shielding);
+  * thin-wall organ absorbed ~0.58-0.78x OLTARIS bare-point (self-shielding);
   * the ~19 g/cm2 crossover: below it the kernel is authoritative, at/above it the
     flood engine is, and the "absorbed dose" label changes flavour across it.
 
@@ -69,17 +72,22 @@ ARBITER_QBAR = [
 ]
 
 # OLTARIS lunar-surface TOTAL absorbed dose (compare to the FLOOD top-line, not the
-# thin-wall organ fold). 54 g/cm2 Al. Thin-wall organ absorbed ~0.5-0.56x this.
+# thin-wall organ fold). 54 g/cm2 Al. Thin-wall organ absorbed ~0.58-0.78x this.
 OLTARIS_TOTAL_MGY_DAY = 0.296
 OLTARIS_WALL_GCM2 = 54.0
-THINWALL_SELF_SHIELD_LO = 0.50   # organ absorbed / bare-point (expected band)
-THINWALL_SELF_SHIELD_HI = 0.56
+# organ absorbed / bare-point (expected band). Was 0.50-0.56 under the legacy 2.0
+# /cm2/s proton pin; re-pinned (not tuned) with the 2026-10-27 Matthiae-absolute
+# normalisation, matching paper.crossover_coherence check [5] (measured 0.677).
+THINWALL_SELF_SHIELD_LO = 0.58
+THINWALL_SELF_SHIELD_HI = 0.78
 
-# Chang'E-4 LND converged anchor (SILICON-referenced dose-equivalent).
-CHANGE4_UGY_H_SI = 13.2
-CHANGE4_MGY_DAY_TISSUE = 0.41
-CHANGE4_WALL_GCM2 = 22.4
-CHANGE4_QBAR = 4.04
+# Chang'E-4 LND (Zhang 2020) measured values, absorbed in SILICON. The earlier
+# "0.41 mGy/day tissue, Si-referenced dose-equivalent" reading was retracted
+# 2026-10-27 (memory dose-validation).
+CHANGE4_UGY_H_SI = 13.2           # +- 1, total
+CHANGE4_CHARGED_UGY_H_SI = 10.2   # +- 1.1
+CHANGE4_NEUTRAL_UGY_H_SI = 3.1    # +- 0.5, platform-contaminated, not a gate
+CHANGE4_QBAR_CHARGED = 4.3        # +- 0.7, LET in water
 
 
 def _interp(curve, x):
@@ -164,9 +172,10 @@ def report_waterpoint(let_path):
 def report_absolute(folded):
     """(C) Absolute-dose references and the thin-wall-vs-bare-point expectation."""
     print("(C) ABSOLUTE-DOSE reference anchors (post-hoc; CAL not re-fit)")
-    print(f"    Chang'E-4 LND  : {CHANGE4_UGY_H_SI} uGy/h Si "
-          f"~ {CHANGE4_MGY_DAY_TISSUE} mGy/day tissue "
-          f"(conv. {CHANGE4_WALL_GCM2} g/cm2, <Q> {CHANGE4_QBAR}, Si-ref.)")
+    print(f"    Chang'E-4 LND  : {CHANGE4_UGY_H_SI} uGy/h total in Si "
+          f"(charged {CHANGE4_CHARGED_UGY_H_SI}, neutral {CHANGE4_NEUTRAL_UGY_H_SI}; "
+          f"charged <Q> {CHANGE4_QBAR_CHARGED})")
+    print("                     like-for-like check: python3 -m paper.lnd_absolute_recheck")
     print(f"    OLTARIS total  : {OLTARIS_TOTAL_MGY_DAY} mGy/day "
           f"@ {OLTARIS_WALL_GCM2} g/cm2 Al (lunar surface, TOTAL not GCR-only)")
     bare = OLTARIS_TOTAL_MGY_DAY
@@ -221,13 +230,14 @@ def main() -> int:
 
     print("-" * 70)
     print("DEEP STABILITY (>19 g/cm2 flood side -- point-like OLTARIS match):")
-    print("  laptop: preserved by construction -- Option A pins the flood engine to")
-    print("          the OLTARIS-validated 5-ion baseline under 'perelement'.")
+    print("  laptop: the flood engine maps 'perelement' -> the 5-ion 'matthia2013'")
+    print("          model (dosimetry.flood_model_for), Matthiae-absolute normalisation.")
     print("  PC MC : python3 -m lunarsim.anchor_crosscheck runs/xcheck54")
-    print("          (54 g/cm2 Al dome, expect skin ratio ~1.0 vs 0.310 mGy/day)")
+    print("          (54 g/cm2 Al dome; measured 0.260 mGy/day = ~0.88x OLTARIS-Total)")
     print("-" * 70)
     print("CAVEATS: (1) arbiter is WATER-POINT <Q>; organ fold ~0.61x it.")
-    print("         (2) thin-wall organ absorbed ~0.50-0.56x OLTARIS bare-point.")
+    print(f"         (2) thin-wall organ absorbed ~{THINWALL_SELF_SHIELD_LO:.2f}-"
+          f"{THINWALL_SELF_SHIELD_HI:.2f}x OLTARIS bare-point.")
     print("         (3) ~19 g/cm2 crossover flips the 'absorbed dose' flavour;")
     print("             kernel authoritative below, flood above.")
     return 0

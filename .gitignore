@@ -254,3 +254,12 @@ __marimo__/
 /extensions/TsExtensionManager.cc
 /extensions/TsExtensionManager.hh
 bin/topas
+
+# ----------------------------------------------------------------------
+# Local-only material (not source)
+# ----------------------------------------------------------------------
+# User-curated reference PDFs (~1 GB; one 832 MB Sourcebook exceeds GitHub's
+# 100 MB file limit and blocks push). Kept on disk, never committed.
+/paper/Resources/
+# Per-machine MC run output / logs (tee'd from long PC runs)
+/runs/

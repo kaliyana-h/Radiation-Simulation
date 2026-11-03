@@ -1060,10 +1060,16 @@ def areal_density_confidence(ad_gcm2: float) -> dict:
                        (The pre-2026-10-27 "~1.1x OLTARIS" agreement came from a
                        compensating pin+heavy-ion pair, now removed.)
       * ad <= 12    -> MEDIUM: thin-wall kernel regime, close but OPTIMISTIC
-                       (~0.8x of OLTARIS at 10 g/cm^2) -- may under-warn.
-      * 12 < ad < 40 -> LOW: straddles the crossover cliff and is *least* certain
-                       right at the 19 g/cm^2 gate (kernel 0.52x below vs flood
-                       2.6x above OLTARIS there); the headline can be ~2-3x off.
+                       (per-element kernel E 177 mSv/yr = ~0.78x of OLTARIS-Al
+                       ~228 at 10 g/cm^2) -- may under-warn.
+      * 12 < ad < 40 -> LOW: straddles the 19 g/cm^2 kernel/flood handoff. The
+                       kernel side is measured (E 158 = ~0.7x OLTARIS at the
+                       gate; <Q> 2.16 continuous with OLTARIS deep, paper.
+                       crossover_coherence). The flood side has NOT been
+                       re-measured at the gate since the 2026-10 per-element /
+                       Matthiae input fixes; the old "kernel 0.52x vs flood 2.6x,
+                       2-3x off" figures predate both and are retired, so the
+                       size of the engine step is currently unquantified.
 
     Returns {level, label, message} for a GUI banner. Purely advisory -- it
     changes no computed dose. Boundaries are soft engineering cut points, not
@@ -1081,11 +1087,13 @@ def areal_density_confidence(ad_gcm2: float) -> dict:
                             "but OPTIMISTIC (~0.8x at 10 g/cm^2), so the true dose "
                             "may be somewhat higher than shown.")}
     return {"level": "low", "label": "crossover band",
-            "message": ("Areal density straddles the ~19 g/cm^2 kernel/flood "
-                        "crossover -- the least-certain band, where the headline "
-                        "can be 2-3x off (optimistic below 19, conservative "
-                        "above). Treat as indicative; a clearly thicker or "
-                        "thinner wall gives a firmer number.")}
+            "message": ("Areal density straddles the ~19 g/cm^2 hand-off "
+                        "between the thin-wall and thick-wall dose engines -- "
+                        "the least-certain band. Near the hand-off the thin-wall "
+                        "engine reads ~0.7x OLTARIS (optimistic), and the step "
+                        "to the thick-wall engine has not been re-measured since "
+                        "the latest GCR-input update. Treat as indicative; a "
+                        "clearly thicker or thinner wall gives a firmer number.")}
 
 
 def _gcr_thinwall_calibrated(spec) -> bool:

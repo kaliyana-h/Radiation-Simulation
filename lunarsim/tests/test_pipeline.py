@@ -37,6 +37,18 @@ from lunarsim import geometry, bridge, dosimetry
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
+def _restore_perelement_model(saved):
+    """Put LUNARSIM_GCR_PERELEMENT back exactly as a test found it. An unset env
+    means the module default ('perelement'), so pop it rather than writing 'none'
+    -- writing 'none' leaked the legacy model into every later test module."""
+    if saved is None:
+        os.environ.pop("LUNARSIM_GCR_PERELEMENT", None)
+        dosimetry._load_make_source.cache_clear()
+        dosimetry._calibration_factor.cache_clear()
+    else:
+        dosimetry.set_perelement_model(saved)
+
+
 def _cyl_spec(inner=300.0):
     return HabitatSpec(name="c", shape="cylinder", inner_radius_cm=inner,
                        walls=[WallLayer("polyethylene", 10.0),
@@ -1109,7 +1121,19 @@ class TestGcrThinWallFold(unittest.TestCase):
     carries the documented thin-slab Bragg-limited over-read (the kernel's clean
     regime is thick shielding / the flood engine). The trustworthy, regression-
     guarded thin quantity is the light-ion (H+He+C) partial. Physics validation of
-    the kernel lives offline."""
+    the kernel lives offline.
+
+    The pinned numbers are folds of the legacy 5-ion LUMPED kernel, so setUp pins
+    model 'none' explicitly. These tests used to pass only when an earlier module
+    leaked 'none' into the env; run alone they got the shipped per-element default
+    (light-ion partial 97 vs 196) and failed."""
+
+    def setUp(self):
+        self._saved_env = os.environ.get("LUNARSIM_GCR_PERELEMENT")
+        dosimetry.set_perelement_model("none")
+
+    def tearDown(self):
+        _restore_perelement_model(self._saved_env)
 
     def _thin_dome(self):
         # 7.5 mm aluminium dome ~ 2.03 g/cm^2 -- the thinnest kernel anchor
@@ -1569,8 +1593,7 @@ class TestFloodPerelementIsolation(unittest.TestCase):
         self.elem_C = dosimetry._gcr_integral(6, 12, 400.0)
 
     def tearDown(self):
-        # leave the process on whatever the env said at entry (default none)
-        dosimetry.set_perelement_model(self._saved_env or "none")
+        _restore_perelement_model(self._saved_env)
 
     def test_flood_model_mapping(self):
         # perelement maps to the coherent 5-ion Matthiae model for the flood;
@@ -1643,7 +1666,7 @@ class TestMatthiaAbsoluteNormalisation(unittest.TestCase):
         self._saved_lis = os.environ.get("LUNARSIM_GCR_LIS")
 
     def tearDown(self):
-        dosimetry.set_perelement_model(self._saved_env or "none")
+        _restore_perelement_model(self._saved_env)
         if self._saved_lis is None:
             os.environ.pop("LUNARSIM_GCR_LIS", None)
             dosimetry._load_make_source.cache_clear()

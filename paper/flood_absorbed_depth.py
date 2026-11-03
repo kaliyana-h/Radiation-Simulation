@@ -55,7 +55,7 @@ a same-physics MC yardstick; OLTARIS is a post-hoc reference. This only measures
 what the tool already returns.
 
 Prerequisite: confirm the full-composition anchor first --
-    python3 -m lunarsim.anchor_crosscheck runs/xcheck54   # expect skin ~0.31 mGy/day, ratio ~1.0
+    python3 -m lunarsim.anchor_crosscheck runs/xcheck54   # expect skin ~0.26 mGy/day, ~0.88x OLTARIS
 Only run this sweep once that closes.
 
 Usage (PC)

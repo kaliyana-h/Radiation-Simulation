@@ -37,6 +37,18 @@ OLTARIS_D_MGY_DAY = 0.296
 OLTARIS_QBAR = 2.16
 
 
+def _restore_perelement_model(saved):
+    """Put LUNARSIM_GCR_PERELEMENT back exactly as a test found it. An unset env
+    means the module default ('perelement'), so pop it rather than writing 'none'
+    -- writing 'none' leaked the legacy model into later tests."""
+    if saved is None:
+        os.environ.pop("LUNARSIM_GCR_PERELEMENT", None)
+        dosimetry._load_make_source.cache_clear()
+        dosimetry._calibration_factor.cache_clear()
+    else:
+        dosimetry.set_perelement_model(saved)
+
+
 def _al_spec(ad_gcm2):
     return HabitatSpec(name=f"al_{ad_gcm2:g}", shape="dome", inner_radius_cm=400.0,
                        walls=[WallLayer(material="aluminium",
@@ -87,7 +99,7 @@ class TestCrossoverCoherence(unittest.TestCase):
         self.perel = {ad: _fold(ad, "perelement") for ad in self.sweep}
 
     def tearDown(self):
-        dosimetry.set_perelement_model(self._saved or "none")
+        _restore_perelement_model(self._saved)
 
     def test_baseline_reproduces_oltaris_deep_anchor(self):
         # The shell fix: the 5-ion kernel lands on OLTARIS at 50 g/cm^2.

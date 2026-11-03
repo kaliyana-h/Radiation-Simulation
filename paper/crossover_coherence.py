@@ -18,7 +18,8 @@ This script does NOT run MC. It folds the shipped kernels (pure arithmetic,
 dosimetry.fold_gcr_thinwall via assess_gcr_thinwall) across the crossover and
 lays the result beside the OLTARIS-validated deep reference, so the coherence of
 the handoff can be read off and locked with a regression guard. It deliberately
-re-measures the stale pre-fix claim baked into dosimetry.areal_density_confidence
+re-measures the pre-fix claim that dosimetry.areal_density_confidence used to
+carry (retired 2026-11-02)
 ("kernel 0.52x below vs flood 2.6x above OLTARIS" at the 19 g/cm^2 gate).
 
 TARGET-BLIND: OLTARIS numbers here are a POST-HOC reference, never a fit target.
@@ -143,9 +144,9 @@ def main() -> int:
           f"(de-lumping removes over-read): {'PASS' if s3 else 'CONCERN'}")
 
     # --- Sub-check 4: <Q> continuity across the gate (the fix's coherence win) --
-    # dosimetry.areal_density_confidence still carries the PRE-FIX claim that the
+    # dosimetry.areal_density_confidence used to carry the PRE-FIX claim that the
     # headline is "~2-3x off" at the 19 g/cm^2 gate (kernel <Q>~4 vs OLTARIS deep
-    # ~2.2). With the per-element kernel the thin-side <Q> at the gate should now
+    # ~2.2); retired 2026-11-02 in favour of the measured kernel side below. With the per-element kernel the thin-side <Q> at the gate should now
     # MATCH the OLTARIS-validated deep <Q>, i.e. the handoff is seamless in <Q>.
     gate = 19.0
     pg, bg = perel[gate], base[gate]
@@ -154,10 +155,10 @@ def main() -> int:
     print(f"    per-element thin-kernel <Q> {pg['qbar']:.3f}  vs  OLTARIS deep <Q> "
           f"{OLTARIS_QBAR:.3f}   (gap {qgap*100:.1f}%)")
     print(f"    lumped (old) thin-kernel <Q> {bg['qbar']:.3f}  <- the pre-fix "
-          "over-read baked into areal_density_confidence")
+          "over-read behind the retired 2-3x confidence note")
     s4 = qgap < 0.10
     print(f"    -> {'PASS' if s4 else 'CONCERN'}: per-element <Q> handoff is "
-          "seamless; the stale areal_density_confidence note is now conservative")
+          "seamless in <Q> (flood side at the gate not re-measured by MC)")
     print(f"    (per-element E @gate {pg['E_msv_yr']:.0f} mSv/yr reproduces the "
           f"~158 shielded-dome headline under the Matthiae absolute normalisation; "
           f"~130 under the legacy 2.0 pin; lumped read {bg['E_msv_yr']:.0f})")

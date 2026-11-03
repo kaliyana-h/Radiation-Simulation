@@ -17,12 +17,19 @@ Before touching CAL we must know whether the drift is:
   (B) global           -- the whole flood pipeline now reads low.
 
 This harness measures ABSORBED dose at the *other*, independent absorbed anchor:
-54 g/cm^2 PURE aluminium, the design validated at 0.310 mGy/day (= 12.9 uGy/h)
-against OLTARIS-Total / Chang'E-4 (memory: oltaris-absorbed-dose-crosscheck). It
-runs the FULL GCR composition (H+He+C+Si+Fe via jobs.run_composition +
-dosimetry.assess_composition) -- the SAME path production/GUI uses, and the same
-field the 0.310 anchor is -- under BOTH LIS forms, with the CURRENT CAL_old
-applied.
+54 g/cm^2 PURE aluminium, compared post-hoc against OLTARIS lunar-surface TOTAL
+0.296 mGy/day (memory: oltaris-absorbed-dose-crosscheck). It runs the FULL GCR
+composition (H+He+C+Si+Fe via jobs.run_composition + dosimetry.assess_composition)
+-- the SAME path production/GUI uses -- under BOTH LIS forms, with the CURRENT
+CAL applied.
+
+UPDATED 2026-11-02: the reference used to be the tool's own earlier 0.310 mGy/day.
+That number was produced with the hand-set GCR heavy abundances (C/Si/Fe 4.7-7.1x
+Matthiae) and the 2.0 /cm2/s proton pin, both since removed (memory flood-heavy-
+abundance-overweight), so it was a stale self-reference, not a measurement. The
+comparand is now the external OLTARIS-Total value; the Matthiae-absolute flood
+measured 0.260 mGy/day on the PC (2026-10, also in paper/lnd_absolute_recheck.py)
+= 0.88x, inside the cross-code band.
 
 ROOT CAUSE FOUND (2026-09-15): the earlier "~2.75x global drift" was a HARNESS
 BUG, not a pipeline regression. The old version called bare bridge.run_design +
@@ -32,10 +39,10 @@ compared it against the full-composition 0.310 / 13.2 anchors. Apples-to-oranges
 rerun_lis_fix.py anchor has the identical flaw. Fixing the harness to run the
 full composition removes the apparent drift; CAL is untouched and correct.
 
-Interpreting the result (energy form, CAL_old applied):
-  * skin ~0.31 mGy/day (~12.9 uGy/h)  -> confirms NO drift; flood pipeline is
-    fine; the proton-only artifact is explained. Do NOT touch CAL.
-  * skin still ~0.12-0.13 mGy/day     -> a genuine drift would remain; then find
+Interpreting the result (energy form, current CAL applied):
+  * skin 0.8-1.25x OLTARIS-Total      -> no global drift; the flood pipeline is
+    consistent with an independent code. Do NOT touch CAL.
+  * skin < 0.6x                       -> a genuine drift would remain; then find
     the root cause (composition/flux/normalisation), NOT via a CAL rescale.
 
 Target-blind: nothing here feeds a dose value into the physics. This is a
@@ -64,8 +71,9 @@ XCHECK_SHAPE = "dome"
 XCHECK_INNER_R_CM = 300.0
 AL_RHO_G_CM3 = 2.70
 DEFAULT_AREAL_GCM2 = 54.0
-# Validated absorbed dose at 54 g/cm^2 Al (memory: oltaris-absorbed-dose-crosscheck):
-VALIDATED_MGY_DAY = 0.310          # ~= 12.9 uGy/h; OLTARIS-Total / Chang'E-4 cross-check
+# Post-hoc external comparand at 54 g/cm^2 Al (memory: oltaris-absorbed-dose-crosscheck):
+# OLTARIS lunar-surface TOTAL, not the "Freespace GCR effects only" component.
+OLTARIS_TOTAL_MGY_DAY = 0.296      # ~= 12.3 uGy/h
 LIS_FORMS = ("energy", "rigidity")
 
 
@@ -74,8 +82,8 @@ def _run_one(lis_var: str, areal_gcm2: float, run_dir: Path, tier) -> dict:
 
     Runs the FULL GCR composition (H+He+C+Si+Fe), one MC per species, summed by
     dosimetry.assess_composition -- IDENTICAL to the production path (jobs.run_
-    composition -> gui). This is what the validated 0.310 mGy/day / 13.2 uGy/h
-    anchors are: full-field absorbed dose. (The earlier proton-only run_design +
+    composition -> gui). This is what the OLTARIS-Total comparand is: full-field
+    absorbed dose. (The earlier proton-only run_design +
     assess measured H alone, ~0.36x of the total -- the proton dose fraction, not
     a pipeline drift; that comparison was apples-to-oranges.)"""
     from lunarsim.spec import HabitatSpec, WallLayer
@@ -146,8 +154,8 @@ def main(argv=None) -> None:
 
     print(f"Absorbed-dose cross-check: {args.areal:g} g/cm^2 pure Al, "
           f"{XCHECK_SHAPE} inner_r={XCHECK_INNER_R_CM:.0f} cm")
-    print(f"  validated target (energy/legacy basis): {VALIDATED_MGY_DAY:.3f} mGy/day "
-          f"(= {VALIDATED_MGY_DAY*1000/24:.2f} uGy/h)")
+    print(f"  post-hoc comparand (OLTARIS-Total): {OLTARIS_TOTAL_MGY_DAY:.3f} mGy/day "
+          f"(= {OLTARIS_TOTAL_MGY_DAY*1000/24:.2f} uGy/h)")
     print(f"  statistics: {mult}x FULL_RUN = {tier.total_primaries} primaries/form")
     print(f"  current OUTER_GAUGE_ANCHOR_CAL = {cal_old:.5f}\n")
 
@@ -175,16 +183,13 @@ def main(argv=None) -> None:
                           f"{('%.3f' % fr) if fr is not None else '--':>6}")
 
     e = results["energy"]
-    ratio = e["skin_mgy_day"] / VALIDATED_MGY_DAY
-    print(f"\n  energy-form FULL-composition skin / validated = {e['skin_mgy_day']:.4f} / "
-          f"{VALIDATED_MGY_DAY:.3f} = {ratio:.3f}")
+    ratio = e["skin_mgy_day"] / OLTARIS_TOTAL_MGY_DAY
+    print(f"\n  energy-form FULL-composition skin / OLTARIS-Total = {e['skin_mgy_day']:.4f} / "
+          f"{OLTARIS_TOTAL_MGY_DAY:.3f} = {ratio:.3f}")
     if 0.8 <= ratio <= 1.25:
-        verdict = ("PIPELINE OK. The full-composition 54 g/cm^2 anchor reproduces "
-                   "0.31 mGy/day, confirming NO global drift. The earlier ~0.36x "
-                   "'drift' was the proton-only harness measuring H alone (see the "
-                   "proton dose fraction above) vs a full-field anchor -- an "
-                   "apples-to-oranges comparison, not a normalisation regression. "
-                   "Do NOT rescale CAL. Flood numbers can be UNFROZEN.")
+        verdict = ("PIPELINE OK. The full-composition 54 g/cm^2 absorbed dose is "
+                   f"{ratio:.2f}x OLTARIS-Total, within the cross-code band -- NO "
+                   "global drift. Do NOT rescale CAL.")
     elif ratio < 0.6:
         verdict = ("STILL LOW even at full composition -- a genuine drift remains. "
                    "Find the root cause (composition/flux/normalisation), NOT via "
@@ -195,9 +200,9 @@ def main(argv=None) -> None:
     print(f"\n  VERDICT: {verdict}")
 
     summary = {"areal_gcm2": args.areal, "cal_old": cal_old,
-               "validated_mgy_day": VALIDATED_MGY_DAY, "mult": mult,
+               "oltaris_total_mgy_day": OLTARIS_TOTAL_MGY_DAY, "mult": mult,
                "composition": "full GCR (H+He+C+Si+Fe), converge_on=skin",
-               "results": results, "energy_skin_over_validated": ratio}
+               "results": results, "energy_skin_over_oltaris": ratio}
     (outdir / "xcheck_summary.json").write_text(json.dumps(summary, indent=2))
     print(f"\n  wrote {outdir / 'xcheck_summary.json'}")
 

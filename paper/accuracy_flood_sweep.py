@@ -33,8 +33,8 @@ TARGET-BLIND: nothing here feeds a dose value back into the physics. OLTARIS is
 a post-hoc reference; this only measures what the tool already returns.
 
 Prerequisite: the full-composition anchor must first be confirmed with
-`python3 -m lunarsim.anchor_crosscheck runs/xcheck54` (expect skin ~0.31
-mGy/day, ratio ~1.0). Only run this sweep once that closes.
+`python3 -m lunarsim.anchor_crosscheck runs/xcheck54` (expect skin ~0.26
+mGy/day, ~0.88x OLTARIS-Total 0.296). Only run this sweep once that closes.
 
 Usage (PC)
 ----------
