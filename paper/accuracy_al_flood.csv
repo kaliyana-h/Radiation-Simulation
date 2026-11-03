@@ -1,7 +1,7 @@
 areal_gcm2,al_cm,flood_eff_mSv_yr,flood_skin_mSv_yr,note
-19,7.04,,,gate; flood takes over at/above here
-25,9.26,,,
-30,11.11,,,matched to OLTARIS Al dish minimum
-40,14.81,,,
-50,18.52,,,PRE-LIS-FIX reference (crossover memory): skin-ICRP 287.7 (1.09x OLT 264) VALIDATED; phantom-ICRP 259.1 (0.98x). Re-run post-LIS-fix on PC.
-54,20.00,,,
+19,7.04,203.6,218.4,"gate; flood takes over at/above here | 2026-09-16 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 16.3%, skin rel_err 0.5% | 2026-09-16 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 12.3%, skin rel_err 0.5%"
+25,9.26,804.0,538.0,"2026-09-16 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 14.3%, skin rel_err 0.5%"
+30,11.11,842.1,444.9,"matched to OLTARIS Al dish minimum | 2026-09-16 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 13.2%, skin rel_err 0.5%"
+40,14.81,250.8,343.6,"2026-09-16 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 9.1%, skin rel_err 0.5%"
+50,18.52,225.7,299.0,"PRE-LIS-FIX reference (crossover memory): skin-ICRP 287.7 (1.09x OLT 264) VALIDATED; phantom-ICRP 259.1 (0.98x). Re-run post-LIS-fix on PC. | 2026-09-16 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 9.0%, skin rel_err 0.5%"
+54,20.00,456.2,284.8,"2026-09-16 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 11.5%, skin rel_err 0.5%"
