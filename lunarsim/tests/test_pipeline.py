@@ -24,6 +24,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 # Make `lunarsim` importable when run as a bare file from the tests dir.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1341,9 +1342,10 @@ class TestCombinedThinWallRender(unittest.TestCase):
 
     def _job(self, spec):
         from lunarsim.jobs import JobStatus
-        from lunarsim.bridge import WORST_CASE_SPE
+        from lunarsim.bridge import WORST_CASE_SPE, FULL_RUN
         return types.SimpleNamespace(
             spec=spec, result=self._FakeResult(spec), spe=WORST_CASE_SPE,
+            tier=FULL_RUN,
             combined=True, status=JobStatus.DONE, progress=1.0, rel_err=0.1,
             progress_cap=12, max_batches=12, batches_done=12, elapsed=100.0)
 
@@ -1362,8 +1364,10 @@ class TestCombinedThinWallRender(unittest.TestCase):
                            walls=[WallLayer("aluminium", 0.75)])   # ~2.03 g/cm^2
         _bar, _st, _metrics, _an, _dis, report, overlay = self._poll_with(spec)
         # Gate 1 overlay is the folded ICRP effective dose, NOT the flood artifact
-        # (295.4 under the rigidity-LIS fix; was 342.6 -- see the anchor test above)
-        self.assertAlmostEqual(overlay["skin"], 295.4, delta=1.0)
+        # (227.6 on the per-element kernel + Matthiae-absolute flux, = the
+        # accuracy_vs_depth kernel column @2.03; was 295.4 under the lumped
+        # rigidity kernel, 342.6 before that -- see the anchor test above)
+        self.assertAlmostEqual(overlay["skin"], 227.6, delta=1.0)
         self.assertLess(overlay["skin"], 400.0)          # not the ~3500 flood number
         self.assertIn("thin-wall", report)               # regime is labelled
         self.assertIn("ICRP-60 Q(L)", report)            # folded on ICRP Q, not NASA
@@ -1376,7 +1380,19 @@ class TestCombinedThinWallRender(unittest.TestCase):
         spec = HabitatSpec(name="d", shape="dome", inner_radius_cm=750.0,
                            walls=[WallLayer("aluminium", 0.75)])   # ~2.03 g/cm^2
         _bar, _st, _metrics, _an, _dis, report, _ov = self._poll_with(spec)
-        self.assertIn("Confidence (thin-wall (optimistic))", report)
+        self.assertIn("Confidence: MEDIUM (thin-wall (optimistic))", report)
+
+    def test_report_and_card_carry_systematic_band(self):
+        """The headline carries the model-spread band beside the MC ±, in both
+        the report and the score card, plus the provenance stamp."""
+        spec = HabitatSpec(name="d", shape="dome", inner_radius_cm=750.0,
+                           walls=[WallLayer("aluminium", 0.75)])   # ~2.03 g/cm^2
+        _bar, _st, metrics, _an, _dis, report, _ov = self._poll_with(spec)
+        self.assertIn("Systematic band: systematic", report)
+        self.assertIn("energy ceiling", report)
+        self.assertIn("Provenance: `git=", report)
+        self.assertIn("engine=kernel", report)
+        self.assertIn("MC statistics only", str(metrics))
 
 
 class TestCombinedJobOrchestration(unittest.TestCase):
@@ -1616,13 +1632,15 @@ class TestFloodPerelementIsolation(unittest.TestCase):
     def test_flood_baseline_model_maps_perelement_to_matthia(self):
         dosimetry.set_perelement_model("perelement")
         with dosimetry.flood_baseline_model():
-            self.assertEqual(os.environ.get("LUNARSIM_GCR_PERELEMENT"), "matthia2013")
+            # scoped model, not a process-global env write
+            self.assertEqual(dosimetry.current_model().perelement, "matthia2013")
+            self.assertEqual(os.environ.get("LUNARSIM_GCR_PERELEMENT"), "perelement")
             self.assertAlmostEqual(dosimetry._gcr_integral(6, 12, 400.0), self.base_C, places=6)
             self.assertAlmostEqual(dosimetry._gcr_integral(14, 28, 400.0), self.base_Si, places=6)
             self.assertAlmostEqual(dosimetry._gcr_integral(26, 56, 400.0), self.base_Fe, places=6)
             self.assertEqual(dosimetry.active_composition(400.0), self.base_comp)
         # restored for the thin kernel after the block
-        self.assertEqual(os.environ.get("LUNARSIM_GCR_PERELEMENT"), "perelement")
+        self.assertEqual(dosimetry.current_model().perelement, "perelement")
         self.assertAlmostEqual(dosimetry._gcr_integral(6, 12, 400.0), self.elem_C, places=6)
 
     def test_flood_baseline_model_noop_for_matthia(self):
@@ -1631,14 +1649,15 @@ class TestFloodPerelementIsolation(unittest.TestCase):
         dosimetry.set_perelement_model("matthia2013")
         inside = outside = None
         with dosimetry.flood_baseline_model():
-            self.assertEqual(os.environ.get("LUNARSIM_GCR_PERELEMENT"), "matthia2013")
+            self.assertEqual(dosimetry.current_model().perelement, "matthia2013")
             inside = dosimetry._gcr_integral(6, 12, 400.0)
         outside = dosimetry._gcr_integral(6, 12, 400.0)
         self.assertAlmostEqual(inside, outside, places=9)
 
     def test_assess_composition_uses_matthia_flux_under_perelement(self):
         # End-to-end through the real flood assessment: under the perelement env the
-        # per-species flux must be abundance * the matthia2013 GROUP integral.
+        # per-species flux must be abundance * the matthia2013 GROUP integral, on the
+        # flood (energy) LIS form whatever form the caller's env carries.
         spec = _cyl_spec()
         crow = next(r for r in self.base_comp if r[2] == 6)   # the carbon row
         _n, _p, z, a, ab, _g = crow
@@ -1647,10 +1666,15 @@ class TestFloodPerelementIsolation(unittest.TestCase):
             dose_rel_err=0.01, skin_dose_rel_err=0.01,
             neutron_doseeq_fraction=None, spec=spec)
         dosimetry.set_perelement_model("perelement")
+        flood = dosimetry.current_model().flood()
+        with dosimetry.use_model(flood):
+            base_C = dosimetry._gcr_integral(6, 12, 400.0)
         res = dosimetry.assess_composition([(crow, fake)], phi_MV=400.0, skin=False)
         self.assertIsNotNone(res)
         c = next(x for x in res.contributions if x["species"] == crow[0])
-        self.assertAlmostEqual(c["flux_cm2_s"], ab * self.base_C, places=9)
+        self.assertAlmostEqual(c["flux_cm2_s"], ab * base_C, places=9)
+        self.assertEqual(res.provenance["lis_form"], dosimetry.FLOOD_LIS_FORM)
+        self.assertEqual(res.provenance["perelement"], "matthia2013")
         # the assessment must restore the thin-kernel env on the way out
         self.assertEqual(os.environ.get("LUNARSIM_GCR_PERELEMENT"), "perelement")
 
@@ -1709,6 +1733,92 @@ class TestMatthiaAbsoluteNormalisation(unittest.TestCase):
         dosimetry.set_lis_form(dosimetry.FLOOD_LIS_FORM)
         lo, hi = dosimetry._gcr_integral(1, 1, 400.0), dosimetry._gcr_integral(1, 1, 1100.0)
         self.assertLess(hi, lo)
+
+
+class TestGcrModelScoping(unittest.TestCase):
+    """The GCR model is an explicit immutable value scoped per thread, so a
+    thin-kernel fold cannot leak its rigidity/perelement settings into a later
+    flood assessment or make_source subprocess. Provenance stamps round-trip.
+    No TOPAS."""
+
+    def setUp(self):
+        self._saved_env = os.environ.get("LUNARSIM_GCR_PERELEMENT")
+        self._saved_lis = os.environ.get("LUNARSIM_GCR_LIS")
+
+    def tearDown(self):
+        _restore_perelement_model(self._saved_env)
+        if self._saved_lis is None:
+            os.environ.pop("LUNARSIM_GCR_LIS", None)
+        else:
+            os.environ["LUNARSIM_GCR_LIS"] = self._saved_lis
+
+    def test_env_round_trip(self):
+        m = dosimetry.GcrModel(lis_form="energy", perelement="matthia2013",
+                               emax_per_nuc=5.0e3, shape="pernuc")
+        self.assertEqual(dosimetry.GcrModel.from_env(m.env()), m)
+
+    def test_flood_model(self):
+        m = dosimetry.GcrModel(lis_form="rigidity", perelement="perelement")
+        f = m.flood()
+        self.assertEqual(f.lis_form, dosimetry.FLOOD_LIS_FORM)
+        self.assertEqual(f.perelement, "matthia2013")
+
+    def test_fold_does_not_leak(self):
+        os.environ["LUNARSIM_GCR_LIS"] = dosimetry.FLOOD_LIS_FORM
+        before_env = dict(os.environ)
+        before = dosimetry.current_model()
+        dosimetry.fold_gcr_thinwall(_cyl_spec(), phi_MV=400.0)
+        self.assertEqual(dosimetry.current_model(), before)
+        self.assertEqual(dict(os.environ), before_env)
+
+    def test_use_model_is_thread_local(self):
+        import threading
+        outer = dosimetry.current_model()
+        seen = {}
+        inner = dosimetry.GcrModel(lis_form="energy", perelement="none")
+
+        def worker():
+            seen["worker"] = dosimetry.current_model()
+
+        with dosimetry.use_model(inner):
+            self.assertEqual(dosimetry.current_model(), inner)
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join()
+        self.assertEqual(seen["worker"], outer)
+        self.assertEqual(dosimetry.current_model(), outer)
+
+    def test_generate_source_passes_model_env(self):
+        from lunarsim import bridge
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(kw.get("env"))
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        m = dosimetry.GcrModel(lis_form="energy", perelement="matthia2013")
+        with mock.patch("subprocess.run", side_effect=fake_run), \
+                dosimetry.use_model(m), tempfile.TemporaryDirectory() as td:
+            try:
+                bridge.generate_source(Path(td), bridge.QUICK_LOOK)
+            except Exception:
+                pass            # only the subprocess env matters here
+        self.assertTrue(calls)
+        for env in calls:
+            self.assertEqual(env["LUNARSIM_GCR_LIS"], "energy")
+            self.assertEqual(env["LUNARSIM_GCR_PERELEMENT"], "matthia2013")
+
+    def test_provenance_round_trip_and_mismatch(self):
+        m = dosimetry.GcrModel(lis_form="energy", perelement="matthia2013")
+        text = dosimetry.provenance_str(dosimetry.provenance(m, engine="flood"))
+        parsed = dosimetry.parse_provenance(text)
+        self.assertEqual(parsed["lis_form"], "energy")
+        self.assertEqual(parsed["engine"], "flood")
+        self.assertEqual(dosimetry.provenance_mismatch(text, m), [])
+        other = dosimetry.GcrModel(lis_form="rigidity", perelement="matthia2013")
+        self.assertTrue(any(w.startswith("lis_form=")
+                            for w in dosimetry.provenance_mismatch(text, other)))
+        self.assertEqual(dosimetry.provenance_mismatch("", m), ["unstamped"])
 
 
 if __name__ == "__main__":

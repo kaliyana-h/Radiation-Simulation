@@ -388,7 +388,14 @@ def generate_source(run_dir: Path, tier: RunTier,
     species (protons by default); the heavy-ion species are transported one per
     run and summed in dosimetry. When `spe` is given, writes a directional SPE
     cone source instead (protons only), firing the whole tier budget from the one
-    solar look-direction so a single-source event matches a GCR batch in cost."""
+    solar look-direction so a single-source event matches a GCR batch in cost.
+
+    make_source reads the GCR model from its env at import, so the subprocess gets
+    the CALLING THREAD's model (dosimetry.current_model(), i.e. the enclosing
+    use_model scope) explicitly rather than whatever os.environ holds -- the beam
+    always matches the flux normalisation of the run that requested it."""
+    from . import dosimetry          # local: dosimetry imports bridge
+    env = dict(os.environ, **dosimetry.current_model().env())
     if spe is not None:
         out = run_dir / "spe_source.txt"
         cmd = [
@@ -407,7 +414,7 @@ def generate_source(run_dir: Path, tier: RunTier,
             cmd += ["--spe-r0", str(spe.r0_MV)]
         if spe.e0_MeV is not None:           # LEGACY exp-in-energy spectrum
             cmd += ["--spe-e0", str(spe.e0_MeV)]
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
         return out
     out = run_dir / "gcr_source.txt"
     cmd = [
@@ -424,7 +431,7 @@ def generate_source(run_dir: Path, tier: RunTier,
         "--ion-a", str(ion_a),
         "--out", str(out),
     ]
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
     return out
 
 

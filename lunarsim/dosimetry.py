@@ -28,11 +28,16 @@ and exposed as a tunable.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
+import datetime
 import functools
+import hashlib
 import importlib.util
 import json
 import math
 import os
+import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -243,10 +248,10 @@ DOSE_LIMITS_MSV = {
 # GCR integral flux from the source's own spectrum
 # ----------------------------------------------------------------------
 def _load_make_source():
-    spec = importlib.util.spec_from_file_location("make_source", MAKE_SOURCE)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """make_source as imported under the ACTIVE GCR model (current_model()). The
+    module reads its model env vars once at import, so one instance is cached per
+    model (see _make_source_for) -- a model switch needs no cache invalidation."""
+    return _make_source_for(current_model())
 
 
 def _raw_gcr_integral(z: int = 1, a: int = 1, phi_MV: float = 400.0,
@@ -299,8 +304,15 @@ def _raw_gcr_integral(z: int = 1, a: int = 1, phi_MV: float = 400.0,
     return 2.0 * math.pi * integral_cm2_sr                      # /cm^2/s
 
 
-@functools.lru_cache(maxsize=1)
 def _calibration_factor() -> float:
+    """Absolute flux calibration under the ACTIVE GCR model (see
+    _calibration_factor_for); keyed on the model, so it can never be read on one
+    model while the flux integral it scales is on another."""
+    return _calibration_factor_for(current_model())
+
+
+@functools.lru_cache(maxsize=16)
+def _calibration_factor_for(model: "GcrModel") -> float:
     """Energy- and species-independent scale that pins the raw LIS integral to the
     canonical solar-minimum GCR proton flux on the lunar surface.
 
@@ -317,9 +329,10 @@ def _calibration_factor() -> float:
     only the 2*pi sr hemisphere -- the 2.0 pin would discard the model's measured
     normalisation (PAMELA-validated, see GCR_PROTON_FLUX_REF_2PI). Being a constant,
     solar modulation then comes entirely from Matthiae's own W(phi)."""
-    if _load_make_source().GCR_PERELEMENT in ("matthia2013", "perelement"):
+    if model.perelement in ("matthia2013", "perelement"):
         return UPPER_HEMISPHERE_SR
-    return GCR_PROTON_FLUX_REF_2PI / _raw_gcr_integral(1, 1, GCR_CALIB_PHI_MV)
+    with use_model(model):
+        return GCR_PROTON_FLUX_REF_2PI / _raw_gcr_integral(1, 1, GCR_CALIB_PHI_MV)
 
 
 def _gcr_integral(z: int = 1, a: int = 1, phi_MV: float = 400.0,
@@ -342,29 +355,221 @@ def _gcr_integral(z: int = 1, a: int = 1, phi_MV: float = 400.0,
 #                          Rigidity reads ~0.48x here (PC 2026-09-16: 0.150 vs 0.302).
 #   KERNEL -> "rigidity" : the basis the thin-wall R=D/phi kernel was regenerated
 #                          and validated on (f1348d8, gcr-composition-engine-mismatch).
-# make_source reads the form once at import (module global GCR_LIS_VAR); both
-# _load_make_source AND _calibration_factor are lru_cached, so a switch must set
-# the env var and drop BOTH caches -- otherwise the flux integral moves to the new
-# form while its absolute calibration stays on the old one. The beam-generation
-# subprocess inherits os.environ, so sampled spectrum and flux normalisation always
-# move together and cannot drift.
+# make_source reads the form once at import (module global GCR_LIS_VAR). Both
+# engines now run inside use_model() scopes (below), and the make_source module
+# and the absolute calibration are cached PER MODEL, so the flux integral and its
+# calibration always come from the same model. Beam-generation subprocesses get
+# the model's env explicitly (bridge.generate_source -> current_model().env()), so
+# the sampled spectrum and the flux normalisation cannot drift either.
 FLOOD_LIS_FORM = "energy"
 KERNEL_LIS_FORM = "rigidity"
 
 
+# ----------------------------------------------------------------------
+# GCR model configuration -- one explicit, immutable object
+# ----------------------------------------------------------------------
+# Four env knobs select the GCR model that make_source (beam) and this module
+# (flux normalisation) evaluate. They used to be switched by mutating os.environ
+# and dropping lru_caches, which made the model PROCESS-GLOBAL: a thin-wall fold
+# (rigidity) rendered in one GUI thread could flip the LIS form under a flood MC
+# running in another, and a result carried no record of the model behind it.
+# GcrModel names the model as a value; use_model() scopes it to the calling
+# thread; every cache is keyed on it; results carry it (and a provenance stamp).
+# The env is still read as the DEFAULT model, so CLI/env usage is unchanged.
+# Defaults mirror make_source's own (GCR_LIS_VAR / GCR_PERELEMENT /
+# GCR_EMAX_PER_NUC / GCR_SHAPE).
+_MODEL_ENV = {
+    "lis_form":     ("LUNARSIM_GCR_LIS", "rigidity"),
+    "perelement":   ("LUNARSIM_GCR_PERELEMENT", "perelement"),
+    "emax_per_nuc": ("LUNARSIM_GCR_EMAX_PER_NUC", "20000"),
+    "shape":        ("LUNARSIM_GCR_SHAPE", "pernuc"),
+}
+
+
+@dataclass(frozen=True)
+class GcrModel:
+    """The GCR input model a dose number was produced under. Hashable, so it keys
+    the make_source / calibration caches; its env() is what make_source sees."""
+    lis_form: str = "rigidity"
+    perelement: str = "perelement"
+    emax_per_nuc: float = 2.0e4
+    shape: str = "pernuc"
+
+    @classmethod
+    def from_env(cls, environ=None) -> "GcrModel":
+        if environ is None:
+            with _MAKE_SOURCE_LOCK:     # never read a half-patched env (_make_source_for)
+                vals = {f: os.environ.get(var, default)
+                        for f, (var, default) in _MODEL_ENV.items()}
+        else:
+            vals = {f: environ.get(var, default) for f, (var, default) in _MODEL_ENV.items()}
+        vals["emax_per_nuc"] = float(vals["emax_per_nuc"])
+        return cls(**vals)
+
+    def env(self) -> dict:
+        """The env vars make_source reads, as strings."""
+        return {var: (f"{getattr(self, f):g}" if f == "emax_per_nuc"
+                      else str(getattr(self, f)))
+                for f, (var, _d) in _MODEL_ENV.items()}
+
+    def flood(self) -> "GcrModel":
+        """The model the deep FLOOD engine runs under: energy LIS form (its CAL
+        basis) and the 5-ion group model mapped by flood_model_for."""
+        return dataclasses.replace(self, lis_form=FLOOD_LIS_FORM,
+                                   perelement=flood_model_for(self.perelement))
+
+    def label(self) -> str:
+        return (f"lis={self.lis_form} model={self.perelement} "
+                f"emax={self.emax_per_nuc:g} shape={self.shape}")
+
+
+# Per-thread model override set by use_model(); falls back to the env.
+_model_local = threading.local()
+# make_source reads its env at import, so building an instance briefly sets the
+# model's env vars; serialise that (and env reads in GcrModel.from_env) so no
+# thread interleaves an import or sees the temporarily patched env.
+_MAKE_SOURCE_LOCK = threading.RLock()
+
+
+def current_model() -> GcrModel:
+    """The GCR model active on THIS thread: the innermost use_model() scope, else
+    the process env (the CLI / service default)."""
+    m = getattr(_model_local, "model", None)
+    return m if m is not None else GcrModel.from_env()
+
+
+@contextlib.contextmanager
+def use_model(model: GcrModel):
+    """Run the block under `model` on the calling thread only. Nothing global is
+    mutated, so concurrent engines (a GUI fold beside a running flood) cannot
+    leak their model into each other."""
+    prev = getattr(_model_local, "model", None)
+    _model_local.model = model
+    try:
+        yield model
+    finally:
+        _model_local.model = prev
+
+
+@functools.lru_cache(maxsize=16)
+def _make_source_for(model: GcrModel):
+    """Import make_source.py with `model`'s env in effect (it reads the env at
+    import), then restore the env. One cached instance per model."""
+    with _MAKE_SOURCE_LOCK:
+        new = model.env()
+        saved = {k: os.environ.get(k) for k in new}
+        os.environ.update(new)
+        try:
+            spec = importlib.util.spec_from_file_location("make_source", str(MAKE_SOURCE))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    return mod
+
+
+# Backward-compatible cache handles (tests and older harnesses call these).
+_load_make_source.cache_clear = _make_source_for.cache_clear
+_calibration_factor.cache_clear = _calibration_factor_for.cache_clear
+
+
+def _retarget(**changes) -> None:
+    """Apply a setter to the active use_model() scope too, so set_lis_form /
+    set_perelement_model inside a scope are not silently shadowed by it."""
+    m = getattr(_model_local, "model", None)
+    if m is not None:
+        _model_local.model = dataclasses.replace(m, **changes)
+
+
 def set_lis_form(form: str) -> None:
-    """Pin the GCR LIS spectral form for every subsequent LIS read in this process
-    -- and in make_source subprocesses, which inherit os.environ. Drops the two
-    caches that captured the previous form so the flux integral and its absolute
-    calibration are recomputed together. Called once at each engine's entry
-    (run_composition -> FLOOD_LIS_FORM, fold_gcr_thinwall -> KERNEL_LIS_FORM), so
-    the two engines stay on their validated forms regardless of run order or env."""
+    """Set the DEFAULT GCR LIS spectral form (process env; make_source subprocesses
+    see it) for code that does not pass a model. The engines no longer rely on
+    this: run_composition and fold_gcr_thinwall each scope their own validated form
+    with use_model(), so neither can leave the other's form behind."""
     if form not in (FLOOD_LIS_FORM, KERNEL_LIS_FORM):
         raise ValueError(f"unknown LIS form {form!r} "
                          f"(expected {FLOOD_LIS_FORM!r} or {KERNEL_LIS_FORM!r})")
     os.environ["LUNARSIM_GCR_LIS"] = form
-    _load_make_source.cache_clear()
-    _calibration_factor.cache_clear()
+    _retarget(lis_form=form)
+
+
+# ----------------------------------------------------------------------
+# Provenance -- which code + model produced a number
+# ----------------------------------------------------------------------
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# Paths whose edits change a dose: a dirty flag on these means the number came from
+# code that differs from the stamped commit.
+_PROVENANCE_PATHS = ("lunarsim", "make_source.py", "lunar_environment.txt")
+
+
+@functools.lru_cache(maxsize=1)
+def _git_state() -> str:
+    """Short commit SHA, '+dirty' if any dose-relevant path has uncommitted edits.
+    Cached for the process: a service restarted after each pull (runbook) stamps
+    the code it is actually running."""
+    try:
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO_ROOT,
+                             capture_output=True, text=True, timeout=5,
+                             check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no",
+                                "--", *_PROVENANCE_PATHS], cwd=REPO_ROOT,
+                               capture_output=True, text=True, timeout=5,
+                               check=True).stdout.strip()
+        return sha + ("+dirty" if dirty else "")
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def _file_digest(path: Path) -> str:
+    """First 10 hex chars of a data file's SHA-256 -- identifies the exact kernel."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:10]
+    except OSError:
+        return "missing"
+
+
+def provenance(model: Optional[GcrModel] = None, engine: str = "",
+               **extra) -> dict:
+    """Stamp for a result: code version, GCR model, CAL, engine, UTC date. Pure
+    bookkeeping -- nothing here feeds the physics."""
+    model = model or current_model()
+    stamp = {"git": _git_state(), "engine": engine,
+             **dataclasses.asdict(model),
+             "cal": OUTER_GAUGE_ANCHOR_CAL,
+             "date": datetime.datetime.now(datetime.timezone.utc).strftime(
+                 "%Y-%m-%dT%H:%MZ")}
+    stamp.update(extra)
+    return stamp
+
+
+def provenance_str(stamp: Optional[dict]) -> str:
+    """One-line key=value form of a provenance stamp (for CSVs and reports)."""
+    if not stamp:
+        return ""
+    return " ".join(f"{k}={v:g}" if isinstance(v, float) else f"{k}={v}"
+                    for k, v in stamp.items() if v != "")
+
+
+def parse_provenance(text: str) -> dict:
+    """Inverse of provenance_str (values stay strings)."""
+    return dict(tok.split("=", 1) for tok in (text or "").split() if "=" in tok)
+
+
+def provenance_mismatch(text: str, model: GcrModel, cal: Optional[float] = None) -> list:
+    """Reasons a stamped row was NOT produced under `model` (and CAL): empty if it
+    matches. An unstamped row returns ['unstamped'] -- its model is unknown."""
+    got = parse_provenance(text)
+    if not got:
+        return ["unstamped"]
+    want = {k: (f"{v:g}" if isinstance(v, float) else str(v))
+            for k, v in dataclasses.asdict(model).items()}
+    want["cal"] = f"{OUTER_GAUGE_ANCHOR_CAL if cal is None else cal:g}"
+    return [f"{k}={got.get(k, '?')} (expected {v})"
+            for k, v in want.items() if got.get(k) != v]
 
 
 # ----------------------------------------------------------------------
@@ -381,10 +586,9 @@ def set_lis_form(form: str) -> None:
 # target -- target-blind). Validated on the laptop (paper/mattia2013_lis_fold.py):
 # <Q>(0)=6.19, He/H dose 0.443, H/He/Z>=3 split 41.3/18.3/40.4 %.
 #
-# Like set_lis_form, switching the model must drop BOTH lru caches so the flux
-# integral and its absolute calibration recompute together; make_source reads the
-# env var once at import and subprocesses inherit os.environ, so the sampled beam
-# spectrum and the flux normalization cannot drift apart.
+# Like the LIS form, the model is a GcrModel field: caches are keyed on it and
+# beam subprocesses receive its env explicitly, so the sampled beam spectrum and
+# the flux normalization cannot drift apart.
 # Default "perelement" (since 2026-10-28; was "none"): the CLI now runs the same
 # validated Matthiae model the GUI service sets. "none" stays selectable as the
 # explicit legacy option. Must match make_source.GCR_PERELEMENT's default.
@@ -400,16 +604,14 @@ PERELEMENT_MODELS = ("none", "matthia2013", "perelement")
 
 
 def set_perelement_model(model: str) -> None:
-    """Pin the per-element GCR LIS model for every subsequent LIS read in this
-    process -- and in make_source subprocesses, which inherit os.environ. Drops the
-    _load_make_source and _calibration_factor caches so the raw flux integral and
-    its absolute calibration are recomputed together on the new model."""
+    """Set the DEFAULT per-element GCR LIS model (process env; make_source
+    subprocesses see it) for code that does not pass a model. The engines scope
+    their own model with use_model() instead (see GcrModel)."""
     if model not in PERELEMENT_MODELS:
         raise ValueError(f"unknown per-element model {model!r} "
                          f"(expected one of {PERELEMENT_MODELS})")
     os.environ["LUNARSIM_GCR_PERELEMENT"] = model
-    _load_make_source.cache_clear()
-    _calibration_factor.cache_clear()
+    _retarget(perelement=model)
 
 
 def flood_model_for(model: str) -> str:
@@ -436,17 +638,15 @@ def flood_baseline_model():
     cache-clear. This is what keeps the global LUNARSIM_GCR_PERELEMENT=perelement
     env -- which fold_gcr_thinwall sets to drive the 10-ion thin kernel -- from
     feeding single-element spectra to the 5-ion flood: the flood runs the coherent
-    matthia2013 group model for both its normalization and make_source beam."""
-    current = os.environ.get("LUNARSIM_GCR_PERELEMENT", PERELEMENT_MODEL)
-    target = flood_model_for(current)
-    if target == current:
+    matthia2013 group model for both its normalization and make_source beam.
+    Scoped to the calling thread via use_model(); the process env is untouched."""
+    current = current_model()
+    target = flood_model_for(current.perelement)
+    if target == current.perelement:
         yield
         return
-    set_perelement_model(target)
-    try:
+    with use_model(dataclasses.replace(current, perelement=target)):
         yield
-    finally:
-        set_perelement_model(current)
 
 
 def matthia_composition(phi_MV: float = 400.0):
@@ -467,8 +667,8 @@ def matthia_composition(phi_MV: float = 400.0):
 def active_composition(phi_MV: float = 400.0):
     """The GCR composition the active per-element model dictates: the shipped
     GCR_COMPOSITION under 'none', or the Matthiae-abundance variant under
-    'matthia2013'. Reads the live env (what make_source subprocesses will see)."""
-    if os.environ.get("LUNARSIM_GCR_PERELEMENT", PERELEMENT_MODEL) == "matthia2013":
+    'matthia2013'. Reads the active model (what make_source subprocesses will see)."""
+    if current_model().perelement == "matthia2013":
         return matthia_composition(phi_MV)
     return GCR_COMPOSITION
 
@@ -525,6 +725,9 @@ class DoseAssessment:
     si_doseeq_charged_rel_err: Optional[float] = None
     si_charged_let_ratios: Optional[tuple] = None
     regime: Optional[str] = None           # None=flood MC path; "thinwall"=phantom-matched kernel fold
+    # code version + GCR model + CAL behind this number (see provenance()); None for
+    # single-species assess() results
+    provenance: Optional[dict] = None
 
     # ---- absorbed dose ----
     @property
@@ -649,8 +852,15 @@ def assess_composition(species_results: list,
                        quality_factor: float = DEFAULT_QUALITY_FACTOR,
                        phi_MV: float = 400.0,
                        skin: bool = False,
-                       qf: str = "icrp") -> Optional[DoseAssessment]:
+                       qf: str = "icrp",
+                       model: Optional[GcrModel] = None) -> Optional[DoseAssessment]:
     """Sum the per-species crew dose over a GCR composition.
+
+    model is the GCR model the flux normalisation is evaluated under. It should be
+    the model the MC beam was generated under (jobs.ConvergedComposition.model);
+    the default is the flood model of the active configuration
+    (current_model().flood(): energy LIS form + 5-ion group model), i.e. what
+    jobs.run_composition runs by default.
 
     species_results is a list of (species_tuple, result) pairs, where
     species_tuple == (name, particle, Z, A, abundance, group) (a GCR_COMPOSITION
@@ -697,12 +907,11 @@ def assess_composition(species_results: list,
     sim_fluence_used = 0.0
     # The flood transports 5 representative ions, so its per-species flux
     # normalization (gcr_species_fluence_rate -> _gcr_integral) must read the 5-ion
-    # matthia2013 group model. Pin it for the duration so a global
-    # LUNARSIM_GCR_PERELEMENT=perelement (set by fold_gcr_thinwall to drive the thin
-    # kernel) cannot put single-element spectra under band-representative abundances
-    # -- an incoherent mix that would silently move the deep dose. No-op unless the
-    # model is 'perelement'.
-    with flood_baseline_model():
+    # matthia2013 group model on the energy form -- never single-element spectra
+    # under band-representative abundances, nor the kernel's rigidity form. Scope
+    # the model to this thread for the duration (nothing global is touched).
+    model = model or current_model().flood()
+    with use_model(model):
       for sp, result in species_results:
         name, particle, z, a, abundance, group = sp
         dose_gy = result.skin_dose_gy if skin else result.dose_gy
@@ -801,6 +1010,7 @@ def assess_composition(species_results: list,
            for ch in si_chan},
         si_charged_let_ratios=(tuple(v / let_den for v in let_num)
                                if let_complete and let_num and let_den > 0 else None),
+        provenance=provenance(model, engine="flood"),
     )
 
 
@@ -871,11 +1081,16 @@ def _load_gcr_thinwall_kernel(material: str = "aluminium") -> dict:
     """Thin-wall GCR response kernel for a calibration material. Falls back to the
     aluminium kernel when the requested material has no kernel file yet; callers gate
     whether that fallback counts as calibrated (see _gcr_thinwall_calibrated)."""
+    with open(_gcr_thinwall_kernel_path(material)) as fh:
+        return json.load(fh)
+
+
+def _gcr_thinwall_kernel_path(material: str = "aluminium") -> Path:
+    """The kernel file _load_gcr_thinwall_kernel actually reads for `material`."""
     path = _GCR_THINWALL_KERNELS.get(material) or _GCR_THINWALL_KERNELS["aluminium"]
     if not path.exists():
         path = _GCR_THINWALL_KERNELS["aluminium"]
-    with open(path) as fh:
-        return json.load(fh)
+    return path
 
 
 def _gcr_calibration_material(spec) -> str:
@@ -930,7 +1145,7 @@ def _thinwall_fold_point(point: dict, phi_MV: float, organs: list) -> dict:
     # is active, take abundances from the live model instead of the (proton-clone)
     # JSON, so a thin-wall depth re-gate is a pure re-fold of the EXISTING kernel.
     ab_override = None
-    if os.environ.get("LUNARSIM_GCR_PERELEMENT", PERELEMENT_MODEL) == "matthia2013":
+    if current_model().perelement == "matthia2013":
         ab_override = {t[0]: t[4] for t in matthia_composition(phi_MV)}
     per_species = {}
     for name, sp in point["species"].items():
@@ -961,29 +1176,33 @@ def fold_gcr_thinwall(spec, phi_MV: float = 400.0, material: Optional[str] = Non
     the per-organ dose rates and per-species contributions between the bracketing
     anchors. Interpolation is geometric in log(areal density) — dose falls off with
     shielding as a power law, so a log-log fit tracks the physics far better than a
-    straight line and lands continuously on the flood-validated ~130 mSv/yr at the
-    ~19 g/cm2 gate rather than leaving a step there. (Zero-valued endpoints, e.g. a
-    penetration-gated node, fall back to linear.) Below the thinnest / above the
-    thickest anchor it clamps to the end anchor (the regime gate keeps callers inside
-    the measured band). Returns the whole-body effective absorbed rate (Gy/s),
-    effective dose-eq rate (Sv/s) and its standard error, per-organ rows, and the
-    per-species breakdown."""
-    set_lis_form(KERNEL_LIS_FORM)      # kernel was validated on the rigidity form
+    straight line. It does NOT make the hand-off to the flood seamless: the measured
+    kernel->flood step at the ~19 g/cm2 gate is ~1.3-1.4x (see
+    areal_density_confidence). (Zero-valued endpoints, e.g. a penetration-gated node,
+    fall back to linear.) Below the thinnest / above the thickest anchor it clamps to
+    the end anchor (the regime gate keeps callers inside the measured band). Returns
+    the whole-body effective absorbed rate (Gy/s), effective dose-eq rate (Sv/s) and
+    its standard error, per-organ rows, the per-species breakdown, and the GCR model
+    and kernel file the fold ran on.
+
+    The fold runs under its own model -- the active configuration with the kernel's
+    validated rigidity LIS form -- scoped to this call; it no longer leaves that form
+    (or a reset per-element model) behind in the process for the next flood run."""
     material = material or _gcr_calibration_material(spec)
+    model = dataclasses.replace(current_model(), lis_form=KERNEL_LIS_FORM)
     # Per-element model is a model-keyed kernel override (see
     # _GCR_THINWALL_KERNEL_PERELEM). Use it only when requested AND built; the
     # kernel and the LIS model must stay consistent -- a per-element spectrum
     # (single-element _raw_gcr_integral) folded on a 5-ion kernel, or vice versa,
-    # would double- or under-count a band -- so if the file is absent we reset the
-    # model to the non-perelement spectrum and fall back to the material kernel.
-    if os.environ.get("LUNARSIM_GCR_PERELEMENT", PERELEMENT_MODEL) == "perelement":
-        if _has_perelem_kernel():
-            set_perelement_model("perelement")
-            K = _load_gcr_thinwall_kernel_perelem()
-        else:
-            set_perelement_model("none")
-            K = _load_gcr_thinwall_kernel(material)
+    # would double- or under-count a band -- so if the file is absent the fold uses
+    # the non-perelement spectrum and falls back to the material kernel.
+    if model.perelement == "perelement" and _has_perelem_kernel():
+        kernel_path = _GCR_THINWALL_KERNEL_PERELEM
+        K = _load_gcr_thinwall_kernel_perelem()
     else:
+        if model.perelement == "perelement":
+            model = dataclasses.replace(model, perelement="none")
+        kernel_path = _gcr_thinwall_kernel_path(material)
         K = _load_gcr_thinwall_kernel(material)
     organs = K["meta"]["organs"]
     # Interpolation below assumes anchors are in ascending areal density. Kernels
@@ -994,7 +1213,8 @@ def fold_gcr_thinwall(spec, phi_MV: float = 400.0, material: Optional[str] = Non
     pts = sorted(K["points"], key=lambda p: p["wall_gcm2"])
     grid = [p["wall_gcm2"] for p in pts]
     ad = spec.areal_density_gcm2()
-    folded = [_thinwall_fold_point(p, phi_MV, organs) for p in pts]
+    with use_model(model):
+        folded = [_thinwall_fold_point(p, phi_MV, organs) for p in pts]
 
     if ad <= grid[0]:
         lo = hi = 0; t = 0.0
@@ -1037,7 +1257,7 @@ def fold_gcr_thinwall(spec, phi_MV: float = 400.0, material: Optional[str] = Non
     return {"D_eff_gy_s": D_eff, "E_sv_s": E, "sem_E_sv_s": math.sqrt(Evar),
             "rows": rows, "per_species": per_species,
             "flux_cm2_s": sum(s["flux_cm2_s"] for s in per_species.values()),
-            "areal_gcm2": ad}
+            "areal_gcm2": ad, "model": model, "kernel_path": kernel_path}
 
 
 def _gcr_thinwall_applies(spec) -> bool:
@@ -1141,6 +1361,9 @@ def assess_gcr_thinwall(spec, mission_days: float = 365.0,
         contributions=contributions,
         neutron_fraction=None,
         regime="thinwall",
+        provenance=provenance(f["model"], engine="kernel",
+                              kernel=f["kernel_path"].name,
+                              kernel_sha=_file_digest(f["kernel_path"])),
     )
 
 
@@ -1158,15 +1381,6 @@ def assess_gcr_thinwall(spec, mission_days: float = 365.0,
 # kernel lives in data/spe_proton_kernel.json (17 dense just-penetrating nodes,
 # 22 seeds); see memory [[thin-shield-bragg-limit]] and [[variance-reduction-kernel]].
 _SPE_KERNEL_PATH = Path(__file__).with_name("data") / "spe_proton_kernel.json"
-
-
-@functools.lru_cache(maxsize=1)
-def _load_make_source():
-    """Import make_source.py as a module (for SPE_EVENTS and spe_integral_fluence)."""
-    spec = importlib.util.spec_from_file_location("make_source", str(MAKE_SOURCE))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 @functools.lru_cache(maxsize=1)

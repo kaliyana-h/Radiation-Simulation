@@ -67,7 +67,8 @@ GATE_GCM2 = 19.0
 # The map's flood-regime grid (>= gate). Kept in sync with accuracy_vs_depth.GRID.
 FLOOD_GRID_GCM2 = [19.0, 25.0, 30.0, 40.0, 50.0, 54.0]
 CSV_PATH = HERE / "accuracy_al_flood.csv"
-CSV_FIELDS = ["areal_gcm2", "al_cm", "flood_eff_mSv_yr", "flood_skin_mSv_yr", "note"]
+CSV_FIELDS = ["areal_gcm2", "al_cm", "flood_eff_mSv_yr", "flood_skin_mSv_yr", "note",
+              "provenance"]
 
 
 def _load_csv() -> dict[float, dict]:
@@ -115,9 +116,11 @@ def _run_depth(gcm2: float, run_dir: Path, tier, args) -> dict:
         raise SystemExit(f"[{gcm2:g}] composition MC failed "
                          f"(rc={comp.returncode}); see {run_dir}")
     a_phan = dosimetry.assess_composition(comp.species_results,
-                                          phi_MV=tier.phi_mv, skin=False)
+                                          phi_MV=tier.phi_mv, skin=False,
+                                          model=comp.model)
     a_skin = dosimetry.assess_composition(comp.species_results,
-                                          phi_MV=tier.phi_mv, skin=True)
+                                          phi_MV=tier.phi_mv, skin=True,
+                                          model=comp.model)
     eff, skin = a_phan.annual_msv, a_skin.annual_msv
     print(f"      -> phantom(eff) {eff:7.1f} mSv/yr (rel_err "
           f"{(a_phan.rel_err or 0)*100:4.1f}%),  skin {skin:7.1f} mSv/yr "
@@ -129,7 +132,8 @@ def _run_depth(gcm2: float, run_dir: Path, tier, args) -> dict:
             f"skin rel_err {(a_skin.rel_err or 0)*100:.1f}%")
     return {"areal_gcm2": f"{gcm2:g}", "al_cm": f"{t_cm:.2f}",
             "flood_eff_mSv_yr": f"{eff:.1f}", "flood_skin_mSv_yr": f"{skin:.1f}",
-            "note": note}
+            "note": note,
+            "provenance": dosimetry.provenance_str(a_phan.provenance)}
 
 
 def main(argv=None) -> None:
@@ -146,14 +150,12 @@ def main(argv=None) -> None:
                    help="max convergence batches per species (default 12)")
     args = p.parse_args(argv)
 
-    # Pin the flood LIS form explicitly. run_composition now defaults to
-    # FLOOD_LIS_FORM ("energy") on its own, but set it here too so the
-    # assess_composition calls in _run_depth (after the MC) are unambiguously on
-    # the flood CAL basis -- the form the 0.310/13.2 absorbed anchors and OLTARIS-
-    # Total agreement were validated on (rigidity, the old default, reads ~0.48x).
+    # The flood model (energy LIS + flood composition) now travels explicitly:
+    # run_composition scopes it as current_model().flood() and returns it on
+    # comp.model, which _run_depth hands to assess_composition. No global pin.
     from lunarsim import bridge, dosimetry
-    dosimetry.set_lis_form(dosimetry.FLOOD_LIS_FORM)
-    print(f"  LIS form pinned: {dosimetry.FLOOD_LIS_FORM} (flood CAL basis)\n")
+    flood_model = dosimetry.current_model().flood()
+    print(f"  flood model: {flood_model.label()}\n")
     outdir = Path(args.outdir).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
     tier = bridge.FULL_RUN
@@ -174,6 +176,11 @@ def main(argv=None) -> None:
         if existing and (existing.get("flood_eff_mSv_yr") or "").strip() and not args.force:
             print(f"  [{g:g}] already filled (flood_eff="
                   f"{existing['flood_eff_mSv_yr']}); skip (use --force to redo).")
+            stale = dosimetry.provenance_mismatch(existing.get("provenance", ""),
+                                                  flood_model)
+            if stale:
+                print(f"      WARNING: row does not match the current flood model "
+                      f"({'; '.join(stale)}) -- consider --only {g:g} --force.")
             continue
         row = _run_depth(g, outdir / f"al{g:g}", tier, args)
         # keep a pre-existing hand note, but drop earlier sweep notes: a --force

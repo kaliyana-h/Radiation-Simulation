@@ -202,6 +202,7 @@ def merge(out: Path, base: Path, dest: Path) -> dict:
         "nodes_pernuc_mev": tail_nodes_meta,
         "ceiling_pernuc_mev": config.TAIL_CEILING_PERNUC_MEV,
         "seeds": seeds,
+        "provenance": generate._provenance(),
         "note": ("High-energy tail appended by kernel_gen.tail so the fold's top "
                  "edge reaches the free-field ceiling (GCR_EMAX_PER_NUC); base "
                  "nodes unchanged. Retires the energy-ceiling truncation caveat."),

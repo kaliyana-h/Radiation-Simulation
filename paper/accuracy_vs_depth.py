@@ -99,6 +99,20 @@ def nearest(ref: dict[float, float], g: float, tol: float = 0.6) -> float | None
     return ref[key] if abs(key - g) <= tol else None
 
 
+def _warn_stale_flood(path: Path) -> None:
+    """Flag flood rows whose provenance stamp is missing or names a different
+    model/CAL than the current flood basis (they may predate a model change)."""
+    if not path.exists():
+        return
+    from lunarsim import dosimetry
+    model = dosimetry.current_model().flood()
+    for r in csv.DictReader(open(path, newline="")):
+        why = dosimetry.provenance_mismatch(r.get("provenance") or "", model)
+        if why:
+            print(f"  WARNING: flood row {r.get('areal_gcm2')} g/cm^2: "
+                  f"{'; '.join(why)}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--oltaris", default=str(HERE / "accuracy_al_oltaris.csv"))
@@ -120,6 +134,7 @@ def main() -> None:
     flood_vals = load_ref(Path(args.flood), flood_col)
     flood_label = ("flood skin (wall-lining)" if args.flood_col == "skin"
                    else "flood phantom (effective)")
+    _warn_stale_flood(Path(args.flood))
 
     rows = []
     for g in GRID_GCM2:

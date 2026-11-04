@@ -33,14 +33,15 @@ from .spec import (HabitatSpec, WallLayer, MATERIALS, SHAPES, REGOLITH_SITES,
                    SUIT_MATERIALS, eva_suit_spec)
 from .bridge import (FULL_RUN, WORST_CASE_SPE, SOFT_SPE, OCT1989_SPE,
                      DEFAULT_BEAM_SPOT_CM)
-from .dosimetry import (assess, assess_composition, assess_spe,
+from .dosimetry import (assess, assess_composition, assess_spe, provenance_str,
                         gcr_scalar_fluence_rate, DOSE_LIMITS_MSV,
                         gauge_size_flag, _gauge_corr,
                         beam_footprint_flag,
                         assess_gcr_thinwall, _gcr_thinwall_applies,
                         _gcr_thinwall_calibrated, areal_density_confidence)
 from .geometry import _enclosing_radius_cm
-from .headline_context import headline_flags, is_q_fallback, COMBINED_ENVELOPE_NOTE
+from .headline_context import (headline_flags, is_q_fallback, COMBINED_ENVELOPE_NOTE,
+                               systematic_band, band_text)
 from .jobs import default_runner, JobStatus, ConvergedComposition
 from .trajviz import run_cascade, build_figure
 
@@ -1640,9 +1641,12 @@ def _assess(result, skin, qf="icrp"):
     "nasa" (NASA/Cucinotta Q) -- both scored on the same transport, so the switch
     only re-reads a different Sv column."""
     if isinstance(result, ConvergedComposition):
+        # normalise under the model the beam was generated under (carried on the
+        # result), not whatever model is active when the poll renders it
         return assess_composition(result.species_results,
                                   mission_days=SCORING_MISSION_DAYS,
-                                  phi_MV=result.tier.phi_mv, skin=skin, qf=qf)
+                                  phi_MV=result.tier.phi_mv, skin=skin, qf=qf,
+                                  model=getattr(result, "model", None))
     return assess(result, mission_days=SCORING_MISSION_DAYS, skin=skin, qf=qf)
 
 
@@ -1703,8 +1707,21 @@ def _envelope_note():
         "lineHeight": "1.4", "marginBottom": "4px"})
 
 
+def _band_tooltip(band):
+    """Hover text listing each systematic term (multipliers) behind the band."""
+    rows = []
+    for t in band["terms"]:
+        rng = (f"×{t['lo']:.2f}–{t['hi']:.2f}" if t["kind"] == "sym" or t["lo"] < 1
+               else f"+{(t['hi'] - 1) * 100:.0f}%")
+        rows.append(f"{t['label']}: {rng}"
+                    + ("" if t["in_band"] else " (not in band)"))
+    return ("Systematic model spread, separate from the MC ± (statistics).\n"
+            + "\n".join(rows))
+
+
 def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
-                size_note=None, standards=SCORE_STANDARDS, context=None):
+                size_note=None, standards=SCORE_STANDARDS, context=None,
+                band=None):
     """The headline the student records: habitat-wide annual effective dose,
     compared against several agency career limits rather than NASA's alone.
 
@@ -1716,7 +1733,10 @@ def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
     the ~19 g/cm2 crossover). cmp_line is accepted for signature compatibility but
     no longer rendered on the card.
     size_note, when present, is a (colour, text) advisory that the design is
-    oversized and its dose extrapolates past the validated size envelope."""
+    oversized and its dose extrapolates past the validated size envelope.
+    band, when present, is a headline_context.systematic_band dict rendered as
+    the model-spread bracket under the caption (the ± beside the number is MC
+    statistics only)."""
     style = dict(CARD)
     style.update({"borderLeft": f"4px solid {METRIC}", "background": "#161d27",
                   "padding": "18px"})
@@ -1733,6 +1753,12 @@ def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
         html.Div(caption, style={
             "color": MUTED, "fontSize": "11px", "marginTop": "6px"}),
     ]
+    if band is not None:
+        children.append(html.Div(
+            f"{band_text(score, band)} · ± above is MC statistics only",
+            title=_band_tooltip(band),
+            style={"color": INK, "fontSize": "12px", "marginTop": "4px",
+                   "cursor": "help", "textDecoration": "underline dotted"}))
     strip = _context_strip(context)
     if strip is not None:
         children.append(strip)
@@ -1894,7 +1920,8 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
         qf_label = f"flat Q = {card_assess.quality_factor:g} (fallback)"
     return ([banner] if banner else []) + [
         _score_card(score, rel_txt, card_assess, qf_label=qf_label,
-                    cmp_line=cmp_line, size_note=size_note, context=context),
+                    cmp_line=cmp_line, size_note=size_note, context=context,
+                    band=systematic_band(job.spec.areal_density_gcm2(), "flood")),
         metric_card("Absorbed dose",
                     f"{ab.dose_rate_ugy_day / 1000:.3f} mGy/day",
                     f"= {ab.annual_mgy:.1f} mGy/year"),
@@ -1950,10 +1977,11 @@ def _analysis_body(a, a_skin, s, job, a_skin_nasa=None):
                  "wall-lining dose; below it, the thin-wall kernel fold. The two "
                  "engines hand off at the ~19 g/cm² gate, the least-certain point of "
                  "the sweep: the flood errs conservative (safe) through the ~19–30 "
-                 "g/cm² band and lands within ~10% of cross-code (OLTARIS) effective "
-                 "dose at thick shielding, where final designs sit; the kernel just "
-                 "below the gate is the more optimistic estimate. The true value "
-                 "sits between them near the gate.",
+                 "g/cm² band, and the kernel just below the gate is the more "
+                 "optimistic estimate; the true value sits between them near the "
+                 "gate. The systematic band on the score card carries this hand-off "
+                 "step plus the GCR-model, cross-code transport and energy-ceiling "
+                 "spreads; the ± beside the number is Monte Carlo statistics only.",
                  style={"color": MUTED, "fontSize": "10px",
                         "marginTop": "12px", "fontStyle": "italic"}),
         html.Div("Dose is summed over the GCR ion composition (H, He, C, Si, Fe "
@@ -2058,7 +2086,8 @@ def _thinwall_metric_cards(a, job, calibrated):
                     cmp_line=None,
                     size_note=size_note,
                     context=headline_flags(job.spec.areal_density_gcm2(), "kernel",
-                                           a.quality_factor)),
+                                           a.quality_factor),
+                    band=systematic_band(job.spec.areal_density_gcm2(), "kernel")),
         metric_card("Absorbed dose", f"{a.dose_rate_ugy_day / 1000:.3f} mGy/day",
                     f"= {a.annual_mgy:.1f} mGy/year"),
         metric_card("Dose equivalent", f"{a.equiv_rate_msv_day:.3f} mSv/day",
@@ -2236,8 +2265,18 @@ def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
               f"- Career limit: {s['limit_mSv']:.0f} mSv "
               f"({s['fraction_of_limit'] * 100:.0f}% used)",
               f"- **Verdict: {s['verdict']}**"]
-        for f in headline_flags(spec.areal_density_gcm2(),
-                                "kernel" if thinwall is not None else "flood",
+        engine = "kernel" if thinwall is not None else "flood"
+        band = systematic_band(spec.areal_density_gcm2(), engine)
+        L.append(f"- Systematic band: {band_text(head.annual_msv, band)} "
+                 f"(×{band['lo']:.2f}–{band['hi']:.2f}; MC ± is statistics only)")
+        for t in band["terms"]:
+            how = (f"×{t['lo']:.2f}–{t['hi']:.2f}" if t["kind"] == "sym" or t["lo"] < 1
+                   else f"+{(t['hi'] - 1) * 100:.0f}% one-sided")
+            L.append(f"  - {t['label']}: {how}"
+                     + ("" if t["in_band"] else " — reported, not in band"))
+        if head.provenance:
+            L.append(f"- Provenance: `{provenance_str(head.provenance)}`")
+        for f in headline_flags(spec.areal_density_gcm2(), engine,
                                 head.quality_factor):
             mark = "⚠ " if f["level"] in ("warn", "alert") else ""
             L.append(f"- {mark}{f['text']}")
@@ -2250,9 +2289,10 @@ def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
         elif a_skin is not None:
             L += ["- Regime: geometry-aware flood wall-lining (wall ≥ ~19 g/cm², above "
                   "the thin-wall crossover). Conservative/safe-erring through the "
-                  "~19–30 g/cm² band; validated within ~10% of cross-code (OLTARIS) "
-                  "effective dose at thick shielding. The kernel→flood hand-off at "
-                  "the gate is the least-certain point of the sweep."]
+                  "~19–30 g/cm² band. Transport codes (e.g. OLTARIS/HZETRN vs "
+                  "Geant4) differ by 20–30% for the same shield; that spread is in "
+                  "the systematic band above. The kernel→flood hand-off at the gate "
+                  "is the least-certain point of the sweep."]
         contrib = getattr(a_skin, "contributions", None) if a_skin else None
         if contrib:
             L += ["", "### Dose share by GCR ion"]

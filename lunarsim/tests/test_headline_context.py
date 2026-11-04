@@ -19,7 +19,8 @@ if str(_REPO) not in sys.path:
 from lunarsim import dosimetry
 from lunarsim.headline_context import (headline_flags, is_q_fallback,
                                        NEAR_GATE_FRAC, DEFAULT_CROSSOVER_GCM2,
-                                       COMBINED_ENVELOPE_NOTE)
+                                       COMBINED_ENVELOPE_NOTE, systematic_band,
+                                       band_text, GATE_STEP)
 
 
 def _keys(flags):
@@ -74,6 +75,52 @@ class TestHeadlineContext(unittest.TestCase):
 
     def test_envelope_note_says_not_one_epoch(self):
         self.assertIn("not a single solar epoch", COMBINED_ENVELOPE_NOTE)
+
+
+
+class TestSystematicBand(unittest.TestCase):
+    """The model-spread band beside the MC ±: brackets the headline, carries the
+    one-sided ceiling bias, and the gate term only near the crossover. Checks
+    multipliers only, never a dose (target-blind)."""
+
+    def test_brackets_unity(self):
+        for g in (0.0, 5.0, 19.0, 30.0, 54.0):
+            for eng in ("kernel", "flood"):
+                b = systematic_band(g, eng)
+                self.assertLess(b["lo"], 1.0)
+                self.assertGreater(b["hi"], 1.0)
+
+    def test_ceiling_bias_grows_with_depth(self):
+        def ceil(g):
+            return next(t for t in systematic_band(g, "flood")["terms"]
+                        if t["key"] == "ceiling")
+        self.assertAlmostEqual(ceil(0.0)["hi"], 1.076, places=6)
+        self.assertAlmostEqual(ceil(50.0)["hi"], 1.21, places=6)
+        self.assertAlmostEqual(ceil(80.0)["hi"], 1.21, places=6)
+        self.assertEqual(ceil(0.0)["lo"], 1.0)        # one-sided
+
+    def test_gate_term_only_near_crossover(self):
+        far = systematic_band(54.0, "flood")
+        self.assertNotIn("gate", [t["key"] for t in far["terms"]])
+        at_k = systematic_band(DEFAULT_CROSSOVER_GCM2 - 1e-6, "kernel")
+        at_f = systematic_band(DEFAULT_CROSSOVER_GCM2, "flood")
+        gk = next(t for t in at_k["terms"] if t["key"] == "gate")
+        gf = next(t for t in at_f["terms"] if t["key"] == "gate")
+        self.assertAlmostEqual(gk["hi"], GATE_STEP, places=4)   # kernel reads low
+        self.assertAlmostEqual(gf["lo"], 1 / GATE_STEP, places=4)  # flood reads high
+
+    def test_excluded_terms_do_not_widen(self):
+        b = systematic_band(54.0, "flood")
+        q = next(t for t in b["terms"] if t["key"] == "q_model")
+        self.assertFalse(q["in_band"])
+        sym = (0.15 ** 2 + 0.25 ** 2) ** 0.5
+        ceil = next(t for t in b["terms"] if t["key"] == "ceiling")["hi"]
+        self.assertAlmostEqual(b["hi"], (1 + sym) * ceil, places=9)
+        self.assertAlmostEqual(b["lo"], 1 / (1 + sym), places=9)
+
+    def test_band_text(self):
+        b = {"lo": 0.5, "hi": 2.0, "terms": []}
+        self.assertEqual(band_text(100.0, b), "systematic 50–200 mSv/yr")
 
 
 if __name__ == "__main__":

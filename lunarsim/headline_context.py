@@ -38,6 +38,86 @@ COMBINED_ENVELOPE_NOTE = (
     "field it would actually co-occur with.")
 
 
+# ---------------------------------------------------------------------------
+# Systematic (model) uncertainty band -- shown NEXT TO the MC ± (statistics only).
+# Each term is a documented model spread, not a fit; none reads a dose target.
+# Symmetric terms combine in quadrature (log-symmetric: lo = 1/(1+s)); one-sided
+# terms are known-direction biases and multiply onto one edge only.
+GCR_MODEL_REL = 0.15       # GCR input spectrum/normalisation (Matthiae vs PAMELA /
+                           # BON2020 spread; memory flood-heavy-abundance-overweight)
+TRANSPORT_REL = 0.25       # cross-code transport spread (Geant4 vs HZETRN/OLTARIS,
+                           # 20-30%); SUBSUMES the in-Geant4 physics-list swap
+PHYSICS_LIST_REL = 0.074   # QMD vs modular fragmentation (fragmentation_sensitivity);
+                           # listed for transparency, inside TRANSPORT_REL
+CEILING_SURFACE = 0.076    # 20 GeV/n energy-ceiling tail: +7.6% at 0 g/cm2 ...
+CEILING_DEEP = 0.21        # ... growing to +21% at 50 g/cm2 (energy-ceiling-tail-
+CEILING_DEEP_GCM2 = 50.0   # measured); shipped kernels/flood stop at the ceiling
+GATE_STEP = 1.35           # kernel->flood headline step at the crossover (~1.3-1.4x,
+                           # dosimetry.fold_gcr_thinwall); RE-MEASURE after step-3 regen
+NASA_Q_RATIO = 1.20        # ICRP-60 -> NASA/Cucinotta Q at the organ level (Option C
+                           # i3); a CONVENTION choice, reported, not added to the band
+
+
+def _ceiling_bias(ad_gcm2: float) -> float:
+    x = min(max(ad_gcm2, 0.0), CEILING_DEEP_GCM2) / CEILING_DEEP_GCM2
+    return CEILING_SURFACE + (CEILING_DEEP - CEILING_SURFACE) * x
+
+
+def _gate_weight(ad_gcm2: float, crossover_gcm2: float) -> float:
+    """1 at the crossover, fading linearly to 0 at the near-gate window edge."""
+    half = NEAR_GATE_FRAC * crossover_gcm2
+    return max(0.0, 1.0 - abs(ad_gcm2 - crossover_gcm2) / half)
+
+
+def systematic_band(ad_gcm2: float, engine: str,
+                    crossover_gcm2: float = DEFAULT_CROSSOVER_GCM2) -> dict:
+    """Multiplicative systematic band for a GCR headline: {lo, hi, terms}.
+
+    terms is a list of {key, label, lo, hi, kind, in_band} (multipliers; kind
+    'sym' = two-sided spread, 'bias' = known-direction one-sided). The headline
+    times lo/hi brackets the model spread; MC statistics are NOT included (the GUI
+    shows them as the separate ±). Purely advisory -- never feeds the physics."""
+    if engine not in ENGINE_TEXT:
+        raise ValueError(f"unknown engine {engine!r}")
+    terms = [
+        {"key": "gcr_model", "label": "GCR input spectrum",
+         "lo": 1 / (1 + GCR_MODEL_REL), "hi": 1 + GCR_MODEL_REL, "kind": "sym",
+         "in_band": True},
+        {"key": "transport", "label": "transport code (cross-code spread)",
+         "lo": 1 / (1 + TRANSPORT_REL), "hi": 1 + TRANSPORT_REL, "kind": "sym",
+         "in_band": True},
+        {"key": "physics_list", "label": "Geant4 physics list (within transport)",
+         "lo": 1 / (1 + PHYSICS_LIST_REL), "hi": 1 + PHYSICS_LIST_REL,
+         "kind": "sym", "in_band": False},
+        {"key": "ceiling", "label": "energy ceiling 20 GeV/n (missing tail)",
+         "lo": 1.0, "hi": 1 + _ceiling_bias(ad_gcm2),
+         "kind": "bias", "in_band": True},
+    ]
+    w = _gate_weight(ad_gcm2, crossover_gcm2)
+    if w > 0:
+        step = 1 + (GATE_STEP - 1) * w
+        # the kernel reads low of the flood at the hand-off, the flood high
+        lo, hi = (1.0, step) if engine == "kernel" else (1 / step, 1.0)
+        terms.append({"key": "gate", "label": "engine hand-off",
+                      "lo": lo, "hi": hi, "kind": "bias", "in_band": True})
+    terms.append({"key": "q_model", "label": "quality-factor convention (NASA Q)",
+                  "lo": 1.0, "hi": NASA_Q_RATIO, "kind": "bias", "in_band": False})
+
+    used = [t for t in terms if t["in_band"]]
+    sym = sum((t["hi"] - 1) ** 2 for t in used if t["kind"] == "sym") ** 0.5
+    lo, hi = 1 / (1 + sym), 1 + sym
+    for t in used:
+        if t["kind"] == "bias":
+            lo *= t["lo"]
+            hi *= t["hi"]
+    return {"lo": lo, "hi": hi, "terms": terms}
+
+
+def band_text(value: float, band: dict, unit: str = "mSv/yr") -> str:
+    """'systematic 142-246 mSv/yr' -- the bracket the model spread allows."""
+    return (f"systematic {value * band['lo']:.0f}–{value * band['hi']:.0f} {unit}")
+
+
 def is_q_fallback(quality_factor) -> bool:
     """True when the mean Q is exactly the flat default, i.e. no LET-weighted
     dose-equivalent scorer was present. An emergent H/D landing on 3.5 to 1e-9

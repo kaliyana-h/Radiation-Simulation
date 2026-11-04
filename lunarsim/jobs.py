@@ -28,8 +28,9 @@ from typing import Callable, Optional
 
 from .spec import HabitatSpec
 from .bridge import RunTier, RunResult, QUICK_LOOK, run_design, SPEScenario
-from .dosimetry import (assess_composition, GCR_COMPOSITION, set_lis_form,
-                        FLOOD_LIS_FORM, active_composition, flood_baseline_model)
+from .dosimetry import (assess_composition, GCR_COMPOSITION, GcrModel,
+                        current_model, use_model, provenance,
+                        FLOOD_LIS_FORM, active_composition)
 
 
 # ----------------------------------------------------------------------
@@ -340,6 +341,10 @@ class ConvergedComposition:
     skin_dose_rel_err: Optional[float] = None   # combined (habitat-wide skin)
     returncode: int = 0
     log_tail: str = ""
+    # the GCR model the beam was generated under -- pass it back to
+    # assess_composition(model=...) so the flux normalisation matches the beam
+    model: Optional[GcrModel] = None
+    provenance: Optional[dict] = None
 
     @property
     def ok(self) -> bool:
@@ -372,17 +377,24 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                     cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedComposition:
     """Flood (deep) MC driver -- see _run_composition for the full contract.
 
-    Wrapped in flood_baseline_model() so the whole driver runs under the flood's
-    GCR model: the 'perelement' thin-kernel override (which fold_gcr_thinwall sets
-    as a process-global env) is mapped to the coherent 5-ion matthia2013 group model
-    for BOTH the make_source beam subprocesses spawned here AND the in-process flux
-    normalization. Without this pin, a GUI launched with LUNARSIM_GCR_PERELEMENT=
-    perelement would fold 5-ion band abundances onto single-element Matthiae
-    spectra and move the deep dose. No-op unless the active model is 'perelement'."""
-    with flood_baseline_model():
-        return _run_composition(
+    The whole driver runs under the flood's GCR model, scoped to this thread
+    (dosimetry.use_model): the active configuration's .flood() -- energy LIS form
+    (or `lis` if given) and the coherent 5-ion matthia2013 group model in place of
+    the 'perelement' thin-kernel model -- for BOTH the make_source beam
+    subprocesses spawned here (bridge passes the model env explicitly) AND the
+    in-process flux normalization. Nothing global is mutated, so a thin-wall fold
+    rendered concurrently in another GUI thread cannot change this run's model.
+    The result carries the model (and a provenance stamp) for assess_composition."""
+    model = current_model().flood()
+    if lis:
+        model = replace(model, lis_form=lis)
+    with use_model(model):
+        comp = _run_composition(
             spec, tier, target_rel_err, min_batches, max_batches, converge_on,
-            phantom_slack, composition, lis, progress_cb, cancel_cb)
+            phantom_slack, composition, model, progress_cb, cancel_cb)
+    comp.model = model
+    comp.provenance = provenance(model, engine="flood")
+    return comp
 
 
 def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
@@ -390,7 +402,7 @@ def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                      min_batches: int = 2, max_batches: int = 12,
                      converge_on: str = "both", phantom_slack: float = 1.0,
                      composition: Optional[list] = None,
-                     lis: Optional[str] = None,
+                     model: Optional[GcrModel] = None,
                      progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
                      cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedComposition:
     """Run every GCR species round-robin and converge on the COMBINED dose.
@@ -417,16 +429,17 @@ def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     is one batch of every species, so the denominator is the round budget, not
     the summed batch count.
 
-    `lis` pins the GCR LIS spectral form for BOTH the beam generation (make_source
-    subprocess) and the in-process flux normalisation, so they cannot drift apart.
-    Defaults to FLOOD_LIS_FORM ("energy") -- the form the flood CAL and the 0.310
-    mGy/day / Chang'E-4 / OLTARIS-Total anchors were validated on. Diagnostics that
-    compare forms (anchor_crosscheck) pass an explicit form."""
-    set_lis_form(lis or FLOOD_LIS_FORM)
+    `model` is the GCR model for BOTH the beam generation (make_source subprocess)
+    and the in-process flux normalisation, so they cannot drift apart. The caller
+    (run_composition) scopes it with use_model and defaults it to the flood model:
+    FLOOD_LIS_FORM ("energy") -- the form the flood CAL and the 0.310 mGy/day /
+    Chang'E-4 / OLTARIS-Total anchors were validated on. Diagnostics that compare
+    forms (anchor_crosscheck) pass run_composition an explicit `lis`."""
+    model = model or current_model()
     # None -> the composition dictated by the active per-element model (Matthiae
-    # abundances when LUNARSIM_GCR_PERELEMENT=matthia2013, else the shipped
-    # GCR_COMPOSITION). An explicit composition always wins. Resolved AFTER
-    # set_lis_form so the abundance integrals read the pinned LIS form.
+    # abundances under matthia2013, else the shipped GCR_COMPOSITION). An explicit
+    # composition always wins. Resolved under the scoped model so the abundance
+    # integrals read its LIS form.
     if composition is None:
         composition = active_composition(tier.phi_mv)
     sp_tiers = [(sp, _species_tier(tier, sp[3])) for sp in composition]
@@ -468,8 +481,10 @@ def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
         rounds = rnd + 1
 
         species_results = snapshot()
-        a_skin = assess_composition(species_results, phi_MV=tier.phi_mv, skin=True)
-        a_phan = assess_composition(species_results, phi_MV=tier.phi_mv, skin=False)
+        a_skin = assess_composition(species_results, phi_MV=tier.phi_mv, skin=True,
+                                    model=model)
+        a_phan = assess_composition(species_results, phi_MV=tier.phi_mv, skin=False,
+                                    model=model)
         rel = _pick_rel(a_skin.rel_err if a_skin else None,
                         a_phan.rel_err if a_phan else None,
                         converge_on, phantom_slack)
@@ -491,8 +506,10 @@ def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
         log_tail=species_results[-1][1].log_tail if species_results else "",
     )
     # combined statistical error of the summed dose (flux-weighted, in quadrature)
-    a_skin = assess_composition(species_results, phi_MV=tier.phi_mv, skin=True) if species_results else None
-    a_phan = assess_composition(species_results, phi_MV=tier.phi_mv, skin=False) if species_results else None
+    a_skin = (assess_composition(species_results, phi_MV=tier.phi_mv, skin=True,
+                                 model=model) if species_results else None)
+    a_phan = (assess_composition(species_results, phi_MV=tier.phi_mv, skin=False,
+                                 model=model) if species_results else None)
     comp.skin_dose_rel_err = a_skin.rel_err if a_skin else None
     comp.dose_rel_err = a_phan.rel_err if a_phan else None
     return comp

@@ -89,12 +89,10 @@ def _run_one(lis_var: str, areal_gcm2: float, run_dir: Path, tier) -> dict:
     from lunarsim.spec import HabitatSpec, WallLayer
     from lunarsim import bridge, dosimetry, jobs
 
-    # set_lis_form drops BOTH the make_source AND the _calibration_factor cache, so
-    # each form's number uses its own consistent flux normalisation (clearing only
-    # _load_make_source, as this harness used to, left the calibration on whichever
-    # form ran first). run_composition below is also handed lis=lis_var so its own
-    # entry pin does not override this form with the flood default (energy).
-    dosimetry.set_lis_form(lis_var)
+    # run_composition is handed lis=lis_var so it runs (beam AND normalisation)
+    # under this form instead of the flood default (energy); the result carries
+    # that model, and the assessments below are normalised under the SAME model,
+    # so each form's number uses its own consistent flux normalisation.
     t_cm = areal_gcm2 / AL_RHO_G_CM3
     spec = HabitatSpec(name=f"xcheck_{lis_var}", shape=XCHECK_SHAPE,
                        inner_radius_cm=XCHECK_INNER_R_CM,
@@ -111,9 +109,11 @@ def _run_one(lis_var: str, areal_gcm2: float, run_dir: Path, tier) -> dict:
         raise SystemExit(f"[{lis_var}] composition MC failed (rc={comp.returncode}); "
                          f"see {run_dir}")
     a_skin = dosimetry.assess_composition(comp.species_results,
-                                          phi_MV=tier.phi_mv, skin=True)
+                                          phi_MV=tier.phi_mv, skin=True,
+                                          model=comp.model)
     a_phan = dosimetry.assess_composition(comp.species_results,
-                                          phi_MV=tier.phi_mv, skin=False)
+                                          phi_MV=tier.phi_mv, skin=False,
+                                          model=comp.model)
     # per-species absorbed skin dose fraction, so the proton fraction is visible
     # (assess_composition already builds this: dose_rate_gy_s + dose_fraction per row)
     per_species = {c["species"]: {"frac": c.get("dose_fraction"),

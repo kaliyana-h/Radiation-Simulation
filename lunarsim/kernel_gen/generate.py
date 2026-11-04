@@ -36,6 +36,11 @@ from pathlib import Path
 from . import config, templates
 
 
+def _provenance() -> dict:
+    from lunarsim import dosimetry      # local: keep the emit step dosimetry-free
+    return dosimetry.provenance(engine="kernel_gen")
+
+
 # --------------------------------------------------------------------------
 # run enumeration
 # --------------------------------------------------------------------------
@@ -239,6 +244,9 @@ def collect(out: Path) -> dict:
             "wall_geometry": wall_geometry,
             "wall_slab_bottom_z_cm": config.WALL_RMIN_CM,
             "wall_slab_half_extent_cm": config.WALL_SLAB_HL_CM,
+            # code version + date the kernel was COLLECTED (R is spectrum-free
+            # transport response; the model fields record the collecting env only)
+            "provenance": _provenance(),
         },
         "points": points,
     }
