@@ -1364,10 +1364,11 @@ class TestCombinedThinWallRender(unittest.TestCase):
                            walls=[WallLayer("aluminium", 0.75)])   # ~2.03 g/cm^2
         _bar, _st, _metrics, _an, _dis, report, overlay = self._poll_with(spec)
         # Gate 1 overlay is the folded ICRP effective dose, NOT the flood artifact
-        # (227.6 on the per-element kernel + Matthiae-absolute flux, = the
+        # (246.4 on the per-element kernel + Matthiae-absolute flux since the
+        # 2026-11-05 20 GeV/n tail promotion; 227.6 pre-tail, = the
         # accuracy_vs_depth kernel column @2.03; was 295.4 under the lumped
         # rigidity kernel, 342.6 before that -- see the anchor test above)
-        self.assertAlmostEqual(overlay["skin"], 227.6, delta=1.0)
+        self.assertAlmostEqual(overlay["skin"], 246.4, delta=1.0)
         self.assertLess(overlay["skin"], 400.0)          # not the ~3500 flood number
         self.assertIn("thin-wall", report)               # regime is labelled
         self.assertIn("ICRP-60 Q(L)", report)            # folded on ICRP Q, not NASA
@@ -1389,7 +1390,7 @@ class TestCombinedThinWallRender(unittest.TestCase):
                            walls=[WallLayer("aluminium", 0.75)])   # ~2.03 g/cm^2
         _bar, _st, metrics, _an, _dis, report, _ov = self._poll_with(spec)
         self.assertIn("Systematic band: systematic", report)
-        self.assertIn("energy ceiling", report)
+        self.assertIn("20 GeV/n ceiling", report)
         self.assertIn("Provenance: `git=", report)
         self.assertIn("engine=kernel", report)
         self.assertIn("MC statistics only", str(metrics))
