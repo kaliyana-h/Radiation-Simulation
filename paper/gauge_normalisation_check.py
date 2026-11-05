@@ -63,42 +63,53 @@ def ring_layout(rings: int, azimuth: int):
     return out
 
 
-def _len_in_ball_above_ground(p, d, R):
-    import numpy as np
-    b = np.einsum("ij,ij->i", p, d)
-    c = np.einsum("ij,ij->i", p, p) - R * R
-    disc = b * b - c
-    ok = disc > 0
-    sq = np.sqrt(np.where(ok, disc, 0.0))
-    s0 = np.maximum(-b - sq, 0.0)
-    s1 = np.maximum(-b + sq, 0.0)
-    dz, pz = d[:, 2], p[:, 2]
-    sz = np.where(dz < 0, np.maximum(pz, 0.0) / -dz, np.inf)   # stopped at the ground
-    sz = np.where(pz < 0, 0.0, sz)                              # born underground
-    return np.where(ok, np.maximum(np.minimum(s1, sz) - np.minimum(s0, sz), 0.0), 0.0)
+def _len_in_ball_above_ground(px, py, pz, dx, dy, dz, R):
+    """Length of the ray p + s d (s >= 0) inside the ball of radius R, cut off where
+    it reaches the ground z = 0 (primaries stop there; born underground -> 0)."""
+    if pz < 0:
+        return 0.0
+    b = px * dx + py * dy + pz * dz
+    disc = b * b - (px * px + py * py + pz * pz - R * R)
+    if disc <= 0:
+        return 0.0
+    sq = math.sqrt(disc)
+    s0, s1 = max(-b - sq, 0.0), max(-b + sq, 0.0)
+    if dz < 0:
+        sz = pz / -dz
+        s0, s1 = min(s0, sz), min(s1, sz)
+    return max(s1 - s0, 0.0)
 
 
 def geometric_cal(rings: int, azimuth: int, beam_radius: float = 1400.0,
-                  spot: float = 900.0, rg: float = 880.0, n: int = 100_000,
+                  spot: float = 900.0, rg: float = 880.0, n: int = 20_000,
                   seed: int = 1) -> dict:
-    """fo, phi_hab (per primary, /cm^2) and CAL_phys = fo/phi_hab."""
-    import numpy as np
-    rng = np.random.default_rng(seed)
+    """fo, phi_hab (per primary, /cm^2) and CAL_phys = fo/phi_hab. Pure Python
+    (no numpy, so it runs in the PC venv)."""
+    import random
+    rng = random.Random(seed)
     vol = 2.0 / 3.0 * math.pi * ((rg + 2.0) ** 3 - rg ** 3)
     track = 0.0
     born_below = 0
     srcs = ring_layout(rings, azimuth)
     for th, ph in srcs:
-        u = np.array([math.sin(th) * math.cos(ph), math.sin(th) * math.sin(ph), math.cos(th)])
-        e1 = np.array([math.cos(th) * math.cos(ph), math.cos(th) * math.sin(ph), -math.sin(th)])
-        e2 = np.cross(u, e1)
-        rr = spot * np.sqrt(rng.random(n))
-        aa = 2.0 * math.pi * rng.random(n)
-        p = beam_radius * u + np.outer(rr * np.cos(aa), e1) + np.outer(rr * np.sin(aa), e2)
-        d = np.tile(-u, (n, 1))
-        born_below += int((p[:, 2] < 0).sum())
-        track += float((_len_in_ball_above_ground(p, d, rg + 2.0)
-                        - _len_in_ball_above_ground(p, d, rg)).sum())
+        st, ct, sp, cp = math.sin(th), math.cos(th), math.sin(ph), math.cos(ph)
+        u = (st * cp, st * sp, ct)
+        e1 = (ct * cp, ct * sp, -st)
+        e2 = (u[1] * e1[2] - u[2] * e1[1], u[2] * e1[0] - u[0] * e1[2],
+              u[0] * e1[1] - u[1] * e1[0])
+        dx, dy, dz = -u[0], -u[1], -u[2]
+        for _ in range(n):
+            rr = spot * math.sqrt(rng.random())
+            aa = 2.0 * math.pi * rng.random()
+            c, s_ = rr * math.cos(aa), rr * math.sin(aa)
+            px = beam_radius * u[0] + c * e1[0] + s_ * e2[0]
+            py = beam_radius * u[1] + c * e1[1] + s_ * e2[1]
+            pz = beam_radius * u[2] + c * e1[2] + s_ * e2[2]
+            if pz < 0:
+                born_below += 1
+                continue
+            track += (_len_in_ball_above_ground(px, py, pz, dx, dy, dz, rg + 2.0)
+                      - _len_in_ball_above_ground(px, py, pz, dx, dy, dz, rg))
     ntot = n * len(srcs)
     fo = track / ntot / vol
     phi = 1.0 / (math.pi * spot ** 2)
@@ -109,8 +120,8 @@ def geometric_cal(rings: int, azimuth: int, beam_radius: float = 1400.0,
 def stage2_check(rings: int, azimuth: int) -> float:
     """Predicted historical stage-2 factor (skin/fo at spot 500 over spot 900, 800
     gauge): skin ~ phi_hab, so the ratio is (phi500/fo500)/(phi900/fo900)."""
-    a = geometric_cal(rings, azimuth, spot=500.0, rg=800.0, n=40_000)
-    b = geometric_cal(rings, azimuth, spot=900.0, rg=800.0, n=40_000)
+    a = geometric_cal(rings, azimuth, spot=500.0, rg=800.0, n=10_000)
+    b = geometric_cal(rings, azimuth, spot=900.0, rg=800.0, n=10_000)
     return b["cal_phys"] / a["cal_phys"]
 
 
@@ -161,7 +172,7 @@ def cmd_measure(args) -> None:
                    histories=args.histories)
     phi = 1.0 / (math.pi * DEFAULT_BEAM_SPOT_CM ** 2)
     cal = dosimetry.OUTER_GAUGE_ANCHOR_CAL
-    g = geometric_cal(args.rings, args.azimuth, n=40_000)
+    g = geometric_cal(args.rings, args.azimuth, n=10_000)
     print(f"anchor {spec.name}: {spec.areal_density_gcm2():.1f} g/cm2, "
           f"{tier.total_primaries} primaries/run, geometric CAL_phys {g['cal_phys']:.4f}")
     species = [("H", "proton", 1, 1), ("He", "alpha", 2, 4),
@@ -198,7 +209,7 @@ def main(argv=None) -> None:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     g = sub.add_parser("geometric", help="laptop ray-trace (no TOPAS)")
-    g.add_argument("--n", type=int, default=100_000, help="rays per source")
+    g.add_argument("--n", type=int, default=20_000, help="rays per source")
     m = sub.add_parser("measure", help="PC: real flood gauge per species")
     m.add_argument("--seeds", type=int, default=4)
     m.add_argument("--rings", type=int, default=5)
