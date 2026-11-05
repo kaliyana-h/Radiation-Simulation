@@ -135,8 +135,11 @@ def _read_scalar_csv(path: Path):
 
 
 def _collect_point(runs_dir: Path, material: str, wall: float, seeds: int,
-                   composition: str = "reference") -> dict:
-    """Assemble one areal-density anchor: per-species R & Rsem over seeds."""
+                   composition: str = "reference",
+                   phi_ff: float | None = None) -> dict:
+    """Assemble one areal-density anchor: per-species R & Rsem over seeds.
+    phi_ff None = config.PHI_FF_CM2 (production illumination)."""
+    phi = config.PHI_FF_CM2 if phi_ff is None else float(phi_ff)
     species_meta = config.species_for(composition)
     organs = [name for name, _ in config.organs_from_reference()]
     out_species = {}
@@ -153,7 +156,7 @@ def _collect_point(runs_dir: Path, material: str, wall: float, seeds: int,
                         rn = _run_name(material, wall, sname, j, seed)
                         v = _read_scalar_csv(runs_dir / rn / f"{fbase}.csv")
                         if v is not None:
-                            vals.append(v / config.PHI_FF_CM2)   # D -> R = D/phi_ff
+                            vals.append(v / phi)   # D -> R = D/phi_ff
                     if vals:
                         R[o][qkey][j] = statistics.fmean(vals)
                         sd = statistics.pstdev(vals) if len(vals) > 1 else 0.0

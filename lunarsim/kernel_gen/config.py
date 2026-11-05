@@ -108,9 +108,10 @@ SHELLS = [
 # it measured a shell regen against the slab-TUNED kernel, i.e. that 1.70x slant IS
 # the slab's own over-attenuation seen in reverse, not a shell bias. The correct
 # yardstick is the same-physics flood, which the shell matches and the slab does not.
-# NOTE: we ship the shell BASE (no ceiling tail). On the corrected geometry the tail
-# over-read OLTARIS by ~21% at depth (it was a compensator for the slab defect, now
-# removed), so tail.py's extension is NOT merged into the production kernel.
+# NOTE (2026-11-05): the AL/poly/EVA kernels ship the shell base; the PER-ELEMENT
+# kernel now ships with the 20 GeV/n tail merged (gcr_thinwall_kernel_perelem.json;
+# the pre-tail file is kept as *_pretail.json). The older "tail over-reads ~21% at
+# depth" finding was on the lumped corrected composition and is superseded there.
 WALL_RMIN_CM = PHANTOM_R_CM   # slab bottom face z (sits on the phantom north pole)
 # Lateral half-extent of the shield slab. Must exceed the horizontal footprint a
 # grazing ring ray sweeps while inside the slab so the ray enters the top face and

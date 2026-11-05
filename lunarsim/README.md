@@ -176,7 +176,8 @@ These tests run without TOPAS. The GUI tests also need `dash`.
 python3 -m unittest lunarsim.tests.test_pipeline lunarsim.tests.test_crossover_coherence \
   lunarsim.tests.test_convergence_gate lunarsim.tests.test_headline_context \
   lunarsim.tests.test_regolith_site lunarsim.tests.test_spe_event lunarsim.tests.test_tail_harness \
-  lunarsim.tests.test_gate_decompose lunarsim.tests.test_tail_vs_flood
+  lunarsim.tests.test_gate_decompose lunarsim.tests.test_tail_vs_flood \
+  lunarsim.tests.test_geometry_probe
 ```
 
 ### Environment
