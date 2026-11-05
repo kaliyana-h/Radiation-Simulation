@@ -109,8 +109,14 @@ the aluminium kernel and flagged *indicative*.
   4.3 ± 0.7. The neutral component is reported but not used as a gate, because
   the measurement is contaminated by the lander platform.
 - **Skin dose** agrees with SHARC/OLTARIS lunar-surface values.
-- **Thick-shield absorbed dose** against OLTARIS at 54 g/cm² Al is being
-  re-verified after the Matthiä absolute-normalisation change.
+- **Thick-shield absorbed dose** at 54 g/cm² Al: 0.260 mGy/day after the Matthiä
+  absolute-normalisation change, 0.88× OLTARIS lunar-surface Total (0.296), inside
+  the cross-code band (`python3 -m lunarsim.anchor_crosscheck`). A provenance-stamped
+  rerun on the current code is pending.
+- **Flood normalisation** reads ~5% conservative-low: the outer gauge gives a
+  first-principles calibration of ≈1.00 against the shipped 0.949
+  (`paper/gauge_normalisation_check.py`). The value is kept and stated as a known
+  systematic.
 - **Mean Q against depth** is checked against the CRaTER/TGO reference. ⟨Q⟩ is
   0.9× the reference at the surface and reads mildly low at depth.
 

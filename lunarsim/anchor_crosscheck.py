@@ -53,7 +53,10 @@ Usage (PC)
     export TOPAS_G4_DATA_DIR=~/G4Data
     python3 -m lunarsim.anchor_crosscheck runs/xcheck54          # 54 g/cm^2 pure Al
     python3 -m lunarsim.anchor_crosscheck runs/xcheck54 --mult 20 --areal 54
+    python3 -m lunarsim.anchor_crosscheck runs/xcheck54 --forms energy   # flood form only
 HEAVY -- one flood MC per LIS form. --mult mirrors the re-anchor statistics.
+The summary JSON carries the provenance stamp (git, GCR model, CAL) of each form's
+assessment, so a re-verification is tied to the code that produced it.
 """
 from __future__ import annotations
 
@@ -114,6 +117,8 @@ def _run_one(lis_var: str, areal_gcm2: float, run_dir: Path, tier) -> dict:
     a_phan = dosimetry.assess_composition(comp.species_results,
                                           phi_MV=tier.phi_mv, skin=False,
                                           model=comp.model)
+    # skin dose equivalent / absorbed = the lining's mean Q (ICRP-60), same run
+    qbar = a_skin.quality_factor
     # per-species absorbed skin dose fraction, so the proton fraction is visible
     # (assess_composition already builds this: dose_rate_gy_s + dose_fraction per row)
     per_species = {c["species"]: {"frac": c.get("dose_fraction"),
@@ -125,6 +130,9 @@ def _run_one(lis_var: str, areal_gcm2: float, run_dir: Path, tier) -> dict:
         "skin_mgy_day": a_skin.dose_rate_ugy_day / 1000.0,
         "phantom_mgy_day": a_phan.dose_rate_ugy_day / 1000.0,
         "skin_rel_err": a_skin.rel_err,
+        "skin_msv_yr": a_skin.annual_msv,
+        "skin_qbar": qbar,
+        "provenance": dosimetry.provenance_str(a_skin.provenance),
         "per_species_skin_ugy_h": per_species,
         "wall_seconds": comp.wall_seconds,
     }
@@ -140,7 +148,15 @@ def main(argv=None) -> None:
                    help="per-species per-batch size multiplier on FULL_RUN "
                         "(statistics now come from run_composition's convergence "
                         "rounds over 5 species, so 1 is usually enough)")
+    p.add_argument("--forms", default=",".join(LIS_FORMS),
+                   help="comma list of LIS forms to run (default energy,rigidity). "
+                        "The flood engine is pinned to energy, so '--forms energy' "
+                        "is the production re-verification at half the cost.")
     args = p.parse_args(argv)
+    forms = tuple(f.strip() for f in args.forms.split(",") if f.strip())
+    bad = [f for f in forms if f not in LIS_FORMS]
+    if bad or "energy" not in forms:
+        p.error(f"--forms must be drawn from {LIS_FORMS} and include energy (got {args.forms})")
 
     from lunarsim import bridge, dosimetry
     outdir = Path(args.outdir).resolve()
@@ -160,18 +176,22 @@ def main(argv=None) -> None:
     print(f"  current OUTER_GAUGE_ANCHOR_CAL = {cal_old:.5f}\n")
 
     results = {v: _run_one(v, args.areal, outdir / f"lis_{v}", tier)
-               for v in LIS_FORMS}
+               for v in forms}
 
     print("\n  FULL-COMPOSITION absorbed dose, CAL_old applied:")
-    print("  form        skin(uGy/h)  skin(mGy/d)   phantom(uGy/h)  phantom(mGy/d)")
-    for v in LIS_FORMS:
+    print("  form        skin(uGy/h)  skin(mGy/d)   phantom(uGy/h)  phantom(mGy/d)"
+          "  skin(mSv/yr)  skin Qbar")
+    for v in forms:
         r = results[v]
+        q = r.get("skin_qbar")
         print(f"  {v:<9} {r['skin_ugy_h']:>11.3f}  {r['skin_mgy_day']:>11.4f}   "
-              f"{r['phantom_ugy_h']:>13.3f}  {r['phantom_mgy_day']:>13.4f}")
+              f"{r['phantom_ugy_h']:>13.3f}  {r['phantom_mgy_day']:>13.4f}"
+              f"  {r['skin_msv_yr']:>12.1f}  {('%.3f' % q) if q else '--':>9}")
+        print(f"    provenance: {r['provenance']}")
 
     # per-species breakdown -- the proton fraction is the key number: the old
     # proton-only harness read ~this fraction of the full-composition anchor.
-    for v in LIS_FORMS:
+    for v in forms:
         ps = results[v].get("per_species_skin_ugy_h") or {}
         if ps:
             print(f"\n  [{v}] per-species skin absorbed dose (uGy/h, dose fraction):")
@@ -201,6 +221,7 @@ def main(argv=None) -> None:
 
     summary = {"areal_gcm2": args.areal, "cal_old": cal_old,
                "oltaris_total_mgy_day": OLTARIS_TOTAL_MGY_DAY, "mult": mult,
+               "forms": list(forms),
                "composition": "full GCR (H+He+C+Si+Fe), converge_on=skin",
                "results": results, "energy_skin_over_oltaris": ratio}
     (outdir / "xcheck_summary.json").write_text(json.dumps(summary, indent=2))
