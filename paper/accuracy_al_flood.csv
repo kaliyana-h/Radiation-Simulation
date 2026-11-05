@@ -1,7 +1,9 @@
-areal_gcm2,al_cm,flood_eff_mSv_yr,flood_skin_mSv_yr,note
-19,7.04,203.6,218.4,"gate; flood takes over at/above here | 2026-11-03 flood sweep; phantom rel_err  12.3%, skin 0.5%"
-25,9.26,,,
-30,11.11,185.4,205.7,"OLTARIS Al dish minimum | 2026-11-03 flood sweep; phantom rel_err 9.4%, skin  0.6%"
-40,14.81,,,
-50,18.52,182.0,210.1,"2026-11-03 flood sweep; phantom rel_err 14.4%, skin 0.6%"
-54,20.00,,,
+areal_gcm2,al_cm,flood_eff_mSv_yr,flood_skin_mSv_yr,note,provenance
+5,1.85,302.8,297.4,"2026-11-05 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 8.4%, skin rel_err 0.6%",git=d99881ea engine=flood lis_form=energy perelement=matthia2013 emax_per_nuc=20000 shape=pernuc cal=0.949335 date=2026-11-05T06:04Z
+10,3.70,314.7,249.0,"2026-11-05 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 7.5%, skin rel_err 0.4%",git=d99881ea engine=flood lis_form=energy perelement=matthia2013 emax_per_nuc=20000 shape=pernuc cal=0.949335 date=2026-11-05T09:16Z
+19,7.04,208.3,218.4,"gate; flood takes over at/above here | 2026-11-04 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 12.1%, skin rel_err 0.5%",git=d99881ea engine=flood lis_form=energy perelement=matthia2013 emax_per_nuc=20000 shape=pernuc cal=0.949335 date=2026-11-04T11:37Z
+25,9.26,183.6,209.4,"2026-11-04 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 6.6%, skin rel_err 0.6%",git=d99881ea engine=flood lis_form=energy perelement=matthia2013 emax_per_nuc=20000 shape=pernuc cal=0.949335 date=2026-11-04T14:44Z
+30,11.11,183.6,205.9,"OLTARIS Al dish minimum | 2026-11-04 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 9.3%, skin rel_err 0.6%",git=d99881ea engine=flood lis_form=energy perelement=matthia2013 emax_per_nuc=20000 shape=pernuc cal=0.949335 date=2026-11-04T17:48Z
+40,14.81,205.4,208.6,"2026-11-04 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 7.0%, skin rel_err 0.5%",git=d99881ea engine=flood lis_form=energy perelement=matthia2013 emax_per_nuc=20000 shape=pernuc cal=0.949335 date=2026-11-04T20:53Z
+50,18.52,182.1,210.1,"2026-11-05 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 14.3%, skin rel_err 0.6%",git=d99881ea engine=flood lis_form=energy perelement=matthia2013 emax_per_nuc=20000 shape=pernuc cal=0.949335 date=2026-11-04T23:51Z
+54,20.00,225.9,209.7,"2026-11-05 full-comp flood sweep (750cm dome, both-converged); phantom rel_err 7.3%, skin rel_err 0.5%",git=d99881ea engine=flood lis_form=energy perelement=matthia2013 emax_per_nuc=20000 shape=pernuc cal=0.949335 date=2026-11-05T02:53Z
