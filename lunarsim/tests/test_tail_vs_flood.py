@@ -81,8 +81,25 @@ class TestTailVsFlood(unittest.TestCase):
             with tv.perelem_kernel(p):
                 pass
 
-    def test_missing_flux_fraction_is_small_positive(self):
+    def test_default_base_is_pretail_and_tail_is_shipped(self):
+        self.assertTrue(tv.DEFAULT_BASE.exists(), "pre-tail kernel backup missing")
+        base = tv.top_nodes(json.loads(tv.DEFAULT_BASE.read_text()))
+        ship = tv.top_nodes(dosimetry._load_gcr_thinwall_kernel_perelem())
+        self.assertEqual(tv.DEFAULT_TAIL.resolve(),
+                         dosimetry._GCR_THINWALL_KERNEL_PERELEM.resolve())
+        for name in ship:
+            self.assertLess(base[name], ship[name], name)
+
+    def test_explicit_base_lift_exceeds_one(self):
+        r = tv.lift_point(19.0, tv.DEFAULT_TAIL, "energy", tv.DEFAULT_BASE)
+        self.assertGreater(r["lift_E"], 1.05)
+
+    def test_shipped_kernel_has_no_missing_flux(self):
         f = tv.missing_flux_fraction(dosimetry._load_gcr_thinwall_kernel_perelem())
+        self.assertAlmostEqual(f, 0.0, places=9)
+
+    def test_pretail_missing_flux_fraction_is_small_positive(self):
+        f = tv.missing_flux_fraction(json.loads(tv.DEFAULT_BASE.read_text()))
         self.assertGreater(f, 0.0)
         self.assertLess(f, 0.2)
 

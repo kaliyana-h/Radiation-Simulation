@@ -191,6 +191,9 @@ EVA_OUT = "gcr_thinwall_kernel_eva.json"                  # the shipped EVA kern
 SI_OUT = "gcr_thinwall_kernel_si.json"                    # corrected-composition Al kernel
 POLY_OUT = "gcr_thinwall_kernel_poly.json"                # the shipped polyethylene kernel
 PERELEM_OUT = "gcr_thinwall_kernel_perelem.json"          # the 10-ion per-element Al kernel
+# ^ WARNING (2026-11-05): the shipped file is now TAIL-EXTENDED to 20 GeV/n. A plain
+#   per-element regen writes 6000/5000 MeV/n tops and would silently drop the tail;
+#   re-run kernel_gen.tail (--composition perelement_tail) on it before shipping.
 
 # --------------------------------------------------------------------------
 # Per-material anchor grid and shipped-kernel filename.

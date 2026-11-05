@@ -94,9 +94,10 @@ class TestSystematicBand(unittest.TestCase):
         def ceil(g):
             return next(t for t in systematic_band(g, "flood")["terms"]
                         if t["key"] == "ceiling")
-        self.assertAlmostEqual(ceil(0.0)["hi"], 1.076, places=6)
-        self.assertAlmostEqual(ceil(50.0)["hi"], 1.21, places=6)
-        self.assertAlmostEqual(ceil(80.0)["hi"], 1.21, places=6)
+        # >20 GeV/n residual only, since the 2026-11-05 tail promotion
+        self.assertAlmostEqual(ceil(0.0)["hi"], 1.015, places=6)
+        self.assertAlmostEqual(ceil(50.0)["hi"], 1.04, places=6)
+        self.assertAlmostEqual(ceil(80.0)["hi"], 1.04, places=6)
         self.assertEqual(ceil(0.0)["lo"], 1.0)        # one-sided
 
     def test_gate_term_only_near_crossover(self):

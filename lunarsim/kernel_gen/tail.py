@@ -70,6 +70,11 @@ The base/dest are then the per-element files:
          --base lunarsim/data/gcr_thinwall_kernel_perelem.json \
          --tail lunarsim/data/gcr_thinwall_kernel_perelem_tail.json
 
+PROMOTED 2026-11-05: the merged tail kernel is now the SHIPPED
+gcr_thinwall_kernel_perelem.json; the pre-tail base is kept as
+gcr_thinwall_kernel_perelem_pretail.json. To redo the delta, pass that file as
+--base and the shipped file as --tail.
+
 merge auto-detects the composition from the batch manifest and guards that --base
 is the matching base kernel (config.TAIL_COMPOSITIONS). delta auto-sets the
 per-element fold model from the base kernel's meta.composition, so the folded

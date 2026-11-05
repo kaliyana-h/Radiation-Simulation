@@ -51,8 +51,8 @@ The headline card shows these numbers:
 
 ```
 RADIATION PROTECTION SCORE
-   158.1 mSv/yr ± 3%
-   systematic 122–220 mSv/yr · ± above is MC statistics only
+   197.7 mSv/yr          (10 g/cm² Al, kernel fold)
+   systematic 153–260 mSv/yr · ± above is MC statistics only
 ```
 
 - **The number** is the annual effective dose (ICRP-60 Q(L)) over the habitat.
@@ -67,8 +67,8 @@ RADIATION PROTECTION SCORE
   | GCR input spectrum (Matthiä vs PAMELA/BON2020) | ×/÷ 1.15 | yes (quadrature) |
   | Transport code (Geant4 vs HZETRN/OLTARIS) | ×/÷ 1.25 | yes (quadrature) |
   | Geant4 physics list (QMD vs modular) | ±7% | no; contained in the transport term |
-  | Energy ceiling 20 GeV/n (missing tail) | +7.6% at the surface → +21% at 50 g/cm² | yes (one-sided) |
-  | Engine hand-off near 19 g/cm² | up to ×1.35, fading to zero at ±20% | yes (one-sided) |
+  | Energy above the 20 GeV/n source ceiling (neither engine; estimated) | +1.5% at the surface → +4% at 50 g/cm² | yes (one-sided) |
+  | Engine hand-off near 19 g/cm² | up to ×1.20 (measured), fading to zero at ±20% | yes (one-sided) |
   | Q convention (NASA/Cucinotta vs ICRP) | +20% | no; reported as a cross-check |
 
   When comparing two designs, a difference smaller than the band is not a
@@ -134,7 +134,7 @@ HabitatSpec ─► geometry ─► bridge ─► jobs ─► dosimetry ─► he
 | `headline_context.py` | Dash-free advisory flags plus `systematic_band`. These are labels only and never change a dose. |
 | `gui.py` | Dash app: design editor, previews, evaluate → poll → cards, and the report. |
 | `kernel_gen/` | PC-side kernel regeneration (`generate.py`, `tail.py`). Output JSON is provenance-stamped. |
-| `data/` | Shipped kernels: thin-wall Al/poly/EVA/per-element, plus the SPE kernel. |
+| `data/` | Shipped kernels: thin-wall Al/poly/EVA/per-element, plus the SPE kernel. The per-element kernel runs to the 20 GeV/n flood source ceiling (tail promoted 2026-11-05; the pre-tail file is kept as `*_pretail.json`). |
 
 ### The GCR model is an explicit value
 

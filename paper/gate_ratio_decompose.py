@@ -19,7 +19,10 @@ This script separates the gap into factors, multiplied in order:
 
 K_in is the kernel folded on EXACTLY the flood's input model (energy LIS, the
 5-ion matthia2013 group spectra and abundances), so the residual has no
-input-spectrum content left. All of this is laptop arithmetic: no MC, no fit, and
+input-spectrum content left. Since the 2026-11-05 tail promotion the per-element
+kernel runs to 20 GeV/n but the 5-ion K_in kernel still stops at 5/6 GeV/n, so the
+"composition" factor now also absorbs the tail lift. The RESIDUAL flood/K_in is
+unchanged; paper/tail_vs_flood.py gives the residual after the tail. All of this is laptop arithmetic: no MC, no fit, and
 target-blind, because no reference dose enters. OLTARIS is not read here.
 
 Two comparator pairings are reported, because the two engines score different

@@ -49,11 +49,18 @@ TRANSPORT_REL = 0.25       # cross-code transport spread (Geant4 vs HZETRN/OLTAR
                            # 20-30%); SUBSUMES the in-Geant4 physics-list swap
 PHYSICS_LIST_REL = 0.074   # QMD vs modular fragmentation (fragmentation_sensitivity);
                            # listed for transparency, inside TRANSPORT_REL
-CEILING_SURFACE = 0.076    # 20 GeV/n energy-ceiling tail: +7.6% at 0 g/cm2 ...
-CEILING_DEEP = 0.21        # ... growing to +21% at 50 g/cm2 (energy-ceiling-tail-
-CEILING_DEEP_GCM2 = 50.0   # measured); shipped kernels/flood stop at the ceiling
-GATE_STEP = 1.35           # kernel->flood headline step at the crossover (~1.3-1.4x,
-                           # dosimetry.fold_gcr_thinwall); RE-MEASURE after step-3 regen
+# Energy above the 20 GeV/n source ceiling, which NEITHER engine transports. The
+# 5/6-20 GeV/n band the kernel used to miss (+7.6% @0 -> +21% @50, measured by the
+# tail MC) is in the central value since the 2026-11-05 tail promotion. What is
+# left is the >20 GeV/n flux: 1.3% of the free-field flux vs 6.7% for that band, so
+# the bias is ESTIMATED as the measured lift scaled by 1.3/6.7 (not measured).
+CEILING_SURFACE = 0.015    # +1.5% at 0 g/cm2 ...
+CEILING_DEEP = 0.04        # ... growing to +4% at 50 g/cm2
+CEILING_DEEP_GCM2 = 50.0
+GATE_STEP = 1.20           # kernel->flood headline step at the 19 g/cm2 crossover,
+                           # MEASURED 2026-11-05 after the tail promotion: flood skin
+                           # 218.4 / kernel E 182.6 (750 cm Al dome) = 1.196; was ~1.4
+                           # before (paper/tail_vs_flood.py, gate_ratio_decompose.py)
 NASA_Q_RATIO = 1.20        # ICRP-60 -> NASA/Cucinotta Q at the organ level (Option C
                            # i3); a CONVENTION choice, reported, not added to the band
 
@@ -89,7 +96,7 @@ def systematic_band(ad_gcm2: float, engine: str,
         {"key": "physics_list", "label": "Geant4 physics list (within transport)",
          "lo": 1 / (1 + PHYSICS_LIST_REL), "hi": 1 + PHYSICS_LIST_REL,
          "kind": "sym", "in_band": False},
-        {"key": "ceiling", "label": "energy ceiling 20 GeV/n (missing tail)",
+        {"key": "ceiling", "label": "energy above the 20 GeV/n ceiling (estimate)",
          "lo": 1.0, "hi": 1 + _ceiling_bias(ad_gcm2),
          "kind": "bias", "in_band": True},
     ]

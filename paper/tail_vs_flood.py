@@ -40,7 +40,7 @@ Laptop column (needs no tail JSON):
                fraction of the 10 MeV/n - 20 GeV/n flux the flood samples.
 
 Usage:
-  python3 paper/tail_vs_flood.py --tail lunarsim/data/gcr_thinwall_kernel_perelem_tail.json
+  python3 paper/tail_vs_flood.py        # base = *_pretail.json, tail = shipped (promoted)
   python3 paper/tail_vs_flood.py --tail <json> --depths 2.025 5 10 19 30 50
 Writes paper/tail_vs_flood.csv (provenance-stamped).
 """
@@ -66,7 +66,10 @@ _spec = importlib.util.spec_from_file_location("gate_ratio_decompose",
 gd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gd)
 
-DEFAULT_TAIL = REPO_ROOT / "lunarsim" / "data" / "gcr_thinwall_kernel_perelem_tail.json"
+# Since the 2026-11-05 promotion the SHIPPED per-element kernel IS the tail kernel;
+# the pre-promotion kernel is kept as *_pretail.json and is the default base here.
+DEFAULT_TAIL = REPO_ROOT / "lunarsim" / "data" / "gcr_thinwall_kernel_perelem.json"
+DEFAULT_BASE = REPO_ROOT / "lunarsim" / "data" / "gcr_thinwall_kernel_perelem_pretail.json"
 OUT_CSV = HERE / "tail_vs_flood.csv"
 QUANTITIES = (("E", "E"), ("phantom", "H_mass"), ("skin", "H_skin"))
 
@@ -125,9 +128,14 @@ def missing_flux_fraction(K: dict, phi_MV: float = 400.0) -> float:
     return lost / tot if tot else 0.0
 
 
-def lift_point(gcm2: float, tail: Path, lis_form: str) -> dict:
-    """K_tail / K_base for E, mass-average phantom H and skin H at one depth."""
-    base = gd.kernel_point(gcm2, lis_form, "perelement")
+def lift_point(gcm2: float, tail: Path, lis_form: str, base_path=None) -> dict:
+    """K_tail / K_base for E, mass-average phantom H and skin H at one depth.
+    base_path None = the shipped kernel as base."""
+    if base_path is None:
+        base = gd.kernel_point(gcm2, lis_form, "perelement")
+    else:
+        with perelem_kernel(base_path):
+            base = gd.kernel_point(gcm2, lis_form, "perelement")
     with perelem_kernel(tail):
         ext = gd.kernel_point(gcm2, lis_form, "perelement")
     if ext["kernel"] != Path(tail).name:
@@ -139,14 +147,14 @@ def lift_point(gcm2: float, tail: Path, lis_form: str) -> dict:
     return out
 
 
-def compare(depths, tail: Path, flood: dict) -> list:
+def compare(depths, tail: Path, flood: dict, base_path=None) -> list:
     """One row per depth: the lift under both LIS forms, plus the step-3 residual
     before and after the energy-LIS lift wherever a flood row exists."""
     resid = {r["areal_gcm2"]: r for r in gd.decompose(depths, flood)}
     rows = []
     for g in depths:
-        en = lift_point(g, tail, "energy")
-        rg = lift_point(g, tail, gd.CONFIGS[0][1])   # shipped LIS form
+        en = lift_point(g, tail, "energy", base_path)
+        rg = lift_point(g, tail, gd.CONFIGS[0][1], base_path)   # shipped LIS form
         row = {"areal_gcm2": g, **en,
                **{f"lift_{q}_shipped_lis": rg[f"lift_{q}"] for q, _k in QUANTITIES}}
         d = resid[g]
@@ -170,12 +178,15 @@ def _fmt_slope(s) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--tail", type=Path, default=DEFAULT_TAIL)
+    ap.add_argument("--base", type=Path, default=DEFAULT_BASE,
+                    help="pre-tail kernel (default *_pretail.json)")
     ap.add_argument("--depths", type=float, nargs="+", default=list(gd.DEFAULT_DEPTHS))
     ap.add_argument("--flood-csv", type=Path, default=gd.FLOOD_CSV)
     ap.add_argument("--out", type=Path, default=OUT_CSV)
     args = ap.parse_args(argv)
 
-    base_K = dosimetry._load_gcr_thinwall_kernel_perelem()
+    base_K = json.loads(args.base.read_text())
+    print(f"base kernel: {args.base.name}   tail kernel: {args.tail.name}")
     tops = top_nodes(base_K)
     print(f"base kernel top nodes (MeV/n): {tops}")
     print(f"flood source ceiling: {dosimetry.current_model().emax_per_nuc:g} MeV/n")
@@ -197,7 +208,7 @@ def main(argv=None) -> int:
         print("  WARNING: tail and base anchors differ")
 
     flood = gd.load_flood(args.flood_csv)
-    rows = compare(args.depths, args.tail, flood)
+    rows = compare(args.depths, args.tail, flood, args.base)
 
     print("\nLIFT = K_tail/K_base (energy LIS; shipped-LIS E lift in brackets)")
     print(f"{'g/cm2':>6} | {'E':>14} {'phantom':>8} {'skin':>8} | "

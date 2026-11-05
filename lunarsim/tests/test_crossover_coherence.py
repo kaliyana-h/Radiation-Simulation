@@ -79,6 +79,14 @@ class TestPerElementKernelIntegrity(unittest.TestCase):
         self.assertEqual(m["composition"], "perelement")
         self.assertEqual(m["crossover_gcm2"], 19.0)
 
+    def test_tail_promoted_to_flood_ceiling(self):
+        # 2026-11-05: every species' top node reaches the flood source ceiling, so
+        # the kernel and the flood fold the same energy range.
+        emax = dosimetry.current_model().emax_per_nuc
+        for p in self.K["points"]:
+            for name, sp in p["species"].items():
+                self.assertGreaterEqual(sp["nodes_pernuc_mev"][-1], emax, name)
+
     def test_ten_species_delumped(self):
         species = set(self.K["points"][0]["species"].keys())
         self.assertEqual(species,
@@ -135,17 +143,21 @@ class TestCrossoverCoherence(unittest.TestCase):
         # over-read was ~539). Was ~130 mSv/yr under the legacy 2.0 /cm^2/s proton
         # pin; since 2026-10-27 the Matthiae models keep their own PAMELA-validated
         # absolute flux (dosimetry._calibration_factor), x1.215 on the kernel's
-        # rigidity form -> ~158. Regression anchor, not a target.
-        self.assertAlmostEqual(self.perel[19.0]["E_msv_yr"], 158.0, delta=15.0)
+        # rigidity form -> ~158. Since 2026-11-05 the shipped kernel carries the
+        # 5/6-20 GeV/n tail (same energy range as the flood source): x1.15 at the
+        # gate -> ~183. Regression anchor, not a target.
+        self.assertAlmostEqual(self.perel[19.0]["E_msv_yr"], 183.0, delta=15.0)
         self.assertGreater(self.base[19.0]["E_msv_yr"], 450.0)
 
     def test_organ_absorbed_in_self_shielding_band(self):
         # per-element organ-absorbed vs the OLTARIS bare point. Was ~0.56x under the
         # legacy 2.0 proton pin; x1.215 since the Matthiae absolute normalisation
-        # (2026-10-27) -> ~0.68x. Still below the point: organ self-shielding.
+        # (2026-10-27) -> ~0.68x; x~1.22 absorbed tail lift at 50 since the
+        # 2026-11-05 tail promotion -> ~0.83x. Still below the point: organ
+        # self-shielding. Same +/-0.10 window, re-centred; not a target.
         r = self.perel[50.0]["D_mgy_day"] / OLTARIS_D_MGY_DAY
-        self.assertTrue(0.58 <= r <= 0.78, f"organ/point absorbed ratio {r:.3f} "
-                        "outside the 0.58-0.78 self-shielding band")
+        self.assertTrue(0.73 <= r <= 0.93, f"organ/point absorbed ratio {r:.3f} "
+                        "outside the 0.73-0.93 self-shielding band")
 
     def test_perelement_requires_env_gate(self):
         # Double-gate footgun: with the env off, fold falls back to the lumped
