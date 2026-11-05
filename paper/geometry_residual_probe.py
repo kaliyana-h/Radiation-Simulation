@@ -216,6 +216,9 @@ def report_variant(vdir: Path, base: dict, resid: dict) -> list:
     seeds = manifest["seeds"]
     skin_only = manifest["skin_mode"] == "lining"
     miss = missing_runs(vdir, manifest)
+    if miss == len(manifest["runs"]):
+        print(f"[{v}] not run yet (0/{miss} runs have output) -- skipped")
+        return []
     if miss:
         print(f"[{v}] WARNING: {miss}/{len(manifest['runs'])} runs have no output "
               "-- missing runs read as zero response; finish the batch first")
@@ -245,6 +248,8 @@ def report_variant(vdir: Path, base: dict, resid: dict) -> list:
                 val, err = rr[q]
                 lift = row[f"lift_{q}"]
                 row[f"resid_{q}"] = val
+                if lift <= 0.0:
+                    continue
                 row[f"after_{q}"] = val / lift
                 row[f"after_{q}_err"] = (val / lift) * math.hypot(
                     err / val, row[f"lift_{q}_err"] / lift)

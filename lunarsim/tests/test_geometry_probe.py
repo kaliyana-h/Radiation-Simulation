@@ -140,6 +140,19 @@ class TestProbe(unittest.TestCase):
             self.assertTrue(all(v == 0.0 for v in sp["R"]["skin"]["I"]))
         self.assertEqual(K["meta"]["composition"], self.base["meta"]["composition"])
 
+    def test_unrun_variant_is_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            gp.emit(d, ["lining", "spot"], seeds=1, threads=1, anchors=[10.0])
+            _write_synthetic(d / "lining", self.base,
+                             gp.variant_phi_ff(gp.VARIANTS["lining"]), scale_skin=1.10)
+            resid = d / "resid.csv"
+            resid.write_text("areal_gcm2,resid_after_skin,resid_after_skin_err\n"
+                             "10.0,1.10,0.005\n")
+            rows = gp.report(d, resid, d / "probe.csv")      # spot has no output
+        self.assertEqual({r["variant"] for r in rows}, {"lining"})
+        self.assertAlmostEqual(rows[0]["after_skin"], 1.0, places=9)
+
     def test_round_trip_unit_and_scaled_lift(self):
         resid = self.out / "resid.csv"
         resid.write_text("areal_gcm2,resid_after_skin,resid_after_skin_err\n"
