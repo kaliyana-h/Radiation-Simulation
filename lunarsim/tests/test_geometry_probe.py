@@ -113,7 +113,7 @@ class TestProbe(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.out = Path(cls.tmp.name)
         cls.base = _base()
-        gp.emit(cls.out, ["lining", "spot"], seeds=2, threads=1, anchors=[10.0, 50.0])
+        gp.emit(cls.out, ["lining", "spot", "both"], seeds=2, threads=1, anchors=[10.0, 50.0])
 
     @classmethod
     def tearDownClass(cls):
@@ -122,7 +122,7 @@ class TestProbe(unittest.TestCase):
     def test_emit_counts_and_manifest(self):
         n_nodes = sum(len(s["nodes_pernuc_mev"])
                       for s in config.species_for("perelement").values())
-        for v in ("lining", "spot"):
+        for v in ("lining", "spot", "both"):
             m = json.loads((self.out / v / "manifest.json").read_text())
             self.assertEqual(len(m["runs"]), 2 * 2 * n_nodes)
             self.assertAlmostEqual(m["phi_ff_cm2"], gp.variant_phi_ff(gp.VARIANTS[v]))
@@ -149,7 +149,7 @@ class TestProbe(unittest.TestCase):
             resid = d / "resid.csv"
             resid.write_text("areal_gcm2,resid_after_skin,resid_after_skin_err\n"
                              "10.0,1.10,0.005\n")
-            rows = gp.report(d, resid, d / "probe.csv")      # spot has no output
+            rows = gp.report(d, resid, d / "probe.csv", base_draws=0)  # spot unrun
         self.assertEqual({r["variant"] for r in rows}, {"lining"})
         self.assertAlmostEqual(rows[0]["after_skin"], 1.0, places=9)
 
@@ -160,7 +160,9 @@ class TestProbe(unittest.TestCase):
         _write_synthetic(self.out / "spot", self.base, gp.variant_phi_ff(gp.VARIANTS["spot"]))
         _write_synthetic(self.out / "lining", self.base,
                          gp.variant_phi_ff(gp.VARIANTS["lining"]), scale_skin=1.10)
-        rows = gp.report(self.out, resid, self.out / "probe.csv")
+        _write_synthetic(self.out / "both", self.base,
+                         gp.variant_phi_ff(gp.VARIANTS["both"]), scale_skin=1.10)
+        rows = gp.report(self.out, resid, self.out / "probe.csv", base_draws=0)
         by = {(r["variant"], r["areal_gcm2"]): r for r in rows}
         for g in (10.0, 50.0):
             s = by[("spot", g)]
@@ -176,6 +178,16 @@ class TestProbe(unittest.TestCase):
         self.assertTrue((self.out / "probe.csv").exists())
         msgs = gp.verdict(rows)
         self.assertTrue(any("null control @10 PASS" in m for m in msgs))
+        self.assertAlmostEqual(by[("both", 10.0)]["after_skin"], 1.0, places=9)
+        self.assertTrue(any("both (measured jointly): @10" in m for m in msgs))
+
+    def test_base_noise_positive_and_in_errors(self):
+        rel = gp.base_noise([10.0, 50.0], self.out, draws=4)
+        for g in (10.0, 50.0):
+            for q in ("E", "phantom", "skin"):
+                self.assertGreater(rel[g][q], 0.0)
+                self.assertLess(rel[g][q], 0.5)
+        self.assertEqual(gp.base_noise([10.0], self.out, draws=0)[10.0]["skin"], 0.0)
 
 
 if __name__ == "__main__":

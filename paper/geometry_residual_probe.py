@@ -88,7 +88,43 @@ BASE = tv.DEFAULT_BASE       # pre-tail kernel: same nodes as a fresh perelement
 VARIANTS = {
     "spot":   {"beam_spot_cm": 45.0, "histories": 17, "skin_mode": "phantom"},
     "lining": {"beam_spot_cm": None, "histories": None, "skin_mode": "lining"},
+    # both knobs at once: measures the joint lift directly (no independence
+    # assumption, and the base kernel's noise enters once instead of twice).
+    "both":   {"beam_spot_cm": 45.0, "histories": 17, "skin_mode": "lining"},
 }
+BASE_DRAWS = 60              # Gaussian redraws of the base kernel's per-node Rsem
+
+
+def base_noise(anchors: list, workdir: Path, draws: int = BASE_DRAWS,
+               seed: int = 1) -> dict:
+    """Relative 1-sigma fold noise of the BASE kernel at each anchor, per quantity.
+
+    Every lift is variant/base, so the base kernel's own MC noise (its per-node
+    Rsem) belongs in the lift error. Estimated by refolding the base with each
+    node redrawn ~N(R, Rsem). Returns {gcm2: {"E"|"phantom"|"skin": rel_sd}}.
+    """
+    import copy
+    import random
+    if draws < 2:
+        return {round(g, 6): {"E": 0.0, "phantom": 0.0, "skin": 0.0} for g in anchors}
+    base = json.loads(BASE.read_text())
+    rng = random.Random(seed)
+    acc = {round(g, 6): {"E": [], "phantom": [], "skin": []} for g in anchors}
+    f = workdir / "kernel_base_redraw.json"
+    for _ in range(draws):
+        K = copy.deepcopy(base)
+        for pt in K["points"]:
+            for sp in pt["species"].values():
+                for o, qs in sp["R"].items():
+                    for q in qs:
+                        qs[q] = [max(0.0, v + rng.gauss(0.0, e))
+                                 for v, e in zip(qs[q], sp["Rsem"][o][q])]
+        f.write_text(json.dumps(K))
+        for g in acc:
+            L = tv.lift_point(g, f, LIS_FORM, base_path=BASE)
+            for q in acc[g]:
+                acc[g][q].append(L[f"lift_{q}"])
+    return {g: {q: statistics.stdev(v) for q, v in d.items()} for g, d in acc.items()}
 
 
 def variant_phi_ff(knobs: dict) -> float:
@@ -209,7 +245,7 @@ def fold_lift(K: dict, path: Path, gcm2: float) -> dict:
     return tv.lift_point(gcm2, path, LIS_FORM, base_path=BASE)
 
 
-def report_variant(vdir: Path, base: dict, resid: dict) -> list:
+def report_variant(vdir: Path, base: dict, resid: dict, base_rel: dict = None) -> list:
     manifest = json.loads((vdir / "manifest.json").read_text())
     v = manifest["variant"]
     phi = manifest["phi_ff_cm2"]
@@ -240,8 +276,12 @@ def report_variant(vdir: Path, base: dict, resid: dict) -> list:
         for q in ("E", "phantom", "skin"):
             row[f"lift_{q}"] = full[f"lift_{q}"]
             vals = [r[f"lift_{q}"] for r in per_seed]
-            row[f"lift_{q}_err"] = (statistics.stdev(vals) / math.sqrt(len(vals))
-                                    if len(vals) > 1 else 0.0)
+            row[f"lift_{q}_err_seed"] = (statistics.stdev(vals) / math.sqrt(len(vals))
+                                         if len(vals) > 1 else 0.0)
+            rel_b = (base_rel or {}).get(round(w, 6), {}).get(q, 0.0)
+            row[f"lift_{q}_err_base"] = row[f"lift_{q}"] * rel_b
+            row[f"lift_{q}_err"] = math.hypot(row[f"lift_{q}_err_seed"],
+                                              row[f"lift_{q}_err_base"])
         rr = resid.get(round(w, 6), {})
         for q in ("skin", "phantom"):
             if q in rr:
@@ -290,22 +330,45 @@ def verdict(rows: list) -> list:
     if sp and ln:
         for g in sorted(set(sp) & set(ln)):
             if "resid_skin" in sp[g]:
-                both = sp[g]["resid_skin"] / (sp[g]["lift_skin"] * ln[g]["lift_skin"])
-                msgs.append(f"both (product, assumes independence): @{g:g} residual "
-                            f"{sp[g]['resid_skin']:.3f} -> {both:.3f}")
+                a, b = sp[g], ln[g]
+                prod = a["resid_skin"] / (a["lift_skin"] * b["lift_skin"])
+                # the same base kernel divides both lifts: its noise enters twice
+                rel = math.sqrt((a["lift_skin_err_seed"] / a["lift_skin"]) ** 2
+                                + (b["lift_skin_err_seed"] / b["lift_skin"]) ** 2
+                                + (2 * a["lift_skin_err_base"] / a["lift_skin"]) ** 2)
+                msgs.append(f"spot x lining (product, assumes independence): @{g:g} "
+                            f"residual {a['resid_skin']:.3f} -> {prod:.3f}+/-{prod * rel:.3f}")
+    bo = by.get("both", {})
+    for g, r in sorted(bo.items()):
+        if "after_skin" in r:
+            z = (r["after_skin"] - 1.0) / max(r["after_skin_err"], 1e-9)
+            msgs.append(f"both (measured jointly): @{g:g} residual {r['resid_skin']:.3f} "
+                        f"-> {r['after_skin']:.3f}+/-{r['after_skin_err']:.3f} "
+                        f"({z:+.1f} sigma from 1)")
+    if msgs:
+        msgs.append("errors = variant seed SEM (+) base-kernel fold noise")
     return msgs
 
 
-def report(outdir: Path, resid_csv: Path = RESID_CSV, out_csv: Path = OUT_CSV) -> list:
+def report(outdir: Path, resid_csv: Path = RESID_CSV, out_csv: Path = OUT_CSV,
+           base_draws: int = BASE_DRAWS) -> list:
     base = json.loads(BASE.read_text())
     resid = load_resid(resid_csv)
     if not resid:
         print(f"note: no resid_after_* rows in {resid_csv}; printing lifts only")
     rows = []
+    base_rel = None
     for v in VARIANTS:
         vdir = outdir / v
         if (vdir / "manifest.json").exists():
-            rows += report_variant(vdir, base, resid)
+            if base_rel is None:
+                anchors = json.loads((vdir / "manifest.json").read_text())["grid_gcm2"]
+                print(f"base-kernel fold noise: {base_draws} redraws ...", flush=True)
+                base_rel = base_noise(anchors, outdir, base_draws)
+                for g, d in sorted(base_rel.items()):
+                    print(f"  @{g:g}: " + ", ".join(f"{q} {100 * x:.1f}%"
+                                                    for q, x in d.items()))
+            rows += report_variant(vdir, base, resid, base_rel)
     if not rows:
         print(f"no variant manifests under {outdir}")
         return rows
@@ -348,6 +411,8 @@ def main(argv=None) -> int:
     pr.add_argument("outdir", type=Path)
     pr.add_argument("--resid-csv", type=Path, default=RESID_CSV)
     pr.add_argument("--out-csv", type=Path, default=OUT_CSV)
+    pr.add_argument("--base-draws", type=int, default=BASE_DRAWS,
+                    help="redraws for the base-kernel noise (0 = seed SEM only)")
     a = p.parse_args(argv)
     if a.cmd == "emit":
         vs = [v.strip() for v in a.variants.split(",") if v.strip()]
@@ -362,7 +427,7 @@ def main(argv=None) -> int:
             p.error(f"anchors {off} are not pre-tail kernel anchors {sorted(base_walls)}")
         emit(a.outdir, vs, a.seeds, a.threads, anchors)
     else:
-        report(a.outdir, a.resid_csv, a.out_csv)
+        report(a.outdir, a.resid_csv, a.out_csv, a.base_draws)
     return 0
 
 
