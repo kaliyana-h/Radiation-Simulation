@@ -247,6 +247,25 @@ def _viewer_block(mode: str) -> str:
     return ""
 
 
+@dataclass(frozen=True)
+class SourceBias:
+    """Unbiased position importance sampling of the GCR discs toward the crew
+    phantom (WeightedDiscBeam extension; needs the extension build).
+
+    A `fraction` of each disc's histories start inside the phantom's shadow
+    circle of radius phantom_radius_cm + margin_cm; every primary carries the
+    weight p_true/q, so all weight-honouring scorers keep the physical field.
+    Uses only the phantom's position and size -- target-blind. Off by default."""
+    fraction: float = 0.5
+    margin_cm: float = 40.0
+
+    def for_spec(self, spec: HabitatSpec) -> tuple:
+        """(target_z_cm, radius_cm, fraction) for make_source --bias-*."""
+        return (float(spec.crew_height_cm),
+                float(spec.phantom_radius_cm) + float(self.margin_cm),
+                float(self.fraction))
+
+
 @dataclass
 class RunResult:
     spec: HabitatSpec
@@ -382,7 +401,8 @@ def generate_source(run_dir: Path, tier: RunTier,
                     particle: str = "proton",
                     ion_z: int = 1, ion_a: int = 1,
                     spe: Optional[SPEScenario] = None,
-                    strata: int = 1, stratum: int = 0) -> Path:
+                    strata: int = 1, stratum: int = 0,
+                    bias: Optional[tuple] = None) -> Path:
     """Invoke make_source.py to write a source include into run_dir.
 
     Default (spe=None) writes a GCR source: particle/ion_z/ion_a select the GCR
@@ -398,9 +418,15 @@ def generate_source(run_dir: Path, tier: RunTier,
 
     strata > 1 emits only energy band `stratum` of the GCR spectrum (the
     stratified flood, see jobs._run_composition); strata=1 is the full spectrum
-    and the command line is unchanged."""
+    and the command line is unchanged.
+
+    bias=(target_z_cm, radius_cm, fraction) switches the GCR discs to the
+    weighted, phantom-biased WeightedDiscBeam source (SourceBias.for_spec);
+    None (default) leaves the command line unchanged. GCR only."""
     from . import dosimetry          # local: dosimetry imports bridge
     env = dict(os.environ, **dosimetry.current_model().env())
+    if spe is not None and bias is not None:
+        raise ValueError("source bias applies to the GCR discs only, not an SPE cone")
     if spe is not None:
         out = run_dir / "spe_source.txt"
         cmd = [
@@ -438,6 +464,10 @@ def generate_source(run_dir: Path, tier: RunTier,
     ]
     if strata > 1:
         cmd += ["--strata", str(strata), "--stratum", str(stratum)]
+    if bias is not None:
+        tz, rb, f = bias
+        cmd += ["--bias-target-z", repr(float(tz)), "--bias-radius", repr(float(rb)),
+                "--bias-fraction", repr(float(f))]
     subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
     return out
 
@@ -633,7 +663,8 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                particle: str = "proton", ion_z: int = 1, ion_a: int = 1,
                spe: Optional[SPEScenario] = None,
                cancel_cb: Optional[Callable[[], bool]] = None,
-               strata: int = 1, stratum: int = 0) -> RunResult:
+               strata: int = 1, stratum: int = 0,
+               source_bias: Optional[SourceBias] = None) -> RunResult:
     """Generate, run, and parse a single design end-to-end (blocking).
 
     particle/ion_z/ion_a pick the GCR species (default protons). Passing `spe`
@@ -648,7 +679,10 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     to finish, and a not-ok RunResult is returned. Without it the run is an
     ordinary blocking subprocess. This is what makes the GUI's "Cancel run"
     button interrupt a heavy species mid-transport rather than only between
-    species/batches."""
+    species/batches.
+
+    source_bias=SourceBias(...) runs the GCR discs as the weighted phantom-biased
+    WeightedDiscBeam source (needs the extension build); None = plain Beam."""
     if threads is None:
         threads = _scoring_threads()
     spec.validate()
@@ -661,7 +695,8 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     # size the source dome to this design so the outer gauge never pokes past it
     beam_radius = beam_radius_for(spec)
     generate_source(run_dir, tier, beam_radius_cm=beam_radius, particle=particle,
-                    ion_z=ion_z, ion_a=ion_a, spe=spe, strata=strata, stratum=stratum)
+                    ion_z=ion_z, ion_a=ion_a, spe=spe, strata=strata, stratum=stratum,
+                    bias=None if source_bias is None else source_bias.for_spec(spec))
     source_include = "spe_source.txt" if spe is not None else "gcr_source.txt"
 
     param_file = run_dir / "run.txt"

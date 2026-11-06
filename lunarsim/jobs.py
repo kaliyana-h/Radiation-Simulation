@@ -517,7 +517,8 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                     progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
                     cancel_cb: Optional[Callable[[], bool]] = None,
                     sampling: Optional[str] = None,
-                    strata: int = DEFAULT_STRATA) -> ConvergedComposition:
+                    strata: int = DEFAULT_STRATA,
+                    source_bias=None) -> ConvergedComposition:
     """Flood (deep) MC driver -- see _run_composition for the full contract.
 
     The whole driver runs under the flood's GCR model, scoped to this thread
@@ -537,10 +538,16 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                      (_run_composition_stratified). Same expectation, lower
                      phantom variance per wall-second; opt-in until the PC
                      paired comparison (paper/stratified_flood_compare.py).
-    None reads LUNARSIM_FLOOD_SAMPLING (default "continuous")."""
+    None reads LUNARSIM_FLOOD_SAMPLING (default "continuous").
+
+    source_bias=bridge.SourceBias(...) runs every species' GCR discs as the
+    weighted phantom-biased WeightedDiscBeam source (continuous sampling only;
+    needs the extension build). None (default) = plain Beam, unchanged."""
     sampling = sampling or default_flood_sampling()
     if sampling not in SAMPLING_MODES:
         raise ValueError(f"sampling must be one of {SAMPLING_MODES}, got {sampling!r}")
+    if source_bias is not None and sampling != "continuous":
+        raise ValueError("source_bias is only supported with continuous sampling")
     model = current_model().flood()
     if lis:
         model = replace(model, lis_form=lis)
@@ -552,10 +559,14 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
         else:
             comp = _run_composition(
                 spec, tier, target_rel_err, min_batches, max_batches, converge_on,
-                phantom_slack, composition, model, progress_cb, cancel_cb)
+                phantom_slack, composition, model, progress_cb, cancel_cb,
+                source_bias=source_bias)
     comp.model = model
     extra = {} if sampling == "continuous" else {"sampling": sampling,
                                                   "strata": comp.strata}
+    if source_bias is not None:
+        extra["source_bias_f"] = float(source_bias.fraction)
+        extra["source_bias_margin_cm"] = float(source_bias.margin_cm)
     comp.provenance = provenance(model, engine="flood", **extra)
     return comp
 
@@ -567,7 +578,8 @@ def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                      composition: Optional[list] = None,
                      model: Optional[GcrModel] = None,
                      progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
-                     cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedComposition:
+                     cancel_cb: Optional[Callable[[], bool]] = None,
+                     source_bias=None) -> ConvergedComposition:
     """Run every GCR species round-robin and converge on the COMBINED dose.
 
     Each species is transported with its own ion/spectrum. One batch of every
@@ -628,7 +640,7 @@ def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                 break
             res = run_design(spec, sp_tier, seed=rnd + 1, keep=False,
                              particle=particle, ion_z=z, ion_a=a,
-                             cancel_cb=cancel_cb)
+                             cancel_cb=cancel_cb, source_bias=source_bias)
             if not res.ok:
                 # a species failed -- surface immediately rather than a partial sum
                 return ConvergedComposition(spec=spec, tier=tier,

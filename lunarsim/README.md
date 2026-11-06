@@ -181,6 +181,28 @@ the phantom error, which stalls at 9–16% at the 12-round cap. The default stay
 `continuous` until `paper/stratified_flood_compare.py` shows that both modes agree
 and that stratified wins at matched walltime.
 
+### Position-biased GCR source (opt-in, under evaluation)
+
+`run_composition(..., source_bias=SourceBias(fraction=0.5, margin_cm=40))` swaps
+each of the 40 parallel GCR discs from TOPAS `Beam` to the `WeightedDiscBeam`
+extension (`extensions/WeightedDiscBeam.cc`; `make_source --bias-fraction F
+--bias-target-z Z --bias-radius RB`). A fraction F of histories start inside the
+phantom's shadow circle on each disc (radius = phantom radius + margin), and the
+rest start uniformly over the disc. Every primary carries the weight
+`w = 1/((1-F) + F·(R/r_b)²)` inside the circle and `1/(1-F)` outside it, so the
+estimate is unbiased: the field, the gauges and CAL are unchanged, and only the
+phantom variance drops. The bias uses only the phantom's position and size, so it
+stays target-blind. It works with continuous sampling only, and not with SPE.
+`SourceBias(fraction=0)` runs the new generator with no bias, as a code-path
+check. Scorers have to multiply by the track weight. `LETSpectrumWater` does
+not, so do not use it with biased runs. The default stays the plain `Beam`
+source until `paper/weighted_source_smoke.py` (agreement) and the paired FOM run
+pass.
+
+Build on the PC: `cp extensions/WeightedDiscBeam.* ~/topas_extensions/`, then
+`cmake -DTOPAS_EXTENSIONS_DIR=~/topas_extensions` and `make`. CMake deletes and
+recopies the in-tree extension files, so the copy has to happen first.
+
 ### Invariants
 
 - **Target-blind.** No dose, reference value or limit feeds back into the
@@ -199,7 +221,8 @@ python3 -m unittest lunarsim.tests.test_pipeline lunarsim.tests.test_crossover_c
   lunarsim.tests.test_convergence_gate lunarsim.tests.test_headline_context \
   lunarsim.tests.test_regolith_site lunarsim.tests.test_spe_event lunarsim.tests.test_tail_harness \
   lunarsim.tests.test_gate_decompose lunarsim.tests.test_tail_vs_flood \
-  lunarsim.tests.test_geometry_probe lunarsim.tests.test_stratified_flood
+  lunarsim.tests.test_geometry_probe lunarsim.tests.test_stratified_flood \
+  lunarsim.tests.test_weighted_source
 ```
 
 ### Environment

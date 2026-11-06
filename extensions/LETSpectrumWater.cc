@@ -2,6 +2,9 @@
 //
 // Per-step LET-in-water ntuple scorer for the thin-wall Q-bar cross-check.
 //
+// NOTE: rows are UNWEIGHTED (track weight ignored). Do not use with the
+// position-biased WeightedDiscBeam source (lunarsim SourceBias).
+//
 // For every charged step inside the sensitive volume it records one ntuple row:
 //   LETWater      -- the unrestricted electronic LET of the stepping particle in
 //                    the local material, via G4EmCalculator (cut = DBL_MAX),

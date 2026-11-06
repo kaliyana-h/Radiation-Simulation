@@ -616,9 +616,45 @@ def _ring_groups(idx, phi_deg, theta_deg, prefix):
     ], src
 
 
+def bias_weights(disc_radius, bias_radius, fraction):
+    """(w_inside, w_outside) of the WeightedDiscBeam mixture
+    q = (1-f) U(disc) + f U(shadow circle); w = p_true/q. Mirrors the C++."""
+    f = float(fraction)
+    if f == 0.0:
+        return 1.0, 1.0
+    ratio = (float(disc_radius) / float(bias_radius)) ** 2
+    return 1.0 / ((1.0 - f) + f * ratio), 1.0 / (1.0 - f)
+
+
+def validate_bias(bias, beam_spot):
+    """Check (target_z_cm, radius_cm, fraction). The shadow of a target on the z
+    axis sits at most |target_z| off the disc centre (any zenith), so require
+    |z| + r_b <= disc radius -- the generator re-checks the exact projection."""
+    tz, rb, f = (float(v) for v in bias)
+    if not 0.0 <= f < 1.0:
+        raise ValueError(f"bias fraction must be in [0, 1), got {f:g}")
+    if f > 0.0 and not 0.0 < rb <= beam_spot:
+        raise ValueError(f"bias radius must be in (0, beam_spot={beam_spot:g}] cm, got {rb:g}")
+    if f > 0.0 and abs(tz) + rb > beam_spot:
+        raise ValueError(f"bias shadow (|z|={abs(tz):g} + r_b={rb:g} cm) can leave the "
+                         f"{beam_spot:g} cm disc")
+    return tz, rb, f
+
+
 def gcr_block(rings, azimuth, phi_MV, histories, particle="proton",
               beam_radius=1400.0, beam_spot=900.0, ion_z=1, ion_a=1,
-              strata=1, stratum=0):
+              strata=1, stratum=0, bias=None):
+    """GCR hemisphere of parallel-ray discs.
+
+    bias=None emits TOPAS "Beam" discs (the validated default, unchanged).
+    bias=(target_z_cm, radius_cm, fraction) emits the WeightedDiscBeam extension
+    instead: the same disc, spectrum and direction, but a fraction of each
+    source's histories start inside the target's shadow circle and every primary
+    carries the compensating weight p_true/q (unbiased; see
+    ~/topas_extensions/WeightedDiscBeam.cc). The target is a world point on the
+    z axis (the crew phantom centre). Position/size only -- target-blind."""
+    if bias is not None:
+        bias = validate_bias(bias, beam_spot)
     energies, weights = gcr_spectrum(phi_MV, z=ion_z, a=ion_a)
     fmt = "{:.6g}"
     strat_note = []
@@ -635,6 +671,11 @@ def gcr_block(rings, azimuth, phi_MV, histories, particle="proton",
         f"#   mode=GCR  rings={rings}  azimuth={azimuth}  phi={phi_MV} MV",
         f"#   particle={particle} (Z={ion_z} A={ion_a})  histories/source={histories}",
         *strat_note,
+        *([f"#   POSITION BIAS: WeightedDiscBeam target z={bias[0]:g} cm  "
+           f"r_b={bias[1]:g} cm  f={bias[2]:g}  (weights "
+           f"in={bias_weights(beam_spot, bias[1], bias[2])[0]:.6g} "
+           f"out={bias_weights(beam_spot, bias[1], bias[2])[1]:.6g})"]
+          if bias is not None else []),
         "#   Rings are equal-area in sin^2(theta): equal flux per ring,",
         "#   so equal histories per source = exact Lambert weighting.",
         "# ==========================================================",
@@ -657,11 +698,22 @@ def gcr_block(rings, azimuth, phi_MV, histories, particle="proton",
             grp, src = _ring_groups(idx, phi, theta, "G")
             lines += grp
             lines += [
-                f'    s:So/{tag}/Type      = "Beam"',
+                f'    s:So/{tag}/Type      = "{"Beam" if bias is None else "WeightedDiscBeam"}"',
                 f'    s:So/{tag}/Component = "{src}"',
                 f'    s:So/{tag}/BeamParticle = "{particle}"',
             ]
             lines += _spectrum_block(tag, energies, weights, fmt)
+            if bias is not None:
+                lines += [
+                    f'    d:So/{tag}/DiscRadius     = So/BeamSpot cm',
+                    f'    d:So/{tag}/BiasTargetZ    = {bias[0]:.6g} cm',
+                    f'    d:So/{tag}/BiasRadius     = {bias[1]:.6g} cm',
+                    f'    u:So/{tag}/BiasFraction   = {bias[2]:.6g}',
+                    f'    i:So/{tag}/NumberOfHistoriesInRun   = {histories}',
+                    "",
+                ]
+                idx += 1
+                continue
             lines += [
                 f'    s:So/{tag}/BeamPositionDistribution = "Flat"',
                 f'    s:So/{tag}/BeamPositionCutoffShape  = "Ellipse"',
@@ -795,6 +847,13 @@ def main():
     p.add_argument("--strata", type=int, default=1,
                    help="split the GCR spectrum into K energy bands (flood variance reduction)")
     p.add_argument("--stratum", type=int, default=0, help="0-based band to emit (with --strata)")
+    p.add_argument("--bias-fraction", type=float, default=None,
+                   help="position-bias fraction f in (0,1): emit WeightedDiscBeam discs "
+                        "(needs the extension build); omit for plain Beam")
+    p.add_argument("--bias-target-z", type=float, default=100.0,
+                   help="bias target centre z (cm, world; crew phantom centre)")
+    p.add_argument("--bias-radius", type=float, default=60.0,
+                   help="shadow-circle radius (cm) = phantom radius + margin")
     p.add_argument("--standalone", action="store_true", help="emit a full runnable test file")
     p.add_argument("--out", default=None)
     args = p.parse_args()
@@ -803,7 +862,9 @@ def main():
         body = gcr_block(args.rings, args.azimuth, args.phi, args.histories,
                          args.particle, args.beam_radius, args.beam_spot,
                          ion_z=args.ion_z, ion_a=args.ion_a,
-                         strata=args.strata, stratum=args.stratum)
+                         strata=args.strata, stratum=args.stratum,
+                         bias=(None if args.bias_fraction is None else
+                               (args.bias_target_z, args.bias_radius, args.bias_fraction)))
         default_out = "gcr_source.txt"
     else:
         body = spe_block(args.spe_zenith, args.spe_azimuth, args.spe_cone,
