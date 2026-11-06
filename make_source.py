@@ -432,6 +432,75 @@ def gcr_spectrum(phi_MV, z=1, a=1, emin=10.0, emax=GCR_EMAX_PER_NUC, n=28,
     return energies, weights
 
 
+# --------------------------------------------------------------------------
+# Energy stratification (variance reduction for the flood MC)
+# --------------------------------------------------------------------------
+# A stratified flood splits one species' Continuous spectrum into K energy bands
+# and transports each band in its own TOPAS run; jobs.py recombines them with
+# the band probabilities p_k (combined ratio estimator, exact at K=1).
+#
+# TOPAS "Continuous" semantics (OpenTOPAS primary/TsVGenerator.cc): the given
+# points are PREPENDED with (0 MeV, weight 0) and the density is piecewise-LINEAR
+# between points (trapezoid cumulative, inverted per segment). So a band whose
+# first point is above the lowest grid energy would gain a spurious 0->E_j ramp.
+# Every upper band therefore starts with a zero-weight GUARD point at
+# E_j*(1-STRATUM_GUARD_REL): the prepended 0 -> guard segment is then weight 0
+# everywhere, and only a sliver [E_j(1-d), E_j] of half-weight ramp is added
+# (relative area ~d/2 of one segment, ~1e-7 of the band -- negligible, and it is
+# counted in p_k, so the estimator matches what TOPAS actually samples).
+# The lowest band keeps the natural 0 -> E_min ramp, exactly as the continuous run.
+STRATUM_GUARD_REL = 1e-6
+STRATUM_FMT = "{:.12g}"          # wider than _fmt_vec's 6g so the guard survives
+
+
+def stratum_edges(n, strata):
+    """Grid-index band edges [b_0=0, ..., b_K=n-1], ~equal in log E (the grid is
+    log-spaced). Bands share their edge points, so no interpolation is needed."""
+    if not 1 <= strata <= n - 1:
+        raise ValueError(f"strata must be in 1..{n - 1}, got {strata}")
+    return [round(k * (n - 1) / strata) for k in range(strata + 1)]
+
+
+def stratum_spectrum(energies, weights, strata, stratum):
+    """(energies, weights) emitted for band `stratum` (0-based) of `strata`.
+    strata == 1 returns the input unchanged (byte-identical continuous run)."""
+    if strata == 1:
+        if stratum != 0:
+            raise ValueError("stratum must be 0 when strata == 1")
+        return list(energies), list(weights)
+    if not 0 <= stratum < strata:
+        raise ValueError(f"stratum must be in 0..{strata - 1}, got {stratum}")
+    b = stratum_edges(len(energies), strata)
+    lo, hi = b[stratum], b[stratum + 1]
+    e = list(energies[lo:hi + 1])
+    w = list(weights[lo:hi + 1])
+    if lo > 0:
+        e.insert(0, e[0] * (1.0 - STRATUM_GUARD_REL))
+        w.insert(0, 0.0)
+    # round-trip through the emitted format so areas match TOPAS's input exactly
+    return ([float(STRATUM_FMT.format(v)) for v in e],
+            [float(STRATUM_FMT.format(v)) for v in w])
+
+
+def topas_area(energies, weights):
+    """Total weight TOPAS integrates for a Continuous spectrum: trapezoid over the
+    points with (0, 0) prepended (TsVGenerator fSpectrumWeightSums)."""
+    area, pe, pw = 0.0, 0.0, 0.0
+    for e, w in zip(energies, weights):
+        area += 0.5 * (w + pw) * (e - pe)
+        pe, pw = e, w
+    return area
+
+
+def stratum_fractions(energies, weights, strata):
+    """p_k = TOPAS area of band k / sum of band areas (sums to 1 exactly). The
+    sum differs from the unsplit area only by the guard slivers (~1e-7)."""
+    areas = [topas_area(*stratum_spectrum(energies, weights, strata, k))
+             for k in range(strata)]
+    tot = sum(areas)
+    return [a / tot for a in areas]
+
+
 def _proton_rigidity_MV(E_MeV):
     """Proton magnetic rigidity R = pc/|q| (MV) at kinetic energy E (MeV).
     R = sqrt(E (E + 2 mp)); for protons |q|=1 so R[MV] == pc[MeV]."""
@@ -521,12 +590,12 @@ def _fmt_vec(values, fmt="{:.6g}"):
     return " ".join(fmt.format(v) for v in values)
 
 
-def _spectrum_block(tag, energies, weights):
+def _spectrum_block(tag, energies, weights, fmt="{:.6g}"):
     n = len(energies)
     return [
         f'    s:So/{tag}/BeamEnergySpectrumType    = "Continuous"',
-        f'    dv:So/{tag}/BeamEnergySpectrumValues  = {n} {_fmt_vec(energies)} MeV',
-        f'    uv:So/{tag}/BeamEnergySpectrumWeights = {n} {_fmt_vec(weights)}',
+        f'    dv:So/{tag}/BeamEnergySpectrumValues  = {n} {_fmt_vec(energies, fmt)} MeV',
+        f'    uv:So/{tag}/BeamEnergySpectrumWeights = {n} {_fmt_vec(weights, fmt)}',
     ]
 
 
@@ -548,13 +617,24 @@ def _ring_groups(idx, phi_deg, theta_deg, prefix):
 
 
 def gcr_block(rings, azimuth, phi_MV, histories, particle="proton",
-              beam_radius=1400.0, beam_spot=900.0, ion_z=1, ion_a=1):
+              beam_radius=1400.0, beam_spot=900.0, ion_z=1, ion_a=1,
+              strata=1, stratum=0):
     energies, weights = gcr_spectrum(phi_MV, z=ion_z, a=ion_a)
+    fmt = "{:.6g}"
+    strat_note = []
+    if strata > 1:
+        p_k = stratum_fractions(energies, weights, strata)[stratum]
+        energies, weights = stratum_spectrum(energies, weights, strata, stratum)
+        fmt = STRATUM_FMT
+        strat_note = [f"#   ENERGY STRATUM {stratum + 1}/{strata}: "
+                      f"{energies[0]:.6g}-{energies[-1]:.6g} MeV total KE, "
+                      f"p_k={p_k:.6g} (recombined in lunarsim.jobs)"]
     lines = [
         "# ==========================================================",
         "# GCR primary source -- isotropic upper hemisphere",
         f"#   mode=GCR  rings={rings}  azimuth={azimuth}  phi={phi_MV} MV",
         f"#   particle={particle} (Z={ion_z} A={ion_a})  histories/source={histories}",
+        *strat_note,
         "#   Rings are equal-area in sin^2(theta): equal flux per ring,",
         "#   so equal histories per source = exact Lambert weighting.",
         "# ==========================================================",
@@ -581,7 +661,7 @@ def gcr_block(rings, azimuth, phi_MV, histories, particle="proton",
                 f'    s:So/{tag}/Component = "{src}"',
                 f'    s:So/{tag}/BeamParticle = "{particle}"',
             ]
-            lines += _spectrum_block(tag, energies, weights)
+            lines += _spectrum_block(tag, energies, weights, fmt)
             lines += [
                 f'    s:So/{tag}/BeamPositionDistribution = "Flat"',
                 f'    s:So/{tag}/BeamPositionCutoffShape  = "Ellipse"',
@@ -712,6 +792,9 @@ def main():
                    help="LEGACY exp-in-ENERGY e-fold (MeV); not physical, overrides the rigidity model")
     p.add_argument("--beam-radius", type=float, default=1400.0, help="sky-dome source distance (cm)")
     p.add_argument("--beam-spot", type=float, default=900.0, help="per-source disc radius (cm); should cover the habitat footprint")
+    p.add_argument("--strata", type=int, default=1,
+                   help="split the GCR spectrum into K energy bands (flood variance reduction)")
+    p.add_argument("--stratum", type=int, default=0, help="0-based band to emit (with --strata)")
     p.add_argument("--standalone", action="store_true", help="emit a full runnable test file")
     p.add_argument("--out", default=None)
     args = p.parse_args()
@@ -719,7 +802,8 @@ def main():
     if args.mode == "gcr":
         body = gcr_block(args.rings, args.azimuth, args.phi, args.histories,
                          args.particle, args.beam_radius, args.beam_spot,
-                         ion_z=args.ion_z, ion_a=args.ion_a)
+                         ion_z=args.ion_z, ion_a=args.ion_a,
+                         strata=args.strata, stratum=args.stratum)
         default_out = "gcr_source.txt"
     else:
         body = spe_block(args.spe_zenith, args.spe_azimuth, args.spe_cone,

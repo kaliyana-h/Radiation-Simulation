@@ -167,6 +167,20 @@ with dosimetry.use_model(replace(dosimetry.current_model(), lis_form="energy")):
   one-line form. Harnesses write it into their CSVs, and
   `provenance_mismatch` flags rows that are stale or unstamped.
 
+### Stratified flood sampling (opt-in)
+
+`run_composition(..., sampling="stratified", strata=4)`, or
+`LUNARSIM_FLOOD_SAMPLING=stratified`, splits each species' primary spectrum into
+K log-energy bands. Each band is a separate TOPAS run (`make_source --strata K
+--stratum k`). Every round, the bands recombine into one virtual run,
+`X = N_ref · Σ p_k X_k / N_k`. This estimator is unbiased for any allocation, so
+the existing χ² gate and `assess_composition` are reused unchanged. Two pilot
+rounds run with proportional histories; after that the allocation is frozen at a
+cost-weighted Neyman mix with a 25% proportional share. The goal is to bring down
+the phantom error, which stalls at 9–16% at the 12-round cap. The default stays
+`continuous` until `paper/stratified_flood_compare.py` shows that both modes agree
+and that stratified wins at matched walltime.
+
 ### Invariants
 
 - **Target-blind.** No dose, reference value or limit feeds back into the
@@ -185,7 +199,7 @@ python3 -m unittest lunarsim.tests.test_pipeline lunarsim.tests.test_crossover_c
   lunarsim.tests.test_convergence_gate lunarsim.tests.test_headline_context \
   lunarsim.tests.test_regolith_site lunarsim.tests.test_spe_event lunarsim.tests.test_tail_harness \
   lunarsim.tests.test_gate_decompose lunarsim.tests.test_tail_vs_flood \
-  lunarsim.tests.test_geometry_probe
+  lunarsim.tests.test_geometry_probe lunarsim.tests.test_stratified_flood
 ```
 
 ### Environment
@@ -197,6 +211,7 @@ python3 -m unittest lunarsim.tests.test_pipeline lunarsim.tests.test_crossover_c
 | `LUNARSIM_THREADS` | TOPAS threads per run. |
 | `LUNARSIM_GCR_LIS` / `_PERELEMENT` / `_EMAX_PER_NUC` / `_SHAPE` | Seed the default `GcrModel`. The per-element kernel needs `perelement`, which is the default. |
 | `LUNARSIM_SI_DETECTOR_UM` | Adds a thin-Si detector, used for the LND validation. |
+| `LUNARSIM_FLOOD_SAMPLING` | Flood primary-energy sampling: `continuous` (default) or `stratified` (opt-in, under evaluation). |
 
 ### Programmatic use
 

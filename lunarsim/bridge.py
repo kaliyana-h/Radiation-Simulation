@@ -381,7 +381,8 @@ def generate_source(run_dir: Path, tier: RunTier,
                     beam_spot_cm: float = 900.0,
                     particle: str = "proton",
                     ion_z: int = 1, ion_a: int = 1,
-                    spe: Optional[SPEScenario] = None) -> Path:
+                    spe: Optional[SPEScenario] = None,
+                    strata: int = 1, stratum: int = 0) -> Path:
     """Invoke make_source.py to write a source include into run_dir.
 
     Default (spe=None) writes a GCR source: particle/ion_z/ion_a select the GCR
@@ -393,7 +394,11 @@ def generate_source(run_dir: Path, tier: RunTier,
     make_source reads the GCR model from its env at import, so the subprocess gets
     the CALLING THREAD's model (dosimetry.current_model(), i.e. the enclosing
     use_model scope) explicitly rather than whatever os.environ holds -- the beam
-    always matches the flux normalisation of the run that requested it."""
+    always matches the flux normalisation of the run that requested it.
+
+    strata > 1 emits only energy band `stratum` of the GCR spectrum (the
+    stratified flood, see jobs._run_composition); strata=1 is the full spectrum
+    and the command line is unchanged."""
     from . import dosimetry          # local: dosimetry imports bridge
     env = dict(os.environ, **dosimetry.current_model().env())
     if spe is not None:
@@ -431,6 +436,8 @@ def generate_source(run_dir: Path, tier: RunTier,
         "--ion-a", str(ion_a),
         "--out", str(out),
     ]
+    if strata > 1:
+        cmd += ["--strata", str(strata), "--stratum", str(stratum)]
     subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
     return out
 
@@ -625,7 +632,8 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                seed: int = 1, keep: bool = True,
                particle: str = "proton", ion_z: int = 1, ion_a: int = 1,
                spe: Optional[SPEScenario] = None,
-               cancel_cb: Optional[Callable[[], bool]] = None) -> RunResult:
+               cancel_cb: Optional[Callable[[], bool]] = None,
+               strata: int = 1, stratum: int = 0) -> RunResult:
     """Generate, run, and parse a single design end-to-end (blocking).
 
     particle/ion_z/ion_a pick the GCR species (default protons). Passing `spe`
@@ -653,7 +661,7 @@ def run_design(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     # size the source dome to this design so the outer gauge never pokes past it
     beam_radius = beam_radius_for(spec)
     generate_source(run_dir, tier, beam_radius_cm=beam_radius, particle=particle,
-                    ion_z=ion_z, ion_a=ion_a, spe=spe)
+                    ion_z=ion_z, ion_a=ion_a, spe=spe, strata=strata, stratum=stratum)
     source_include = "spe_source.txt" if spe is not None else "gcr_source.txt"
 
     param_file = run_dir / "run.txt"

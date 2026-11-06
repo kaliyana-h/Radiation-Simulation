@@ -17,6 +17,7 @@ GUI or the dosimetry.
 """
 from __future__ import annotations
 
+import os
 import statistics
 import threading
 import time
@@ -30,7 +31,7 @@ from .spec import HabitatSpec
 from .bridge import RunTier, RunResult, QUICK_LOOK, run_design, SPEScenario
 from .dosimetry import (assess_composition, GCR_COMPOSITION, GcrModel,
                         current_model, use_model, provenance,
-                        FLOOD_LIS_FORM, active_composition)
+                        FLOOD_LIS_FORM, active_composition, _load_make_source)
 
 
 # ----------------------------------------------------------------------
@@ -345,6 +346,13 @@ class ConvergedComposition:
     # assess_composition(model=...) so the flux normalisation matches the beam
     model: Optional[GcrModel] = None
     provenance: Optional[dict] = None
+    # flood primary-energy sampling ("continuous" | "stratified") and its bands;
+    # stratified also records the per-species band probabilities and the
+    # histories/source each band ran at in its final round (diagnostics only)
+    sampling: str = "continuous"
+    strata: int = 1
+    band_fractions: Optional[dict] = None
+    band_histories: Optional[dict] = None
 
     @property
     def ok(self) -> bool:
@@ -367,6 +375,139 @@ class ConvergedComposition:
         return min(r.phantom_batches for _, r in self.species_results)
 
 
+# ----------------------------------------------------------------------
+# Energy-stratified flood (opt-in; LUNARSIM_FLOOD_SAMPLING=stratified)
+# ----------------------------------------------------------------------
+# The phantom's relative error stalls at ~9-16% at the 12-round cap because its
+# dose is carried by rare high-energy primaries (dose is tail-dominated), which a
+# continuous run samples in proportion to their (small) flux. Stratifying the
+# primary ENERGY fixes the band populations instead of leaving them to chance and,
+# after a pilot, lets the high-variance bands take more histories (Neyman).
+#
+# Estimator (combined ratio, unbiased for any allocation): the spectrum is cut
+# into K log-energy bands (make_source.stratum_spectrum, shared edges + guard
+# point); band k has TOPAS probability p_k (sums to 1). Each round runs every band
+# once with N_k primaries; its extensive tallies X (doses, fluences) recombine to
+#     X_virtual = N_ref * sum_k p_k * X_k / N_k ,   N_ref = the species tier's N,
+# i.e. exactly what one continuous run of N_ref primaries estimates. Ratio tallies
+# (skin fractions, Si ratios) recombine weighted by their denominator's virtual
+# share. Each round's virtual result is an ordinary RunResult, so _combine, the
+# chi^2 gate (n = rounds) and assess_composition are reused unchanged -- the
+# fluence normalisation divides virtual dose by virtual fluence, both stratified.
+#
+# Cost caveat: TOPAS has no primary-energy filter, so each band is its own run
+# (its own init). Whether stratification wins at MATCHED WALLTIME is what the PC
+# comparison (paper/stratified_flood_compare.py) decides; the default stays
+# continuous until the user adopts it.
+FLOOD_SAMPLING_ENV = "LUNARSIM_FLOOD_SAMPLING"
+SAMPLING_MODES = ("continuous", "stratified")
+DEFAULT_STRATA = 4
+STRAT_PILOT_ROUNDS = 2          # proportional allocation; then frozen Neyman
+STRAT_DEFENSIVE = 0.25          # proportional share kept in the Neyman mix
+
+_EXTENSIVE_FIELDS = ("dose_gy", "phantom_doseeq_sv", "phantom_doseeq_nasa_sv",
+                     "skin_dose_gy", "skin_doseeq_sv", "skin_doseeq_nasa_sv",
+                     "fluence_inside", "fluence_outside")
+# ratio tally -> the extensive tally it is a fraction of
+_RATIO_BASE = {
+    "neutron_doseeq_fraction": "skin_doseeq_sv",
+    "neutral_dose_fraction": "skin_dose_gy",
+    "neutron_abs_fraction": "skin_dose_gy",
+    "si_to_skin_ratio": "skin_dose_gy",
+    "si_charged_to_skin_ratio": "skin_dose_gy",
+    "si_neutral_to_skin_ratio": "skin_dose_gy",
+    "si_neutron_to_skin_ratio": "skin_dose_gy",
+    "si_gamma_to_skin_ratio": "skin_dose_gy",
+    "si_doseeq_charged_to_skin_ratio": "skin_dose_gy",
+}
+
+
+def default_flood_sampling() -> str:
+    """LUNARSIM_FLOOD_SAMPLING, default "continuous" (the validated path)."""
+    v = os.environ.get(FLOOD_SAMPLING_ENV, "").strip().lower() or "continuous"
+    if v not in SAMPLING_MODES:
+        raise ValueError(f"{FLOOD_SAMPLING_ENV}={v!r}; expected one of {SAMPLING_MODES}")
+    return v
+
+
+def band_fractions(phi_mv: float, z: int, a: int, strata: int) -> list[float]:
+    """p_k of one species under the ACTIVE model -- the same make_source instance
+    (and so the same spectrum) the band beams are generated from."""
+    ms = _load_make_source()
+    e, w = ms.gcr_spectrum(phi_mv, z=z, a=a)
+    return ms.stratum_fractions(e, w, strata)
+
+
+def _stratified_virtual(sp_tier: RunTier, bands: list, p: list) -> RunResult:
+    """One round's band runs -> the RunResult a continuous run of sp_tier would
+    estimate (see the block comment above). A tally missing from any band with
+    p_k > 0 is None in the result."""
+    n_ref = sp_tier.total_primaries
+    live = [(pk, b) for pk, b in zip(p, bands) if pk > 0]
+    out = {}
+    for f in _EXTENSIVE_FIELDS:
+        vals = [getattr(b, f) for _, b in live]
+        out[f] = (None if any(v is None for v in vals) else
+                  n_ref * sum(pk * v / b.tier.total_primaries
+                              for (pk, b), v in zip(live, vals)))
+
+    def weights(base):
+        w = []
+        for pk, b in live:
+            x = getattr(b, base)
+            w.append(None if x is None else pk * x / b.tier.total_primaries)
+        return w
+
+    for f, base in _RATIO_BASE.items():
+        w, vals = weights(base), [getattr(b, f) for _, b in live]
+        if any(v is None for v in vals) or any(x is None for x in w) or not sum(w):
+            out[f] = None
+        else:
+            out[f] = sum(x * v for x, v in zip(w, vals)) / sum(w)
+    lets = [b.si_charged_let_ratios for _, b in live]
+    w = weights("skin_dose_gy")
+    if lets and all(t is not None for t in lets) and all(x is not None for x in w) \
+            and sum(w) and len({len(t) for t in lets}) == 1:
+        out["si_charged_let_ratios"] = tuple(
+            sum(x * col[i] for x, col in zip(w, lets)) / sum(w)
+            for i in range(len(lets[0])))
+    else:
+        out["si_charged_let_ratios"] = None
+    return RunResult(spec=bands[0].spec, tier=sp_tier, run_dir=bands[0].run_dir,
+                     returncode=max(b.returncode for b in bands),
+                     wall_seconds=sum(b.wall_seconds for b in bands),
+                     log_tail=bands[-1].log_tail, **out)
+
+
+def _proportional_histories(p: list, sp_tier: RunTier) -> list[int]:
+    """Pilot allocation N_k = p_k * N_ref, as histories per source (floor 1)."""
+    return [max(1, round(pk * sp_tier.histories)) for pk in p]
+
+
+def _neyman_histories(p: list, sigma: list, cost: list, budget_s: float,
+                      sources: int, alpha: float = STRAT_DEFENSIVE) -> list[int]:
+    """Histories/source per band for one round of `budget_s` wall-seconds.
+
+    Neyman with cost: N_k ~ p_k sigma_k / sqrt(c_k), mixed (1-alpha):alpha with the
+    proportional N_k ~ p_k at the SAME budget (defensive: a band whose pilot
+    variance read ~0 keeps a share), then floored at 1 history/source. sigma is the
+    per-primary stdev of the phantom dose, cost the wall-seconds per primary. The
+    allocation only affects efficiency -- the estimator is unbiased for any N_k."""
+    if budget_s <= 0 or any(c <= 0 for c in cost):
+        raise ValueError("budget and per-primary costs must be positive")
+    prop = [pk for pk in p]
+    s_prop = sum(c * x for c, x in zip(cost, prop))
+    n_prop = [budget_s * x / s_prop for x in prop]
+    ney = [pk * sk / c ** 0.5 for pk, sk, c in zip(p, sigma, cost)]
+    s_ney = sum(c * x for c, x in zip(cost, ney))
+    if s_ney > 0:
+        n_ney = [budget_s * x / s_ney for x in ney]
+        n = [(1 - alpha) * a + alpha * b for a, b in zip(n_ney, n_prop)]
+    else:                       # no variance information at all -> proportional
+        n = n_prop
+    return [max(1, round(x / sources)) for x in n]
+
+
 def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                     target_rel_err: float = 0.05,
                     min_batches: int = 2, max_batches: int = 12,
@@ -374,7 +515,9 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                     composition: Optional[list] = None,
                     lis: Optional[str] = None,
                     progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
-                    cancel_cb: Optional[Callable[[], bool]] = None) -> ConvergedComposition:
+                    cancel_cb: Optional[Callable[[], bool]] = None,
+                    sampling: Optional[str] = None,
+                    strata: int = DEFAULT_STRATA) -> ConvergedComposition:
     """Flood (deep) MC driver -- see _run_composition for the full contract.
 
     The whole driver runs under the flood's GCR model, scoped to this thread
@@ -384,16 +527,36 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     subprocesses spawned here (bridge passes the model env explicitly) AND the
     in-process flux normalization. Nothing global is mutated, so a thin-wall fold
     rendered concurrently in another GUI thread cannot change this run's model.
-    The result carries the model (and a provenance stamp) for assess_composition."""
+    The result carries the model (and a provenance stamp) for assess_composition.
+
+    sampling selects how each species' primary ENERGY is sampled:
+      "continuous" (default) -- one run per species per round over the full
+                     spectrum; the validated production path.
+      "stratified" -- the spectrum is cut into `strata` log-energy bands, each run
+                     separately and recombined with the band probabilities
+                     (_run_composition_stratified). Same expectation, lower
+                     phantom variance per wall-second; opt-in until the PC
+                     paired comparison (paper/stratified_flood_compare.py).
+    None reads LUNARSIM_FLOOD_SAMPLING (default "continuous")."""
+    sampling = sampling or default_flood_sampling()
+    if sampling not in SAMPLING_MODES:
+        raise ValueError(f"sampling must be one of {SAMPLING_MODES}, got {sampling!r}")
     model = current_model().flood()
     if lis:
         model = replace(model, lis_form=lis)
     with use_model(model):
-        comp = _run_composition(
-            spec, tier, target_rel_err, min_batches, max_batches, converge_on,
-            phantom_slack, composition, model, progress_cb, cancel_cb)
+        if sampling == "stratified":
+            comp = _run_composition_stratified(
+                spec, tier, target_rel_err, min_batches, max_batches, converge_on,
+                phantom_slack, composition, model, progress_cb, cancel_cb, strata)
+        else:
+            comp = _run_composition(
+                spec, tier, target_rel_err, min_batches, max_batches, converge_on,
+                phantom_slack, composition, model, progress_cb, cancel_cb)
     comp.model = model
-    comp.provenance = provenance(model, engine="flood")
+    extra = {} if sampling == "continuous" else {"sampling": sampling,
+                                                  "strata": comp.strata}
+    comp.provenance = provenance(model, engine="flood", **extra)
     return comp
 
 
@@ -496,7 +659,11 @@ def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                 and rel * _gate_inflation(rounds) <= target_rel_err:
             break
 
-    species_results = snapshot()
+    return _finalize(spec, tier, snapshot(), model)
+
+
+def _finalize(spec: HabitatSpec, tier: RunTier, species_results: list,
+              model: GcrModel) -> ConvergedComposition:
     comp = ConvergedComposition(
         spec=spec, tier=tier, species_results=species_results,
         n_batches=sum(r.n_batches for _, r in species_results),
@@ -513,6 +680,121 @@ def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
     comp.skin_dose_rel_err = a_skin.rel_err if a_skin else None
     comp.dose_rel_err = a_phan.rel_err if a_phan else None
     return comp
+
+
+def _run_composition_stratified(
+        spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
+        target_rel_err: float = 0.05,
+        min_batches: int = 2, max_batches: int = 12,
+        converge_on: str = "both", phantom_slack: float = 1.0,
+        composition: Optional[list] = None,
+        model: Optional[GcrModel] = None,
+        progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
+        cancel_cb: Optional[Callable[[], bool]] = None,
+        strata: int = DEFAULT_STRATA) -> ConvergedComposition:
+    """_run_composition with every species' primary energy stratified into
+    `strata` bands. Same round-robin, same combined-sum chi^2 gate on n = rounds;
+    each round of a species is the virtual (recombined) result of one run per band.
+
+    Allocation: rounds 1..STRAT_PILOT_ROUNDS are proportional (N_k = p_k N_ref);
+    the allocation is then frozen at the cost-weighted Neyman mix for the rest of
+    the run, with the per-round wall budget equal to the pilot's mean round, so
+    each round costs about what a pilot round did. Must be called under
+    use_model(model) (run_composition does) so p_k and the beams share a spectrum."""
+    model = model or current_model()
+    if composition is None:
+        composition = active_composition(tier.phi_mv)
+    sp_tiers = [(sp, _species_tier(tier, sp[3])) for sp in composition]
+    fracs = {sp[0]: band_fractions(tier.phi_mv, sp[2], sp[3], strata)
+             for sp in composition}
+    hist = {sp[0]: _proportional_histories(fracs[sp[0]], st) for sp, st in sp_tiers}
+    virtual: dict[str, list] = {sp[0]: [] for sp in composition}
+    pilot: dict[str, list] = {sp[0]: [] for sp in composition}   # [round][band] RunResult
+
+    def snapshot() -> list:
+        return [(sp, _combine(spec, st, virtual[sp[0]]))
+                for sp, st in sp_tiers if virtual[sp[0]]]
+
+    def fail(res) -> ConvergedComposition:
+        c = ConvergedComposition(spec=spec, tier=tier, species_results=snapshot(),
+                                 returncode=res.returncode or 1, log_tail=res.log_tail,
+                                 sampling="stratified", strata=strata,
+                                 band_fractions=fracs, band_histories=hist)
+        return c
+
+    launched = 0
+    rounds = 0
+    cancelled = False
+    for rnd in range(max_batches):
+        for sp, sp_tier in sp_tiers:
+            name, particle, z, a, abundance, group = sp
+            bands = []
+            for k in range(strata):
+                if cancel_cb and cancel_cb():
+                    cancelled = True
+                    break
+                bt = replace(sp_tier, histories=hist[name][k])
+                res = run_design(spec, bt, seed=rnd * strata + k + 1, keep=False,
+                                 particle=particle, ion_z=z, ion_a=a,
+                                 cancel_cb=cancel_cb, strata=strata, stratum=k)
+                if not res.ok:
+                    return fail(res)
+                bands.append(res)
+                launched += bt.total_primaries
+            if cancelled:
+                break
+            virtual[name].append(_stratified_virtual(sp_tier, bands, fracs[name]))
+            if rnd < STRAT_PILOT_ROUNDS:
+                pilot[name].append(bands)
+        if cancelled:
+            for bl in virtual.values():
+                del bl[rounds:]
+            break
+        rounds = rnd + 1
+
+        if rounds == STRAT_PILOT_ROUNDS:
+            for sp, sp_tier in sp_tiers:
+                hist[sp[0]] = _freeze_neyman(pilot[sp[0]], fracs[sp[0]], sp_tier)
+
+        species_results = snapshot()
+        a_skin = assess_composition(species_results, phi_MV=tier.phi_mv, skin=True,
+                                    model=model)
+        a_phan = assess_composition(species_results, phi_MV=tier.phi_mv, skin=False,
+                                    model=model)
+        rel = _pick_rel(a_skin.rel_err if a_skin else None,
+                        a_phan.rel_err if a_phan else None,
+                        converge_on, phantom_slack)
+        if progress_cb:
+            progress_cb(rounds, max_batches, rel)
+        if rounds >= min_batches and rel is not None \
+                and rel * _gate_inflation(rounds) <= target_rel_err:
+            break
+
+    comp = _finalize(spec, tier, snapshot(), model)
+    comp.total_primaries = launched     # primaries actually transported (all bands)
+    comp.sampling, comp.strata = "stratified", strata
+    comp.band_fractions, comp.band_histories = fracs, hist
+    return comp
+
+
+def _freeze_neyman(pilot_rounds: list, p: list, sp_tier: RunTier) -> list[int]:
+    """Neyman histories/source from the pilot band runs of one species: sigma_k is
+    the per-primary stdev of the phantom dose across pilot rounds, c_k the wall
+    per primary (incl. TOPAS init, so tiny bands look dear -- conservative), and
+    the budget the mean pilot round's wall."""
+    strata = len(p)
+    sources = sp_tier.rings * sp_tier.azimuth
+    sigma, cost = [], []
+    for k in range(strata):
+        runs = [r[k] for r in pilot_rounds]
+        n = runs[0].tier.total_primaries
+        per = [(r.dose_gy or 0.0) / r.tier.total_primaries for r in runs]
+        sigma.append(statistics.stdev(per) * n ** 0.5 if len(per) >= 2 else 0.0)
+        cost.append(max(statistics.fmean(r.wall_seconds for r in runs), 1e-9) / n)
+    budget = statistics.fmean(sum(b.wall_seconds for b in r) for r in pilot_rounds)
+    if budget <= 0:
+        return _proportional_histories(p, sp_tier)
+    return _neyman_histories(p, sigma, cost, budget, sources)
 
 
 # ----------------------------------------------------------------------
