@@ -213,8 +213,11 @@ def report(path: Path) -> list:
             if ref["provenance"].split(" engine")[0] != alt["provenance"].split(" engine")[0]:
                 print("      WARNING: provenance differs between modes")
     if out:
+        have = {v["mode"] for v in out}
         ok = all(v["agree"] and v["sane"] for v in out)
-        print(f"\nSMOKE {'PASS' if ok else 'FAIL'}: (a) generator matches Beam, (b) biased "
+        verdict = ("INCOMPLETE (missing " + ", ".join(sorted({"wdb0", "biased"} - have)) + ")"
+                   if have != {"wdb0", "biased"} else ("PASS" if ok else "FAIL"))
+        print(f"\nSMOKE {verdict}: (a) generator matches Beam, (b) biased "
               f"estimator agrees, (c) no gross weight factor. Step 3 (paired FOM) next "
               f"only on PASS.")
     return out
