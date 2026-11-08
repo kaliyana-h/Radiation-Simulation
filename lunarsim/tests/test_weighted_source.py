@@ -214,6 +214,121 @@ class BridgePassThrough(unittest.TestCase):
         self.assertEqual(seen, [SourceBias()])
 
 
+class _Species:
+    """Minimal ConvergedResult stand-in for assess_composition."""
+    def __init__(self, dose, doseeq, eq_rel):
+        self.spec = _spec()
+        self.dose_gy = self.skin_dose_gy = dose
+        self.fluence_outside = 1.0
+        self.dose_rel_err = self.skin_dose_rel_err = 0.01
+        self.phantom_doseeq_sv = self.skin_doseeq_sv = doseeq
+        self.phantom_doseeq_nasa_sv = self.skin_doseeq_nasa_sv = doseeq
+        self.phantom_doseeq_rel_err = self.skin_doseeq_rel_err = eq_rel
+        self.phantom_doseeq_nasa_rel_err = self.skin_doseeq_nasa_rel_err = eq_rel
+        self.neutron_doseeq_fraction = None
+
+
+class DoseEquivalentError(unittest.TestCase):
+    """E gets its own batch error: the phantom's Q-bar scatter (rare high-LET
+    tracks) is invisible to the absorbed-dose error."""
+
+    def _batch(self, d, h):
+        return bridge.RunResult(spec=_spec(), tier=TIER, run_dir=Path("."), returncode=0,
+                                wall_seconds=1.0, dose_gy=d, phantom_doseeq_sv=h,
+                                phantom_doseeq_nasa_sv=1.2 * h, skin_dose_gy=d,
+                                skin_doseeq_sv=0.5 * h)
+
+    def test_combine_gives_doseeq_its_own_error(self):
+        import statistics
+        hs = (2.0e-13, 3.0e-13, 2.0e-13, 5.0e-13)       # Q scatters, D steady
+        c = jobs._combine(_spec(), TIER, [self._batch(1.0e-13, h) for h in hs])
+        self.assertEqual(c.dose_rel_err, 0.0)
+        expect = statistics.stdev(hs) / 2.0 / statistics.fmean(hs)
+        for name in ("phantom_doseeq_rel_err", "phantom_doseeq_nasa_rel_err",
+                     "skin_doseeq_rel_err"):
+            self.assertAlmostEqual(getattr(c, name), expect, places=12, msg=name)
+        self.assertIsNone(c.skin_doseeq_nasa_rel_err)    # never scored
+        one = jobs._combine(_spec(), TIER, [self._batch(1.0e-13, 2.0e-13)])
+        self.assertIsNone(one.phantom_doseeq_rel_err)
+
+    def test_assess_composition_eq_error_in_quadrature(self):
+        H = dosimetry.GCR_COMPOSITION[0]
+        for skin in (False, True):
+            runs = [(H, _Species(1.0e-13, 2.0e-13, 0.10)),
+                    (H, _Species(1.0e-13, 6.0e-13, 0.04))]
+            a = dosimetry.assess_composition(runs, skin=skin)
+            expect = ((2 * 0.10) ** 2 + (6 * 0.04) ** 2) ** 0.5 / 8
+            self.assertAlmostEqual(a.eq_rel_err, expect, places=12)
+            self.assertAlmostEqual(a.rel_err, 0.01 / 2 ** 0.5, places=12)
+            runs[1][1].phantom_doseeq_rel_err = runs[1][1].skin_doseeq_rel_err = None
+            self.assertIsNone(dosimetry.assess_composition(runs, skin=skin).eq_rel_err)
+
+    def test_seed_offset_forwarded_and_guarded(self):
+        with self.assertRaises(ValueError):
+            jobs.run_composition(_spec(), TIER, sampling="stratified", seed_offset=5)
+        seeds = []
+
+        def fake(spec, tier, **kw):
+            seeds.append(kw["seed"])
+            raise RuntimeError("stop")
+        for off, want in ((0, 1), (1000, 1001)):
+            with mock.patch.object(jobs, "run_design", side_effect=fake):
+                with self.assertRaises(RuntimeError):
+                    jobs.run_composition(_spec(), TIER, sampling="continuous",
+                                         seed_offset=off)
+            self.assertEqual(seeds[-1], want)
+
+
+class FomHarness(unittest.TestCase):
+    """paper/weighted_source_fom.py: z_E uses the E errors, old rows fall back."""
+
+    def setUp(self):
+        sys.path.insert(0, str(_REPO_ROOT / "paper"))
+        import weighted_source_fom as w
+        self.w = w
+
+    def _row(self, mode, ph, rel, eq="", wall=1000.0, smp=""):
+        return dict(design="al19", areal_gcm2="19", mode=mode, wall_s=wall,
+                    phantom_msv=ph, phantom_rel=rel, skin_msv=200, skin_rel=0.02,
+                    phantom_mgy_d=0.25, skin_mgy_d=0.27, fluence_out=1, fluence_in=1,
+                    provenance="p", phantom_eq_rel=eq, skin_eq_rel=eq and 0.02,
+                    seed_offset=smp)
+
+    def test_eq_errors_used_and_fallback_flagged(self):
+        old = self.w.compare(self._row("beam", 260, 0.05), self._row("f0.2", 200, 0.03), 2)
+        self.assertFalse(old["eq_errors"])
+        self.assertFalse(old["agree"])
+        new = self.w.compare(self._row("beam", 260, 0.05, 0.12),
+                             self._row("f0.2", 200, 0.03, 0.05), 2)
+        self.assertTrue(new["eq_errors"])
+        self.assertTrue(new["agree"])
+        self.assertAlmostEqual(new["fom_gain_phantom"], (0.12 / 0.05) ** 2)
+
+    def test_pool_inverse_variance(self):
+        p = self.w.pool([self._row("beam", 100, 0.1, 0.1), self._row("beam", 200, 0.1, 0.05)])
+        w1, w2 = 1 / 10.0 ** 2, 1 / 10.0 ** 2
+        self.assertAlmostEqual(p["phantom_msv"], 150.0)
+        self.assertAlmostEqual(p["e_ph"] * p["phantom_msv"], (1 / (w1 + w2)) ** 0.5)
+        self.assertEqual(p["wall_s"], 2000.0)
+
+    def test_header_upgrade_keeps_old_rows(self):
+        import csv
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "f.csv"
+            old = [f for f in self.w.FIELDS if f not in
+                   ("phantom_eq_rel", "skin_eq_rel", "seed_offset")]
+            with path.open("w", newline="") as f:
+                wr = csv.DictWriter(f, fieldnames=old)
+                wr.writeheader()
+                wr.writerow({k: "1" for k in old})
+            self.w.append_row(path, {k: "2" for k in self.w.FIELDS})
+            rows = list(csv.DictReader(path.open()))
+            self.assertEqual([r["seed_offset"] for r in rows], ["", "2"])
+            self.assertEqual(rows[0]["wall_s"], "1")
+            self.assertTrue(path.with_suffix(".csv.pre_eqerr.bak").exists())
+
+
 class GeneratorSource(unittest.TestCase):
     """The C++ extension ships in the tracked extensions/ dir with the CMake
     registration line TOPAS needs."""

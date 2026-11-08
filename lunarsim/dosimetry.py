@@ -699,6 +699,10 @@ class DoseAssessment:
     quality_factor: float
     mission_days: float
     rel_err: Optional[float] = None         # statistical rel. error of the dose rate
+    # statistical rel. error of the DOSE-EQUIVALENT rate, from the dose-eq tallies'
+    # own batch scatter (composition path). rel_err above is the ABSORBED error and
+    # misses the quality-factor scatter of rare high-LET tracks; None if unknown.
+    eq_rel_err: Optional[float] = None
     contributions: Optional[list] = None    # per-species dose-rate breakdown (composition)
     neutron_fraction: Optional[float] = None  # fraction of H carried by wall-bred secondary neutrons
     # LND-style entry-channel split of the SKIN absorbed dose (EntryChannelDose
@@ -901,6 +905,8 @@ def assess_composition(species_results: list,
     have_si_relerr = dict.fromkeys(si_chan, True)
     total_flux = 0.0
     var = 0.0                # sum of (rate_i * relerr_i)^2  for combined error
+    eq_var = 0.0             # the same for the dose-equivalent rate
+    have_eq_relerr = True    # every species carries a dose-eq batch error
     have_doseeq = True       # both targets carry a dose-eq scorer; cleared if any species lacks it
     have_relerr = True       # every species has >=2 batches; cleared if any lacks an error
     contributions = []
@@ -938,6 +944,9 @@ def assess_composition(species_results: list,
         if doseeq_sv is not None:
             eqrate_i = doseeq_sv * flux_i / sim_fluence_cm2 * OUTER_GAUGE_ANCHOR_CAL * gc
             total_eqrate += eqrate_i
+            eq_rel_i = getattr(result, _doseeq_attr(skin, qf)[:-3] + "_rel_err", None)
+            have_eq_relerr = have_eq_relerr and eq_rel_i is not None
+            eq_var += (eqrate_i * (eq_rel_i or 0.0)) ** 2
             q_i = eqrate_i / rate_i if rate_i else None
             # dose-weight this species' neutron fraction by its dose-eq contribution
             # (a heavy ion at 20% neutron fraction weighs by how much H it carries)
@@ -1000,6 +1009,8 @@ def assess_composition(species_results: list,
         quality_factor=eff_q,
         mission_days=mission_days,
         rel_err=rel_err,
+        eq_rel_err=(eq_var ** 0.5 / total_eqrate
+                    if have_doseeq and have_eq_relerr and total_eqrate > 0 else None),
         contributions=contributions,
         neutron_fraction=neutron_fraction,
         **{k: (split_num[k] / split_den[k] if split_den[k] > 0 else None)

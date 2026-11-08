@@ -67,6 +67,14 @@ class ConvergedResult:
     si_charged_rel_err: Optional[float] = None  # standard error / mean (Si charged dose)
     si_neutral_rel_err: Optional[float] = None  # standard error / mean (Si neutral dose)
     si_doseeq_charged_rel_err: Optional[float] = None  # standard error / mean (Si charged H)
+    # Batch standard error / mean of the dose-equivalent tallies themselves. The
+    # absorbed errors above miss the quality-factor scatter: one rare high-LET track
+    # through the small phantom moves H far more than D (measured al19 full tier,
+    # 2026-11-08: phantom Q-bar 1.7-3.2 across plain-source runs).
+    phantom_doseeq_rel_err: Optional[float] = None
+    phantom_doseeq_nasa_rel_err: Optional[float] = None
+    skin_doseeq_rel_err: Optional[float] = None
+    skin_doseeq_nasa_rel_err: Optional[float] = None
     fluence_inside: Optional[float] = None
     fluence_outside: Optional[float] = None
     per_batch_dose: list[float] = field(default_factory=list)
@@ -134,6 +142,11 @@ def _combine(spec: HabitatSpec, tier: RunTier,
         if len(dose) >= 2 and m:
             return statistics.stdev(dose) / (len(dose) ** 0.5) / m
         return None
+    def sem_rel(vals):
+        m = statistics.fmean(vals) if vals else None
+        if len(vals) >= 2 and m:
+            return statistics.stdev(vals) / (len(vals) ** 0.5) / m
+        return None
     return ConvergedResult(
         spec=spec, tier=tier, n_batches=len(batches),
         total_primaries=tier.total_primaries * len(batches),
@@ -152,6 +165,10 @@ def _combine(spec: HabitatSpec, tier: RunTier,
         si_charged_rel_err=si_rel("si_charged_to_skin_ratio"),
         si_neutral_rel_err=si_rel("si_neutral_to_skin_ratio"),
         si_doseeq_charged_rel_err=si_rel("si_doseeq_charged_to_skin_ratio"),
+        phantom_doseeq_rel_err=sem_rel(phaneq),
+        phantom_doseeq_nasa_rel_err=sem_rel(phaneq_n),
+        skin_doseeq_rel_err=sem_rel(skineq),
+        skin_doseeq_nasa_rel_err=sem_rel(skineq_n),
         fluence_inside=statistics.fmean(fin) if fin else None,
         fluence_outside=statistics.fmean(fout) if fout else None,
         per_batch_dose=doses,
@@ -518,7 +535,8 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                     cancel_cb: Optional[Callable[[], bool]] = None,
                     sampling: Optional[str] = None,
                     strata: int = DEFAULT_STRATA,
-                    source_bias=None) -> ConvergedComposition:
+                    source_bias=None,
+                    seed_offset: int = 0) -> ConvergedComposition:
     """Flood (deep) MC driver -- see _run_composition for the full contract.
 
     The whole driver runs under the flood's GCR model, scoped to this thread
@@ -542,12 +560,18 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
 
     source_bias=bridge.SourceBias(...) runs every species' GCR discs as the
     weighted phantom-biased WeightedDiscBeam source (continuous sampling only;
-    needs the extension build). None (default) = plain Beam, unchanged."""
+    needs the extension build). None (default) = plain Beam, unchanged.
+
+    seed_offset shifts every batch seed (round r uses seed r + 1 + seed_offset;
+    continuous sampling only). 0 (default) = the historical seeds 1..N, so a rerun
+    REPLAYS the same sample; a non-zero offset draws an independent one."""
     sampling = sampling or default_flood_sampling()
     if sampling not in SAMPLING_MODES:
         raise ValueError(f"sampling must be one of {SAMPLING_MODES}, got {sampling!r}")
     if source_bias is not None and sampling != "continuous":
         raise ValueError("source_bias is only supported with continuous sampling")
+    if seed_offset and sampling != "continuous":
+        raise ValueError("seed_offset is only supported with continuous sampling")
     model = current_model().flood()
     if lis:
         model = replace(model, lis_form=lis)
@@ -560,7 +584,7 @@ def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
             comp = _run_composition(
                 spec, tier, target_rel_err, min_batches, max_batches, converge_on,
                 phantom_slack, composition, model, progress_cb, cancel_cb,
-                source_bias=source_bias)
+                source_bias=source_bias, seed_offset=seed_offset)
     comp.model = model
     extra = {} if sampling == "continuous" else {"sampling": sampling,
                                                   "strata": comp.strata}
@@ -579,7 +603,7 @@ def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                      model: Optional[GcrModel] = None,
                      progress_cb: Optional[Callable[[int, int, Optional[float]], None]] = None,
                      cancel_cb: Optional[Callable[[], bool]] = None,
-                     source_bias=None) -> ConvergedComposition:
+                     source_bias=None, seed_offset: int = 0) -> ConvergedComposition:
     """Run every GCR species round-robin and converge on the COMBINED dose.
 
     Each species is transported with its own ion/spectrum. One batch of every
@@ -638,7 +662,7 @@ def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
             if cancel_cb and cancel_cb():
                 cancelled = True
                 break
-            res = run_design(spec, sp_tier, seed=rnd + 1, keep=False,
+            res = run_design(spec, sp_tier, seed=rnd + 1 + seed_offset, keep=False,
                              particle=particle, ion_z=z, ion_a=a,
                              cancel_cb=cancel_cb, source_bias=source_bias)
             if not res.ok:
