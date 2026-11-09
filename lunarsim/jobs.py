@@ -78,6 +78,9 @@ class ConvergedResult:
     fluence_inside: Optional[float] = None
     fluence_outside: Optional[float] = None
     per_batch_dose: list[float] = field(default_factory=list)
+    # per-batch phantom dose equivalent (Sv per batch), kept so a heavy-tailed
+    # estimator can be diagnosed (largest-batch share) after the run
+    per_batch_phantom_doseeq: list[float] = field(default_factory=list)
     returncode: int = 0
     log_tail: str = ""
 
@@ -172,6 +175,7 @@ def _combine(spec: HabitatSpec, tier: RunTier,
         fluence_inside=statistics.fmean(fin) if fin else None,
         fluence_outside=statistics.fmean(fout) if fout else None,
         per_batch_dose=doses,
+        per_batch_phantom_doseeq=phaneq,
         returncode=0 if batches and all(b.returncode == 0 for b in batches) else 1,
         log_tail=batches[-1].log_tail if batches else "",
     )

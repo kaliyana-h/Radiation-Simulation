@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import shutil
 import sys
@@ -65,7 +66,7 @@ FIELDS = ["design", "areal_gcm2", "mode", "bias_f", "bias_margin_cm", "tier",
           "rounds", "wall_s", "total_primaries",
           "phantom_msv", "phantom_rel", "skin_msv", "skin_rel",
           "phantom_mgy_d", "skin_mgy_d", "fluence_out", "fluence_in",
-          "provenance", "utc", "phantom_eq_rel", "skin_eq_rel", "seed_offset"]
+          "provenance", "utc", "phantom_eq_rel", "skin_eq_rel", "seed_offset", "phantom_species"]
 
 
 def designs() -> dict:
@@ -141,7 +142,29 @@ def run_one(spec, tier, mode: str, rounds: int, margin_cm: float,
         "phantom_eq_rel": "" if a_ph.eq_rel_err is None else a_ph.eq_rel_err,
         "skin_eq_rel": "" if a_sk.eq_rel_err is None else a_sk.eq_rel_err,
         "seed_offset": seed_offset,
+        "phantom_species": species_breakdown(a_ph, comp.species_results),
     }
+
+
+def species_breakdown(a_ph, species_results) -> str:
+    """JSON {species: {E, eE, max_batch}} for the phantom: E = this species' share
+    of phantom_msv, eE = its dose-equivalent batch SEM, max_batch = largest single
+    batch / sum of batches (1/rounds for a smooth tally; near 1 = one rare event
+    carries the species)."""
+    contribs = {c["species"]: c for c in (a_ph.contributions or [])}
+    tot = sum(c["doseeq_rate_sv_s"] or 0.0 for c in contribs.values())
+    out = {}
+    for sp, r in species_results:
+        c = contribs.get(sp[0])
+        if c is None or not tot:
+            continue
+        b = [x for x in r.per_batch_phantom_doseeq if x is not None]
+        out[sp[0]] = {
+            "E": round(a_ph.annual_msv * (c["doseeq_rate_sv_s"] or 0.0) / tot, 3),
+            "eE": r.phantom_doseeq_rel_err,
+            "max_batch": round(max(b) / sum(b), 4) if b and sum(b) > 0 else None,
+        }
+    return json.dumps(out, separators=(",", ":"))
 
 
 def _upgrade_header(path: Path) -> None:
@@ -152,7 +175,12 @@ def _upgrade_header(path: Path) -> None:
         if rd.fieldnames == FIELDS:
             return
         old = list(rd)
-    shutil.copy2(path, path.with_suffix(path.suffix + ".pre_eqerr.bak"))
+    bak = path.with_suffix(path.suffix + ".pre_eqerr.bak")
+    k = 1
+    while bak.exists():          # never overwrite an earlier backup
+        bak = path.with_suffix(path.suffix + f".pre_upgrade{k}.bak")
+        k += 1
+    shutil.copy2(path, bak)
     with path.open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
         w.writeheader()
@@ -340,6 +368,47 @@ def weighted_consistency(rows: list, ref: str = "f0.2") -> list:
     return out
 
 
+def species_split(rows: list) -> dict:
+    """Where does the unit-weight vs biased phantom gap sit? Per species, the plain
+    mean over unit-weight rows (beam, f0) vs biased rows (f>0), each with the error
+    of a plain mean (no inverse-variance weighting, which drags heavy-tailed
+    samples low). Also the largest-batch share: ~1/rounds = smooth, large = tail."""
+    groups = {"unit": [], "biased": []}
+    for r in rows:
+        js = (r.get("phantom_species") or "").strip()
+        if not js:
+            continue
+        f = _num(r.get("bias_f"))
+        groups["unit" if r["mode"] == "beam" or not f else "biased"].append(json.loads(js))
+    if not groups["unit"] or not groups["biased"]:
+        return {}
+
+    def agg(samples, sp):
+        v = [s[sp] for s in samples if sp in s]
+        if not v:
+            return None
+        m = sum(x["E"] for x in v) / len(v)
+        e = (sum((x["E"] * (x["eE"] or 0.0)) ** 2 for x in v)) ** 0.5 / len(v)
+        mb = max((x["max_batch"] or 0.0) for x in v)
+        return m, e, mb, len(v)
+
+    print("  -- phantom E by species: unit-weight (beam, f0) vs biased (f>0), "
+          "plain means; maxb = largest batch share")
+    out = {}
+    names = dict.fromkeys(k for g in groups.values() for s in g for k in s)
+    for sp in names:
+        u, b = agg(groups["unit"], sp), agg(groups["biased"], sp)
+        if not u or not b:
+            continue
+        s = math.hypot(u[1], b[1])
+        z = (u[0] - b[0]) / s if s > 0 else float("nan")
+        out[sp] = {"unit": u[0], "biased": b[0], "z": z}
+        print(f"  {sp:6s} unit {u[0]:7.1f} +/- {u[1]:5.1f} (n={u[3]}, maxb {u[2]:.2f})"
+              f"   biased {b[0]:7.1f} +/- {b[1]:5.1f} (n={b[3]}, maxb {b[2]:.2f})"
+              f"   diff {u[0] - b[0]:+7.1f}  z {z:+.2f}")
+    return out
+
+
 def _sample(r: dict) -> int:
     x = _num(r.get("seed_offset"))
     return 0 if x is None else int(x)
@@ -402,6 +471,7 @@ def report(path: Path, min_gain: float = 2.0) -> list:
                 out.append(v)
                 _print_cmp(f"{m} vs beam (pooled)", v, min_gain)
         weighted_consistency([r for (dd, _, _), r in latest.items() if dd == d])
+        species_split([r for (dd, _, _), r in latest.items() if dd == d])
     if out:
         n = sum(v["pass"] for v in out)
         print(f"\n{n}/{len(out)} comparisons PASS (|z|<2 phantom+skin E, phantom FOM "

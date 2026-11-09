@@ -305,6 +305,32 @@ class FomHarness(unittest.TestCase):
         self.assertTrue(out["f0.2m120"]["agree"])
         self.assertFalse(out["f0.05"]["agree"])
 
+    def test_species_breakdown_shares_and_tail(self):
+        import json as _json
+        from types import SimpleNamespace as NS
+        a_ph = NS(annual_msv=200.0, contributions=[
+            {"species": "H", "doseeq_rate_sv_s": 3.0},
+            {"species": "Fe", "doseeq_rate_sv_s": 1.0}])
+        res = [(("H",), NS(per_batch_phantom_doseeq=[1, 1, 1, 1], phantom_doseeq_rel_err=0.01)),
+               (("Fe",), NS(per_batch_phantom_doseeq=[0, 0, 0, 4], phantom_doseeq_rel_err=0.5))]
+        out = _json.loads(self.w.species_breakdown(a_ph, res))
+        self.assertAlmostEqual(out["H"]["E"], 150.0)
+        self.assertAlmostEqual(out["Fe"]["E"], 50.0)
+        self.assertAlmostEqual(out["H"]["max_batch"], 0.25)
+        self.assertAlmostEqual(out["Fe"]["max_batch"], 1.0)
+
+    def test_species_split_groups_unit_and_biased(self):
+        js = lambda fe: '{"H":{"E":100,"eE":0.02,"max_batch":0.1},"Fe":{"E":%g,"eE":0.3,"max_batch":0.5}}' % fe
+        rows = [dict(mode="beam", bias_f="", phantom_species=js(120)),
+                dict(mode="f0", bias_f="0.0", phantom_species=js(100)),
+                dict(mode="f0.2", bias_f="0.2", phantom_species=js(40)),
+                dict(mode="f0.5", bias_f="0.5", phantom_species="")]
+        with contextlib.redirect_stdout(io.StringIO()):
+            out = self.w.species_split(rows)
+        self.assertAlmostEqual(out["Fe"]["unit"], 110.0)
+        self.assertAlmostEqual(out["Fe"]["biased"], 40.0)
+        self.assertAlmostEqual(out["H"]["z"], 0.0)
+
     def _row(self, mode, ph, rel, eq="", wall=1000.0, smp=""):
         return dict(design="al19", areal_gcm2="19", mode=mode, wall_s=wall,
                     phantom_msv=ph, phantom_rel=rel, skin_msv=200, skin_rel=0.02,
