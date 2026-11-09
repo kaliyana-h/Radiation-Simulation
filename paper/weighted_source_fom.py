@@ -294,6 +294,50 @@ def _print_cmp(label: str, v: dict, min_gain: float) -> None:
           f"{v['speedup_both']:.2f}x  -> {verdict}")
 
 
+DEFAULT_MARGIN_CM = 40.0
+
+
+def _label(r: dict) -> str:
+    """Mode name for grouping; a non-default shadow margin gets its own label
+    (f0.2m120) so a margin sweep never pools with the default-margin rows."""
+    m, mg = r["mode"], _num(r.get("bias_margin_cm"))
+    if m == "beam" or mg is None or abs(mg - DEFAULT_MARGIN_CM) < 1e-9:
+        return m
+    return f"{m}m{mg:g}"
+
+
+def weighted_consistency(rows: list, ref: str = "f0.2") -> list:
+    """Beam-free unbiasedness check: every biased (fraction, margin) estimates the
+    same expectation if the weights are right, so pool each label over all samples
+    and z-test it against the reference label. Absorbed dose (D) is the clean
+    test (its error is always recorded); E uses eq errors where present."""
+    by = {}
+    for r in rows:
+        lab = _label(r)
+        if lab != "beam":
+            by.setdefault(lab, []).append(_norm(r))
+    if ref not in by or len(by) < 2:
+        return []
+    pr = pool(by[ref])
+    out = []
+    print(f"  -- weighted-only consistency (each label pooled, z vs {ref})")
+    for lab in sorted(by):
+        pm = pool(by[lab])
+        flag = "" if pm["eq_ok"] else " [E err absorbed-only]"
+        line = (f"  {lab:9s} phantom E {pm['phantom_msv']:7.1f} +/- {100 * pm['e_ph']:4.1f}%"
+                f"  D {pm['phantom_mgy_d']:.4g} +/- {100 * pm['phantom_rel']:4.1f}%"
+                f"  (n={len(by[lab])}){flag}")
+        if lab != ref:
+            zE = _z(pr["phantom_msv"], pr["e_ph"], pm["phantom_msv"], pm["e_ph"])
+            zD = _z(pr["phantom_mgy_d"], pr["phantom_rel"],
+                    pm["phantom_mgy_d"], pm["phantom_rel"])
+            line += f"   z_E {zE:+.2f}  z_D {zD:+.2f}"
+            out.append({"label": lab, "z_E": zE, "z_D": zD,
+                        "agree": abs(zE) < 2 and abs(zD) < 2})
+        print(line)
+    return out
+
+
 def _sample(r: dict) -> int:
     x = _num(r.get("seed_offset"))
     return 0 if x is None else int(x)
@@ -303,7 +347,7 @@ def report(path: Path, min_gain: float = 2.0) -> list:
     if not path.exists():
         raise SystemExit(f"no results at {path}")
     rows = list(csv.DictReader(path.open()))
-    latest = {(r["design"], _sample(r), r["mode"]): r for r in rows}
+    latest = {(r["design"], _sample(r), _label(r)): r for r in rows}
     out = []
     for d in dict.fromkeys(r["design"] for r in rows):
         samples = sorted({s for (dd, s, _) in latest if dd == d})
@@ -355,6 +399,7 @@ def report(path: Path, min_gain: float = 2.0) -> list:
                 v.update(design=d, mode=m, sample="pooled")
                 out.append(v)
                 _print_cmp(f"{m} vs beam (pooled)", v, min_gain)
+        weighted_consistency([r for (dd, _, _), r in latest.items() if dd == d])
     if out:
         n = sum(v["pass"] for v in out)
         print(f"\n{n}/{len(out)} comparisons PASS (|z|<2 phantom+skin E, phantom FOM "

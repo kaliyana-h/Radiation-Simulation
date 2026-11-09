@@ -7,6 +7,8 @@ on their real code paths with the subprocess mocked.
 
     cd ~/topas && python3 -m unittest lunarsim.tests.test_weighted_source -v
 """
+import contextlib
+import io
 import math
 import random
 import sys
@@ -286,6 +288,22 @@ class FomHarness(unittest.TestCase):
         sys.path.insert(0, str(_REPO_ROOT / "paper"))
         import weighted_source_fom as w
         self.w = w
+
+    def test_margin_label_separates_sweep(self):
+        lab = self.w._label
+        self.assertEqual(lab({"mode": "beam", "bias_margin_cm": ""}), "beam")
+        self.assertEqual(lab({"mode": "f0.2", "bias_margin_cm": "40.0"}), "f0.2")
+        self.assertEqual(lab({"mode": "f0.2", "bias_margin_cm": "120"}), "f0.2m120")
+
+    def test_weighted_consistency_flags_moved_answer(self):
+        rows = [dict(self._row("f0.2", 190, 0.05, eq=0.04), bias_margin_cm="40"),
+                dict(self._row("f0.2", 192, 0.05, eq=0.04), bias_margin_cm="120"),
+                dict(self._row("f0.05", 260, 0.05, eq=0.04), bias_margin_cm="40")]
+        rows[2]["phantom_mgy_d"] = 0.34
+        with contextlib.redirect_stdout(io.StringIO()):
+            out = {v["label"]: v for v in self.w.weighted_consistency(rows)}
+        self.assertTrue(out["f0.2m120"]["agree"])
+        self.assertFalse(out["f0.05"]["agree"])
 
     def _row(self, mode, ph, rel, eq="", wall=1000.0, smp=""):
         return dict(design="al19", areal_gcm2="19", mode=mode, wall_s=wall,
