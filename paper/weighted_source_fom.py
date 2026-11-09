@@ -180,8 +180,10 @@ def cmd_run(args) -> None:
         if n not in ds:
             raise SystemExit(f"unknown design {n!r}; choose from {list(ds)}")
     for f in args.fractions:
-        if not 0.0 < f < 1.0:
-            raise SystemExit(f"bias fraction must be in (0, 1), got {f}")
+        # 0 = WeightedDiscBeam with no bias (unit weights): the beam's sampling
+        # through the extension's code path, to separate generator from tail.
+        if not 0.0 <= f < 1.0:
+            raise SystemExit(f"bias fraction must be in [0, 1), got {f}")
     modes = ([] if args.skip_beam else ["beam"]) + [mode_name(f) for f in args.fractions]
     print(f"tier {tier.name} ({tier.total_primaries} primaries/run/species), "
           f"{args.rounds} rounds, modes {modes}, margin {args.margin:g} cm, "
