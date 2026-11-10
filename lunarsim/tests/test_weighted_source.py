@@ -331,6 +331,14 @@ class FomHarness(unittest.TestCase):
         self.assertAlmostEqual(out["Fe"]["biased"], 40.0)
         self.assertAlmostEqual(out["H"]["z"], 0.0)
 
+    def test_species_subset_filters_flood_composition(self):
+        tier = RunTier("t", 1, 1, 1)
+        self.assertIsNone(self.w.species_subset(tier, None))
+        sub = self.w.species_subset(tier, ["H"])
+        self.assertEqual([sp[0] for sp in sub], ["H"])
+        with self.assertRaises(SystemExit):
+            self.w.species_subset(tier, ["Xx"])
+
     def _row(self, mode, ph, rel, eq="", wall=1000.0, smp=""):
         return dict(design="al19", areal_gcm2="19", mode=mode, wall_s=wall,
                     phantom_msv=ph, phantom_rel=rel, skin_msv=200, skin_rel=0.02,

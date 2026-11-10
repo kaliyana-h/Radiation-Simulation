@@ -103,8 +103,24 @@ def bias_for(mode: str, margin_cm: float):
 # ----------------------------------------------------------------------------
 # PC run
 # ----------------------------------------------------------------------------
+def species_subset(tier, species):
+    """The flood composition restricted to `species` (names as in GCR_COMPOSITION,
+    e.g. ["H"]), resolved under the flood model exactly as run_composition would
+    resolve composition=None. None -> None (full composition)."""
+    if not species:
+        return None
+    from lunarsim import dosimetry
+    with dosimetry.use_model(dosimetry.current_model().flood()):
+        full = dosimetry.active_composition(tier.phi_mv)
+    names = [sp[0] for sp in full]
+    bad = [x for x in species if x not in names]
+    if bad:
+        raise SystemExit(f"unknown species {bad}; choose from {names}")
+    return [sp for sp in full if sp[0] in species]
+
+
 def run_one(spec, tier, mode: str, rounds: int, margin_cm: float,
-            seed_offset: int = 0) -> dict:
+            seed_offset: int = 0, species=None) -> dict:
     from lunarsim import dosimetry, jobs
     sb = bias_for(mode, margin_cm)
 
@@ -116,6 +132,7 @@ def run_one(spec, tier, mode: str, rounds: int, margin_cm: float,
     comp = jobs.run_composition(spec, tier, target_rel_err=0.0, min_batches=rounds,
                                 max_batches=rounds, converge_on="both",
                                 sampling="continuous", source_bias=sb,
+                                composition=species_subset(tier, species),
                                 seed_offset=seed_offset, progress_cb=progress)
     if not comp.ok:
         raise RuntimeError(f"{spec.name} {mode}: run failed rc={comp.returncode}\n"
@@ -204,6 +221,10 @@ def cmd_run(args) -> None:
     tier = {"quick": QUICK_LOOK, "full": FULL_RUN}[args.tier]
     ds = designs()
     names = args.designs or ["al19"]
+    if args.species and args.csv == CSV_DEFAULT:
+        # A species subset is a different total: never pool it with full rows.
+        args.csv = CSV_DEFAULT.with_name(f"weighted_source_fom_{'_'.join(args.species)}.csv")
+    species_subset(tier, args.species)            # validate names before any run
     for n in names:
         if n not in ds:
             raise SystemExit(f"unknown design {n!r}; choose from {list(ds)}")
@@ -215,7 +236,8 @@ def cmd_run(args) -> None:
     modes = ([] if args.skip_beam else ["beam"]) + [mode_name(f) for f in args.fractions]
     print(f"tier {tier.name} ({tier.total_primaries} primaries/run/species), "
           f"{args.rounds} rounds, modes {modes}, margin {args.margin:g} cm, "
-          f"seed offset {args.seed_offset}, csv {args.csv}")
+          f"seed offset {args.seed_offset}, species {args.species or 'all'}, "
+          f"csv {args.csv}")
     for n in names:
         s = ds[n]
         print(f"  {n:10s} {s.shape:6s} {s.areal_density_gcm2():7.2f} g/cm2")
@@ -227,7 +249,8 @@ def cmd_run(args) -> None:
     for n in names:
         for m in modes:
             print(f"== {n} {m}", flush=True)
-            row = run_one(ds[n], tier, m, args.rounds, args.margin, args.seed_offset)
+            row = run_one(ds[n], tier, m, args.rounds, args.margin, args.seed_offset,
+                          args.species)
             row["design"] = n
             append_row(args.csv, row)
             print(f"   phantom {row['phantom_msv']:.1f} mSv/yr +/- "
@@ -494,6 +517,9 @@ def main(argv=None) -> None:
                    help="reuse an existing beam row for this design")
     r.add_argument("--seed-offset", type=int, default=0,
                    help="round k uses seed k+1+offset; non-zero = independent sample")
+    r.add_argument("--species", nargs="*",
+                   help="run only these species (e.g. H); rows go to "
+                        "weighted_source_fom_<species>.csv unless --csv is given")
     r.add_argument("--dry-run", action="store_true", help="print the plan only")
     for q in (r, sub.add_parser("report", help="pair rows and print verdicts")):
         q.add_argument("--csv", type=Path, default=CSV_DEFAULT)
