@@ -167,6 +167,17 @@ GCR_LIS_VAR = os.environ.get("LUNARSIM_GCR_LIS", "rigidity")
 # would sample a different spectrum than the parent normalises.
 GCR_PERELEMENT = os.environ.get("LUNARSIM_GCR_PERELEMENT", "perelement")
 
+# How the GCR histories are shared between zenith rings (A/B knob, 2026-11-13).
+# "equal" (default, validated scheme): every source gets the same histories.
+# "solidangle": ring share ∝ the solid angle ΔΩ of its sin²-band. Each disc is
+#   perpendicular to its own beam, so the fluence it delivers is N/area -- an
+#   ISOTROPIC sky therefore needs N ∝ ΔΩ (Dobynde & Guo 2021 Eq. 1-2), whereas
+#   equal N reproduces a cosθ-weighted sky (steep over-, grazing under-weighted).
+# Total primaries are unchanged either way (outer-gauge normalisation intact).
+# Opt-in only until the PC A/B (paper/ring_weighting_ab.py) is decided.
+RING_WEIGHT_SCHEMES = ("equal", "solidangle")
+GCR_RING_WEIGHTS = os.environ.get("LUNARSIM_GCR_RING_WEIGHTS", "equal")
+
 
 # --------------------------------------------------------------------------
 # Matthiae et al. 2013 (DLR modified-ISO) per-element GCR LIS
@@ -641,9 +652,38 @@ def validate_bias(bias, beam_spot):
     return tz, rb, f
 
 
+def ring_band_shares(rings):
+    """Solid-angle share of each sin²-band [asin√(r/R), asin√((r+1)/R)] of the
+    upper hemisphere: ΔΩ_r / 2π = cos θ_lo - cos θ_hi (sums to 1)."""
+    return [math.sqrt(1.0 - r / rings) - math.sqrt(1.0 - (r + 1) / rings)
+            for r in range(rings)]
+
+
+def ring_histories(rings, azimuth, histories, scheme="equal"):
+    """Histories per source, as [ring][azimuth]. "equal" = `histories` each
+    (unchanged). "solidangle" = ring r gets share_r of the SAME total
+    rings*azimuth*histories, split exactly by largest remainder (first over
+    rings, then over that ring's azimuth sources), so the total is preserved."""
+    if scheme not in RING_WEIGHT_SCHEMES:
+        raise ValueError(f"ring weighting must be one of {RING_WEIGHT_SCHEMES}, got {scheme!r}")
+    if scheme == "equal":
+        return [[histories] * azimuth for _ in range(rings)]
+
+    def split(total, shares):
+        raw = [total * w for w in shares]
+        out = [int(math.floor(x)) for x in raw]
+        order = sorted(range(len(raw)), key=lambda i: raw[i] - out[i], reverse=True)
+        for i in order[: total - sum(out)]:
+            out[i] += 1
+        return out
+
+    per_ring = split(rings * azimuth * histories, ring_band_shares(rings))
+    return [split(n, [1.0 / azimuth] * azimuth) for n in per_ring]
+
+
 def gcr_block(rings, azimuth, phi_MV, histories, particle="proton",
               beam_radius=1400.0, beam_spot=900.0, ion_z=1, ion_a=1,
-              strata=1, stratum=0, bias=None):
+              strata=1, stratum=0, bias=None, ring_weights=None):
     """GCR hemisphere of parallel-ray discs.
 
     bias=None emits TOPAS "Beam" discs (the validated default, unchanged).
@@ -655,6 +695,8 @@ def gcr_block(rings, azimuth, phi_MV, histories, particle="proton",
     z axis (the crew phantom centre). Position/size only -- target-blind."""
     if bias is not None:
         bias = validate_bias(bias, beam_spot)
+    ring_weights = GCR_RING_WEIGHTS if ring_weights is None else ring_weights
+    hist = ring_histories(rings, azimuth, histories, ring_weights)
     energies, weights = gcr_spectrum(phi_MV, z=ion_z, a=ion_a)
     fmt = "{:.6g}"
     strat_note = []
@@ -678,6 +720,9 @@ def gcr_block(rings, azimuth, phi_MV, histories, particle="proton",
           if bias is not None else []),
         "#   Rings are equal-area in sin^2(theta): equal flux per ring,",
         "#   so equal histories per source = exact Lambert weighting.",
+        *([f"#   RING WEIGHTS: solidangle (histories/ring "
+           f"{[sum(h) for h in hist]}, opt-in A/B)"]
+          if ring_weights != "equal" else []),
         "# ==========================================================",
         "",
         "# Beam geometry (self-contained so this file is includeable as-is).",
@@ -709,7 +754,7 @@ def gcr_block(rings, azimuth, phi_MV, histories, particle="proton",
                     f'    d:So/{tag}/BiasTargetZ    = {bias[0]:.6g} cm',
                     f'    d:So/{tag}/BiasRadius     = {bias[1]:.6g} cm',
                     f'    u:So/{tag}/BiasFraction   = {bias[2]:.6g}',
-                    f'    i:So/{tag}/NumberOfHistoriesInRun   = {histories}',
+                    f'    i:So/{tag}/NumberOfHistoriesInRun   = {hist[r][a]}',
                     "",
                 ]
                 idx += 1
@@ -720,7 +765,7 @@ def gcr_block(rings, azimuth, phi_MV, histories, particle="proton",
                 f'    d:So/{tag}/BeamPositionCutoffX      = So/BeamSpot cm',
                 f'    d:So/{tag}/BeamPositionCutoffY      = So/BeamSpot cm',
                 f'    s:So/{tag}/BeamAngularDistribution  = "None"',
-                f'    i:So/{tag}/NumberOfHistoriesInRun   = {histories}',
+                f'    i:So/{tag}/NumberOfHistoriesInRun   = {hist[r][a]}',
                 "",
             ]
             idx += 1
@@ -854,6 +899,9 @@ def main():
                    help="bias target centre z (cm, world; crew phantom centre)")
     p.add_argument("--bias-radius", type=float, default=60.0,
                    help="shadow-circle radius (cm) = phantom radius + margin")
+    p.add_argument("--ring-weights", choices=RING_WEIGHT_SCHEMES, default=None,
+                   help="history share per zenith ring (default: $LUNARSIM_GCR_RING_WEIGHTS "
+                        "or 'equal'); 'solidangle' = isotropic-correct A/B option")
     p.add_argument("--standalone", action="store_true", help="emit a full runnable test file")
     p.add_argument("--out", default=None)
     args = p.parse_args()
@@ -864,7 +912,8 @@ def main():
                          ion_z=args.ion_z, ion_a=args.ion_a,
                          strata=args.strata, stratum=args.stratum,
                          bias=(None if args.bias_fraction is None else
-                               (args.bias_target_z, args.bias_radius, args.bias_fraction)))
+                               (args.bias_target_z, args.bias_radius, args.bias_fraction)),
+                         ring_weights=args.ring_weights)
         default_out = "gcr_source.txt"
     else:
         body = spe_block(args.spe_zenith, args.spe_azimuth, args.spe_cone,
