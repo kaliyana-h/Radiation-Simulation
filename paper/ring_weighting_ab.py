@@ -3,7 +3,8 @@
 
 Question: the GCR sky is rings x azimuth parallel discs, each disc perpendicular
 to its own beam. Fluence from a direction is then N/area, so an ISOTROPIC sky
-needs N_ring ∝ ΔΩ_ring (Dobynde & Guo 2021, Eq. 1-2). The validated default gives
+needs N_ring ∝ ΔΩ_ring (Dobynde & Guo 2021, Eq. 1-2). The legacy scheme (default
+until 2026-11-15, when "solidangle" was adopted) gives
 every ring EQUAL histories (sin²-band "Lambert" argument), i.e. a cosθ-weighted
 sky: steep rays ~2x over-, grazing rays ~2.5x under-represented. Total primaries
 (hence the outer-gauge normalisation and CAL 0.94932) are identical in both arms.
@@ -17,7 +18,7 @@ start partly below grade.
 
 Arms (both plain TOPAS Beam discs, continuous sampling, full composition, same
 tier/rounds; only LUNARSIM_GCR_RING_WEIGHTS differs -- make_source reads it):
-  equal       production default (byte-identical source file)
+  equal       legacy pre-2026-11-15 default (byte-identical to it except comments)
   solidangle  ring share = ΔΩ of its sin²-band, exact total by largest remainder
 
 Pass/flag per design (pooled over seed samples, dose-equivalent batch errors):

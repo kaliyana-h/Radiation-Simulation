@@ -1,5 +1,6 @@
-"""Opt-in GCR ring weighting (make_source.ring_histories): default unchanged,
-solid-angle shares exact and total-preserving."""
+"""GCR ring weighting (make_source.ring_histories): default "solidangle" since
+2026-11-15 (exact, total-preserving shares); legacy "equal" still selectable;
+flood provenance stamps the scheme."""
 import importlib.util
 import math
 import os
@@ -28,12 +29,47 @@ def _ms(env=None):
 
 
 class RingWeights(unittest.TestCase):
-    def test_default_is_equal(self):
+    def test_default_is_solidangle(self):
         ms = _ms()
-        self.assertEqual(ms.GCR_RING_WEIGHTS, "equal")
-        self.assertEqual(ms.ring_histories(6, 12, 140), [[140] * 12] * 6)
+        self.assertEqual(ms.GCR_RING_WEIGHTS, "solidangle")
         self.assertEqual(ms.gcr_block(2, 4, 400.0, 10),
-                         ms.gcr_block(2, 4, 400.0, 10, ring_weights="equal"))
+                         ms.gcr_block(2, 4, 400.0, 10, ring_weights="solidangle"))
+        self.assertIn("RING WEIGHTS: solidangle", ms.gcr_block(2, 4, 400.0, 10))
+
+    def test_legacy_equal_still_available(self):
+        ms = _ms("equal")
+        self.assertEqual(ms.GCR_RING_WEIGHTS, "equal")
+        self.assertEqual(ms.ring_histories(6, 12, 140, "equal"), [[140] * 12] * 6)
+        blk = ms.gcr_block(6, 12, 400.0, 140)
+        self.assertIn("RING WEIGHTS: equal (LEGACY", blk)
+        n = [int(l.split("=")[1]) for l in blk.splitlines() if "NumberOfHistoriesInRun" in l]
+        self.assertEqual(n, [140] * 72)
+
+    def test_defaults_agree_with_dosimetry(self):
+        import sys
+        sys.path.insert(0, str(ROOT))
+        from lunarsim import dosimetry
+        self.assertEqual(dosimetry.RING_WEIGHTS_DEFAULT, _ms().GCR_RING_WEIGHTS)
+
+    def test_flood_provenance_stamps_rings(self):
+        import sys
+        sys.path.insert(0, str(ROOT))
+        from lunarsim import dosimetry
+        m = dosimetry.current_model()
+        old = os.environ.pop("LUNARSIM_GCR_RING_WEIGHTS", None)
+        try:
+            text = dosimetry.provenance_str(dosimetry.provenance(m, engine="flood"))
+            self.assertIn("rings=solidangle", text)
+            self.assertEqual(dosimetry.provenance_mismatch(text, m), [])
+            legacy = text.replace(" rings=solidangle", "")     # pre-2026-11-15 row
+            self.assertTrue(any(w.startswith("rings=equal")
+                                for w in dosimetry.provenance_mismatch(legacy, m)))
+            kern = dosimetry.provenance_str(dosimetry.provenance(m, engine="kernel"))
+            self.assertNotIn("rings=", kern)
+            self.assertEqual(dosimetry.provenance_mismatch(kern, m), [])
+        finally:
+            if old is not None:
+                os.environ["LUNARSIM_GCR_RING_WEIGHTS"] = old
 
     def test_shares_are_solid_angle(self):
         ms = _ms()
@@ -57,7 +93,7 @@ class RingWeights(unittest.TestCase):
 
     def test_env_selects_and_block_emits(self):
         ms = _ms("solidangle")
-        blk = ms.gcr_block(6, 12, 400.0, 140)
+        blk = ms.gcr_block(6, 12, 400.0, 140, ring_weights="solidangle")
         self.assertIn("RING WEIGHTS: solidangle", blk)
         n = [int(l.split("=")[1]) for l in blk.splitlines() if "NumberOfHistoriesInRun" in l]
         self.assertEqual(len(n), 72)

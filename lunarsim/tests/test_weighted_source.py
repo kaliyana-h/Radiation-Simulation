@@ -136,9 +136,13 @@ class MakeSourceEmit(unittest.TestCase):
         self.assertNotIn('"Beam"', b)
         self.assertNotIn("BeamPositionDistribution", b)
         for key in ("DiscRadius     = So/BeamSpot cm", "BiasTargetZ    = 100 cm",
-                    "BiasRadius     = 60 cm", "BiasFraction   = 0.5",
-                    "NumberOfHistoriesInRun   = 7"):
+                    "BiasRadius     = 60 cm", "BiasFraction   = 0.5"):
             self.assertEqual(b.count(key), 8, key)
+        # histories are shared by ring solid angle (default since 2026-11-15):
+        # per-source counts vary, the total (8 sources x 7) is preserved
+        n = [int(ln.split("=")[1]) for ln in b.splitlines()
+             if "NumberOfHistoriesInRun" in ln]
+        self.assertEqual((len(n), sum(n)), (8, 56))
 
     def test_spectrum_components_identical(self):
         """Energy spectrum, particle and the group chain are byte-identical: only

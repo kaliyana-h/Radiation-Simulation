@@ -471,13 +471,21 @@ field**:
   Guo (2021)**.
 - The sky-dome is discretised into **zenith rings × azimuth sectors** (default
   5 × 8 = 40 sources), each a parallel disc beam firing inward toward the habitat.
-- The directional weighting is **analytically exact, not ad-hoc**: for an isotropic
-  field crossing a flat surface (Lambert's cosine law), the flux from a zenith band
-  is proportional to `sin²θ₂ − sin²θ₁`. By choosing ring boundaries **equally
-  spaced in sin²θ**, every ring carries *equal* flux — so every source can be given
-  the *same* number of histories. This makes the angular sampling both physically
-  correct *and* statistically uniform (no ring is under-sampled). Each ring's
-  representative zenith is taken at the band midpoint in sin²θ.
+- Ring boundaries are **equally spaced in sin²θ**, and each ring's representative
+  zenith is taken at the band midpoint in sin²θ. Histories are shared between
+  rings in proportion to each band's **solid angle**, ΔΩ/2π = cos θ₁ − cos θ₂
+  (Dobynde & Guo 2021, Eq. 1–2): each disc is perpendicular to its own beam, so
+  the fluence it delivers is N/area, and an isotropic sky therefore needs N ∝ ΔΩ.
+  For the 6-ring full tier the shares run 0.087 (top cap) → 0.408 (0–24° band).
+  Default since 2026-11-15 (`LUNARSIM_GCR_RING_WEIGHTS=solidangle`).
+- *Legacy scheme* (`equal`, default before 2026-11-15): the same histories per
+  ring, justified by Lambert's cosine law for flux through a **flat horizontal**
+  surface. With beam-perpendicular discs that reproduces a cosθ-weighted sky
+  (steep rays ~2× over-, grazing rays ~2.5× under-represented). PC A/B
+  (`paper/ring_weighting_ab.py`, n=2): no change for uniform-wall domes (al54
+  skin 0.98 ± 0.015), but buried150 dose fell to 0.84× — its grazing rays cross
+  the thick side berm. Flood results are provenance-stamped `rings=`; unstamped
+  rows ran `equal`.
 - Geometrically, each source is built as a nested TOPAS group hierarchy — azimuth
   rotation (RotZ) → zenith aim (RotY) → translate out to the sky-dome radius and
   flip to fire inward (RotX = 180°).
@@ -549,7 +557,7 @@ indicative* rather than silently trusted.
 
 **In short:** the spectrum is taken straight from the cosmic-ray literature
 (Usoskin LIS + Gleeson–Axford modulation), the angular field is an exact
-Lambert-weighted isotropic hemisphere (Dobynde & Guo), and the whole thing is
+solid-angle-weighted isotropic hemisphere (Dobynde & Guo), and the whole thing is
 emitted as a reusable, self-documenting TOPAS source file — with every
 approximation (per-nucleon ion scaling, 20 GeV/nuc cutoff) explicitly justified
 in-code rather than hidden.

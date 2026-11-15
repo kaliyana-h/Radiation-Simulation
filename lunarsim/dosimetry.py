@@ -505,6 +505,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # code that differs from the stamped commit.
 _PROVENANCE_PATHS = ("lunarsim", "make_source.py", "lunar_environment.txt")
 
+# GCR ring history weighting the flood source is built with -- must match
+# make_source.GCR_RING_WEIGHTS's default ("solidangle" since 2026-11-15; legacy
+# "equal" before). The bridge passes os.environ to make_source, so the env var
+# read here is the one the subprocess sees. Stamped on flood results only (the
+# thin-wall kernel uses its own concentric-shell source, kernel_gen/templates).
+RING_WEIGHTS_DEFAULT = "solidangle"
+RING_WEIGHTS_ENV = "LUNARSIM_GCR_RING_WEIGHTS"
+
+
+def ring_weights() -> str:
+    return os.environ.get(RING_WEIGHTS_ENV, RING_WEIGHTS_DEFAULT)
+
 
 @functools.lru_cache(maxsize=1)
 def _git_state() -> str:
@@ -539,6 +551,7 @@ def provenance(model: Optional[GcrModel] = None, engine: str = "",
     model = model or current_model()
     stamp = {"git": _git_state(), "engine": engine,
              **dataclasses.asdict(model),
+             **({"rings": ring_weights()} if engine == "flood" else {}),
              "cal": OUTER_GAUGE_ANCHOR_CAL,
              "date": datetime.datetime.now(datetime.timezone.utc).strftime(
                  "%Y-%m-%dT%H:%MZ")}
@@ -568,6 +581,10 @@ def provenance_mismatch(text: str, model: GcrModel, cal: Optional[float] = None)
     want = {k: (f"{v:g}" if isinstance(v, float) else str(v))
             for k, v in dataclasses.asdict(model).items()}
     want["cal"] = f"{OUTER_GAUGE_ANCHOR_CAL if cal is None else cal:g}"
+    if got.get("engine") == "flood":
+        # rows stamped before 2026-11-15 carry no rings= key: they ran "equal"
+        got = {"rings": "equal", **got}
+        want["rings"] = ring_weights()
     return [f"{k}={got.get(k, '?')} (expected {v})"
             for k, v in want.items() if got.get(k) != v]
 

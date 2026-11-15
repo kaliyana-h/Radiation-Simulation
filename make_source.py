@@ -10,12 +10,17 @@ Two source modes, answering the "justify your particle directions" critique:
          each a parallel ("None" angular distribution) disc firing inward,
          following Dobynde & Guo (2021, JGR Planets, 10.1029/2021JE006930).
 
-         Directional weighting is exact, not ad-hoc: for an isotropic
-         intensity crossing a flat surface, the flux from a zenith band
-         [t1,t2] is proportional to (sin^2 t2 - sin^2 t1) (Lambert cosine
-         law).  Choosing ring boundaries equally spaced in sin^2(theta)
-         makes every ring carry EQUAL flux, so every source gets the same
-         number of histories -- correct AND statistically uniform.
+         Directional weighting (default "solidangle", since 2026-11-15):
+         ring boundaries are equally spaced in sin^2(theta), and each ring
+         gets histories in proportion to the SOLID ANGLE of its band,
+         dOmega/2pi = cos(t1) - cos(t2) (Dobynde & Guo 2021, Eq. 1-2).
+         Each disc is perpendicular to its own beam, so the fluence it
+         delivers is N/area: an isotropic sky therefore needs N ~ dOmega.
+         (The earlier "equal histories per ring" scheme assumed the Lambert
+         cos-weighting of flux through a FLAT HORIZONTAL surface; with
+         beam-perpendicular discs it reproduces a cos(theta)-weighted sky
+         -- steep rays ~2x over-, grazing rays ~2.5x under-represented.
+         Kept as the legacy option "equal"; see LUNARSIM_GCR_RING_WEIGHTS.)
 
   SPE  : a single look-direction (the Sun) with a finite angular spread
          (a cone), i.e. NOT omnidirectional -- the correct shape for a
@@ -167,16 +172,21 @@ GCR_LIS_VAR = os.environ.get("LUNARSIM_GCR_LIS", "rigidity")
 # would sample a different spectrum than the parent normalises.
 GCR_PERELEMENT = os.environ.get("LUNARSIM_GCR_PERELEMENT", "perelement")
 
-# How the GCR histories are shared between zenith rings (A/B knob, 2026-11-13).
-# "equal" (default, validated scheme): every source gets the same histories.
-# "solidangle": ring share ∝ the solid angle ΔΩ of its sin²-band. Each disc is
-#   perpendicular to its own beam, so the fluence it delivers is N/area -- an
-#   ISOTROPIC sky therefore needs N ∝ ΔΩ (Dobynde & Guo 2021 Eq. 1-2), whereas
-#   equal N reproduces a cosθ-weighted sky (steep over-, grazing under-weighted).
+# How the GCR histories are shared between zenith rings.
+# "solidangle" (DEFAULT since 2026-11-15): ring share ∝ the solid angle ΔΩ of its
+#   sin²-band. Each disc is perpendicular to its own beam, so the fluence it
+#   delivers is N/area -- an ISOTROPIC sky therefore needs N ∝ ΔΩ (Dobynde & Guo
+#   2021 Eq. 1-2).
+# "equal" (legacy, default until 2026-11-15): every source gets the same
+#   histories, which reproduces a cosθ-weighted sky (steep rays over-, grazing
+#   rays under-weighted). Kept for reproducing pre-2026-11-15 results.
+# PC A/B (paper/ring_weighting_ab.py, n=2 each): buried150 solidangle/equal skin
+#   E 0.844±0.013, phantom 0.84±0.08; al54 dome control skin 0.98±0.015, phantom
+#   0.95±0.12 (no effect where the wall is the same in every direction).
 # Total primaries are unchanged either way (outer-gauge normalisation intact).
-# Opt-in only until the PC A/B (paper/ring_weighting_ab.py) is decided.
+# Must match dosimetry.RING_WEIGHTS_DEFAULT (provenance stamp).
 RING_WEIGHT_SCHEMES = ("equal", "solidangle")
-GCR_RING_WEIGHTS = os.environ.get("LUNARSIM_GCR_RING_WEIGHTS", "equal")
+GCR_RING_WEIGHTS = os.environ.get("LUNARSIM_GCR_RING_WEIGHTS", "solidangle")
 
 
 # --------------------------------------------------------------------------
@@ -659,9 +669,9 @@ def ring_band_shares(rings):
             for r in range(rings)]
 
 
-def ring_histories(rings, azimuth, histories, scheme="equal"):
-    """Histories per source, as [ring][azimuth]. "equal" = `histories` each
-    (unchanged). "solidangle" = ring r gets share_r of the SAME total
+def ring_histories(rings, azimuth, histories, scheme="solidangle"):
+    """Histories per source, as [ring][azimuth]. "equal" (legacy) = `histories`
+    each. "solidangle" (default) = ring r gets share_r of the SAME total
     rings*azimuth*histories, split exactly by largest remainder (first over
     rings, then over that ring's azimuth sources), so the total is preserved."""
     if scheme not in RING_WEIGHT_SCHEMES:
@@ -711,18 +721,18 @@ def gcr_block(rings, azimuth, phi_MV, histories, particle="proton",
         "# ==========================================================",
         "# GCR primary source -- isotropic upper hemisphere",
         f"#   mode=GCR  rings={rings}  azimuth={azimuth}  phi={phi_MV} MV",
-        f"#   particle={particle} (Z={ion_z} A={ion_a})  histories/source={histories}",
+        f"#   particle={particle} (Z={ion_z} A={ion_a})  histories/source={histories} (mean)",
         *strat_note,
         *([f"#   POSITION BIAS: WeightedDiscBeam target z={bias[0]:g} cm  "
            f"r_b={bias[1]:g} cm  f={bias[2]:g}  (weights "
            f"in={bias_weights(beam_spot, bias[1], bias[2])[0]:.6g} "
            f"out={bias_weights(beam_spot, bias[1], bias[2])[1]:.6g})"]
           if bias is not None else []),
-        "#   Rings are equal-area in sin^2(theta): equal flux per ring,",
-        "#   so equal histories per source = exact Lambert weighting.",
-        *([f"#   RING WEIGHTS: solidangle (histories/ring "
-           f"{[sum(h) for h in hist]}, opt-in A/B)"]
-          if ring_weights != "equal" else []),
+        "#   Rings are equally spaced in sin^2(theta); histories/source as below.",
+        (f"#   RING WEIGHTS: solidangle (histories/ring {[sum(h) for h in hist]}, "
+         f"∝ band solid angle = isotropic sky)"
+         if ring_weights == "solidangle" else
+         "#   RING WEIGHTS: equal (LEGACY pre-2026-11-15: cos(theta)-weighted sky)"),
         "# ==========================================================",
         "",
         "# Beam geometry (self-contained so this file is includeable as-is).",
@@ -901,7 +911,7 @@ def main():
                    help="shadow-circle radius (cm) = phantom radius + margin")
     p.add_argument("--ring-weights", choices=RING_WEIGHT_SCHEMES, default=None,
                    help="history share per zenith ring (default: $LUNARSIM_GCR_RING_WEIGHTS "
-                        "or 'equal'); 'solidangle' = isotropic-correct A/B option")
+                        "or 'solidangle' = isotropic sky); 'equal' = legacy pre-2026-11-15")
     p.add_argument("--standalone", action="store_true", help="emit a full runnable test file")
     p.add_argument("--out", default=None)
     args = p.parse_args()
