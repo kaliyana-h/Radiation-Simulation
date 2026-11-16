@@ -279,15 +279,23 @@ def matthia_W_for_phi(phi_MV):
     """Map the tool's force-field modulation phi (MV) to the Matthiae solar
     parameter W by matching the Matthiae proton spectral SHAPE to the tool's own
     Burger/Usoskin + force-field proton spectrum at phi (flux<->flux over
-    100 MeV..10 GeV, NOT a dose target). Honours the active GCR_LIS_VAR form, so
-    the match stays self-consistent with whichever engine is running. Returns the
-    best-fit integer W in [0, 200]. (phi=400 MV -> W=4, consistent with phi=400
-    ~ solar min and the Matthiae W<->Oulu relation giving W~1-5 at solar min.)"""
+    100 MeV..10 GeV, NOT a dose target). ALWAYS uses the RIGIDITY form of the
+    Burger/Usoskin LIS (the cited, correct form), whatever GCR_LIS_VAR is: W is a
+    physical solar-modulation level and must be the same for the flood and kernel
+    engines. (Until 2026-11-16 it honoured GCR_LIS_VAR, so the flood -- pinned to
+    the legacy "energy" form -- mapped phi 400/650/1100 to W 0/3/61 instead of
+    4/49/90 and was left almost unmodulated at solar mean.) Returns the best-fit
+    integer W in [0, 200]. (phi=400 MV -> W=4, consistent with phi=400 ~ solar min
+    and the Matthiae W<->Oulu relation giving W~1-5 at solar min.)"""
     es = [100.0 * (10000.0 / 100.0) ** (k / 20) for k in range(21)]
+    mp_GeV = E0_PROTON / 1000.0
+    def lis_rig(T_GeV):                       # lis_proton, rigidity form, fixed
+        P_GV = math.sqrt(T_GeV * (T_GeV + 2.0 * mp_GeV))
+        return 1.9e4 * P_GV ** (-2.78) / (1.0 + 0.4866 * P_GV ** (-2.51))
     def tool_p(e):                            # proton Phi=(1/1)*phi
         Tm = e + phi_MV
         factor = (e * (e + 2.0 * E0_PROTON)) / (Tm * (Tm + 2.0 * E0_PROTON))
-        return lis_proton(Tm / 1000.0) * factor
+        return lis_rig(Tm / 1000.0) * factor
     ltp = [math.log(tool_p(e)) for e in es]
     mtp = sum(ltp) / len(ltp)
     best_err, best_W = float("inf"), 0
@@ -412,7 +420,17 @@ def _rigidity_equiv_proton_MeV(Tm, z, a):
     return math.sqrt(R * R + E0_PROTON * E0_PROTON) - E0_PROTON
 
 
-def gcr_spectrum(phi_MV, z=1, a=1, emin=10.0, emax=GCR_EMAX_PER_NUC, n=28,
+# Points on the log energy grid handed to TOPAS. TOPAS "Continuous" interpolates the
+# density LINEARLY between points, which on a steeply falling, log-spaced spectrum
+# over-weights the upper part of every segment. At 28 points (the value until
+# 2026-11-16) that over-sampled the >1 GeV/n flux by ~1.3% and the >10 GeV/n flux by
+# ~4% (mean energy +2%) relative to the analytic spectrum dosimetry normalises
+# against; at 100 points both are within 0.3%. Measured by
+# integrating TOPAS's piecewise-linear density against a 2000-point reference.
+SPECTRUM_POINTS = 100
+
+
+def gcr_spectrum(phi_MV, z=1, a=1, emin=10.0, emax=GCR_EMAX_PER_NUC, n=SPECTRUM_POINTS,
                  shape=None):
     """Force-field-modulated per-nucleon spectrum on a log energy grid.
 
@@ -426,15 +444,27 @@ def gcr_spectrum(phi_MV, z=1, a=1, emin=10.0, emax=GCR_EMAX_PER_NUC, n=28,
     # proton-clone shape knob: each representative ion carries its group's summed
     # Matthiae spectrum, with W mapped from phi. The force-field factor/rigidity
     # path is bypassed -- Matthiae carries its own modulation (R0, delta via W).
-    if GCR_PERELEMENT == "matthia2013":
+    #
+    # 'perelement' (the default) uses the SINGLE-ELEMENT Matthiae flux, matching the
+    # normalisation dosimetry applies under that model (mattia_element_norm_integral).
+    # Until 2026-11-16 'perelement' fell through to the proton-clone force-field
+    # branch below, so any caller that did not first map it to 'matthia2013' (the CLI,
+    # regolith_sweep, trajviz) sampled a spectrum shape that did not match its
+    # normalisation. The flood was unaffected: jobs maps 'perelement' -> 'matthia2013'
+    # (dosimetry.flood_model_for) before calling this.
+    if GCR_PERELEMENT in ("matthia2013", "perelement"):
         W = matthia_W_for_phi(phi_MV)
+        flux = mattia_group_flux if GCR_PERELEMENT == "matthia2013" else mattia_flux
         energies, weights = [], []
         for k in range(n):
             T = emin * (emax / emin) ** (k / (n - 1))     # per-nucleon KE, MeV
             energies.append(T * a)        # TOPAS BeamEnergy = TOTAL kinetic energy
-            weights.append(mattia_group_flux(z, T, W))
+            weights.append(flux(z, T, W))
         wmax = max(weights)
         return energies, [w / wmax for w in weights]
+    if GCR_PERELEMENT != "none":
+        raise ValueError(f"unknown GCR per-element model {GCR_PERELEMENT!r} "
+                         "(expected 'none', 'matthia2013' or 'perelement')")
     Phi = (z / a) * phi_MV  # effective modulation in MeV for this species
     energies, weights = [], []
     for k in range(n):
@@ -562,7 +592,7 @@ SPE_EVENTS = {
 }
 
 
-def spe_spectrum(event="aug1972", emin=10.0, emax=3.0e3, n=28,
+def spe_spectrum(event="aug1972", emin=10.0, emax=3.0e3, n=SPECTRUM_POINTS,
                  r0_MV=None, e0_MeV=None):
     """Worst-case (solar-maximum) SPE proton spectrum on a log energy grid.
 

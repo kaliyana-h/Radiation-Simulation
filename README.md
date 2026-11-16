@@ -10,7 +10,7 @@ space-station-design workshop.
 
 | Path | Description |
 |---|---|
-| **`lunarsim/`** | The habitat radiation evaluator: takes a design (shape, size, wall layers, materials) and returns a comparable **radiation protection score** (annual effective dose, mSv/yr). Web GUI + Python API. **See [`lunarsim/README.md`](lunarsim/README.md) for the full manual.** |
+| **`lunarsim/`** | The habitat radiation evaluator: takes a design (shape, size, wall layers, materials) and returns a comparable **radiation protection score** (annual dose, mSv/yr: an organ-weighted effective dose for thin walls, the habitat-lining dose equivalent as an effective-dose proxy behind thick shielding). Web GUI + Python API. **See [`lunarsim/README.md`](lunarsim/README.md) for the full manual.** |
 | `make_source.py` | Generates the galactic-cosmic-ray (GCR) and solar-particle-event TOPAS source includes (isotropic upper-hemisphere GCR; directional SPE). |
 | `lunar_environment.txt` | Shared lunar surface include: 3-layer Apollo-17 regolith stack + `FTFP_BERT_HP` physics, used by every habitat. |
 | `bin/`, `lib/`, `include/` | The compiled TOPAS engine and headers. |

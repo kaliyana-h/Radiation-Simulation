@@ -32,8 +32,9 @@ The system is a clean two-layer design with a single data contract between them:
 - **Back end (the physics chain):**
   - `geometry.py` — turns a `HabitatSpec` into TOPAS geometry + scorers (with the
     per-species particle filters).
-  - `make_source.py` — generates the GCR particle source (force-field-modulated
-    Usoskin-2005 interstellar spectrum, isotropic upper hemisphere). *See §6.*
+  - `make_source.py` — generates the GCR particle source (Matthiä-2013 per-element
+    GCR model with W mapped from φ, isotropic upper hemisphere with solid-angle sky
+    bands; the force-field/Usoskin-2005 path is the legacy 'none' fallback). *See §6.*
   - `bridge.py` — assembles the TOPAS parameter file and runs the simulation.
   - `jobs.py` — a background job runner with **statistical convergence** (keeps
     adding Monte-Carlo batches until the dose reaches a target precision), plus
@@ -403,6 +404,16 @@ modes.
 
 ### 6.1 Energy spectrum — where the particles' energies come from
 
+> **Current default (2026-11-16):** the source and dosimetry use the **Matthiä et
+> al. (2013)** per-element GCR model (`LUNARSIM_GCR_PERELEMENT=perelement`; the
+> thick-wall flood runs its `matthia2013` group form). Solar activity enters
+> through Matthiä's W, mapped from φ with the rigidity form at every φ (W ≈ 4 / 49 /
+> 90 at φ = 400 / 650 / 1100 MV), and the kernel fold re-derives the per-element
+> abundances at the requested φ. Spectra are tabulated at 100 log-spaced points
+> (`SPECTRUM_POINTS`), because TOPAS interpolates linearly between them and the old
+> 28-point grid over-weighted the >10 GeV/n tail by ~4%. The force-field /
+> Usoskin-2005 description below is the legacy `none` path, kept for reproducibility.
+
 The Galactic Cosmic Ray (GCR) spectrum is **not invented or hand-tuned** — it's
 the standard force-field model used throughout the heliophysics literature:
 
@@ -556,7 +567,8 @@ indicative* rather than silently trusted.
   normalisation* can never drift apart.
 
 **In short:** the spectrum is taken straight from the cosmic-ray literature
-(Usoskin LIS + Gleeson–Axford modulation), the angular field is an exact
+(Matthiä 2013 by default; Usoskin LIS + Gleeson–Axford modulation as the legacy
+path), the angular field is an exact
 solid-angle-weighted isotropic hemisphere (Dobynde & Guo), and the whole thing is
 emitted as a reusable, self-documenting TOPAS source file — with every
 approximation (per-nucleon ion scaling, 20 GeV/nuc cutoff) explicitly justified

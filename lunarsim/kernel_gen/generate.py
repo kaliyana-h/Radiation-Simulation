@@ -159,14 +159,17 @@ def _collect_point(runs_dir: Path, material: str, wall: float, seeds: int,
                             vals.append(v / phi)   # D -> R = D/phi_ff
                     if vals:
                         R[o][qkey][j] = statistics.fmean(vals)
-                        sd = statistics.pstdev(vals) if len(vals) > 1 else 0.0
+                        # sample sd (Bessel): with ~4 seeds pstdev understates
+                        # the SEM by 1.15x (fixed 2026-11-16; see sem_estimator)
+                        sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
                         Rsem[o][qkey][j] = sd / math.sqrt(len(vals))
         out_species[sname] = {
             "z": meta["z"], "a": meta["a"], "abundance": meta["abundance"],
             "particle": meta["particle"], "group": meta["group"],
             "nodes_pernuc_mev": nodes, "R": R, "Rsem": Rsem,
         }
-    return {"wall_gcm2": wall, "seeds": seeds, "species": out_species}
+    return {"wall_gcm2": wall, "seeds": seeds, "sem_estimator": "sample",
+            "species": out_species}
 
 
 def collect(out: Path) -> dict:

@@ -238,7 +238,7 @@ GCR_COMPOSITION = [
 # Reference exposure limits (whole-body effective dose, mSv).
 DOSE_LIMITS_MSV = {
     "nasa_30day":  250.0,     # NASA short-term BFO limit
-    "nasa_annual": 500.0,     # NASA annual limit
+    "nasa_annual": 500.0,     # legacy NCRP-132 annual BFO limit; not used for verdicts
     "career":      600.0,     # NASA career limit (3% REID, lower bound)
     "esa_career": 1000.0,     # ESA/Roscosmos career limit
 }
@@ -759,7 +759,7 @@ class DoseAssessment:
     def annual_mgy(self) -> float:
         return self.dose_rate_gy_s * SECONDS_PER_DAY * DAYS_PER_YEAR * 1.0e3
 
-    # ---- equivalent (effective) dose ----
+    # ---- dose equivalent H = Q*D (an effective dose only for an organ-weighted fold) ----
     @property
     def equiv_rate_msv_day(self) -> float:
         return self.dose_rate_gy_s * SECONDS_PER_DAY * self.quality_factor * 1.0e3
@@ -1153,6 +1153,17 @@ def _calibration_areal_fraction(spec, material: str) -> float:
     return cal / tot if tot else 0.0
 
 
+def _perelement_abundances(phi_MV: float) -> dict:
+    """Per-element kernel species abundances (relative to H) at phi_MV: each ion's
+    Voronoi-assigned Matthiae element sum, mirroring kernel_gen.config.
+    species_perelement but evaluated with the ACTIVE model's make_source module."""
+    from .kernel_gen import config as _kc
+    ms = _load_make_source()
+    assign = _kc._perelement_assignment()
+    return {name: sum(ms.mattia_element_abundance(zz, phi_MV) for zz in assign[z])
+            for name, z, _a in _kc.PERELEMENT_IONS}
+
+
 def _thinwall_fold_point(point: dict, phi_MV: float, organs: list) -> dict:
     """Fold ONE areal-density anchor against the true free-field GCR flux.
 
@@ -1165,6 +1176,14 @@ def _thinwall_fold_point(point: dict, phi_MV: float, organs: list) -> dict:
     HI = {k: 0.0 for k, _w in organs}          # ICRP dose-eq rate  (Sv/s)
     HD = {k: 0.0 for k, _w in organs}          # absorbed dose rate (Gy/s)
     HIvar = {k: 0.0 for k, _w in organs}
+    Evar = 0.0                                  # effective-dose variance (see below)
+    # Kernels built before 2026-11-16 stored Rsem from the POPULATION sd (pstdev)
+    # over a handful of seeds (4 per anchor), which understates the SEM by
+    # sqrt(n/(n-1)) = 1.15 at n=4. Correct it here unless the kernel says it used the
+    # sample sd. Variances scale by n/(n-1).
+    n_seeds = int(point.get("seeds") or 0)
+    bessel = (n_seeds / (n_seeds - 1)
+              if n_seeds > 1 and point.get("sem_estimator") != "sample" else 1.0)
     # The kernel's per-node R (=D/Phi_ff) is pure transport response -- it does NOT
     # depend on the incident spectrum, which enters only through fw below. So the
     # per-element model needs NO kernel regeneration: the per-node SHAPE already
@@ -1175,6 +1194,14 @@ def _thinwall_fold_point(point: dict, phi_MV: float, organs: list) -> dict:
     ab_override = None
     if current_model().perelement == "matthia2013":
         ab_override = {t[0]: t[4] for t in matthia_composition(phi_MV)}
+    elif current_model().perelement == "perelement":
+        # Per-element kernel: the JSON abundances were baked at the generation phi
+        # (400 MV). Abundance relative to H varies with solar phase (He/H 0.094 ->
+        # 0.120 from phi 400 -> 1100), so recompute it live at phi_MV with the same
+        # Voronoi neighbourhood sums as kernel_gen.config.species_perelement. At
+        # phi=400 this reproduces the baked values exactly. (Before 2026-11-16 the
+        # baked phi=400 values were used at every phase.)
+        ab_override = _perelement_abundances(phi_MV)
     per_species = {}
     for name, sp in point["species"].items():
         z, a = sp["z"], sp["a"]
@@ -1185,16 +1212,26 @@ def _thinwall_fold_point(point: dict, phi_MV: float, organs: list) -> dict:
         fw = [ab * calib * _raw_gcr_integral(z, a, phi_MV, edges[j], edges[j + 1], n=400)
               for j in range(len(nd))]
         spE = spD = 0.0
+        # The organ shells are scored in the SAME runs (same primaries, nested
+        # phantom), so their errors are positively correlated: combine shells
+        # LINEARLY per (species, node) -- the conservative fully-correlated bound --
+        # then in quadrature across nodes and species, which are independent runs.
+        # (Before 2026-11-16 shells were summed in quadrature as if independent,
+        # understating the effective-dose SEM by up to ~2x.)
+        sig_node = [0.0] * len(nd)
         for k, wT in organs:
             Ri, Si, Rd = sp["R"][k]["I"], sp["Rsem"][k]["I"], sp["R"][k]["D"]
             hi = sum(Ri[j] * fw[j] for j in range(len(nd)))
             hd = sum(Rd[j] * fw[j] for j in range(len(nd)))
-            var = sum((Si[j] * fw[j]) ** 2 for j in range(len(nd)))
+            var = bessel * sum((Si[j] * fw[j]) ** 2 for j in range(len(nd)))
             HI[k] += hi; HD[k] += hd; HIvar[k] += var
             spE += wT * hi; spD += wT * hd
+            for j in range(len(nd)):
+                sig_node[j] += wT * Si[j] * fw[j]
+        Evar += bessel * sum(x * x for x in sig_node)
         per_species[name] = {"E_sv_s": spE, "D_gy_s": spD, "flux_cm2_s": sum(fw),
                              "particle": sp["particle"], "group": sp["group"]}
-    return {"HI": HI, "HD": HD, "HIvar": HIvar, "per_species": per_species}
+    return {"HI": HI, "HD": HD, "HIvar": HIvar, "Evar": Evar, "per_species": per_species}
 
 
 def fold_gcr_thinwall(spec, phi_MV: float = 400.0, material: Optional[str] = None) -> dict:
@@ -1205,8 +1242,8 @@ def fold_gcr_thinwall(spec, phi_MV: float = 400.0, material: Optional[str] = Non
     anchors. Interpolation is geometric in log(areal density) — dose falls off with
     shielding as a power law, so a log-log fit tracks the physics far better than a
     straight line. It does NOT make the hand-off to the flood seamless: the measured
-    kernel->flood step at the ~19 g/cm2 gate is ~1.3-1.4x (see
-    areal_density_confidence). (Zero-valued endpoints, e.g. a penetration-gated node,
+    kernel->flood step at the ~19 g/cm2 gate is ~1.2x (measured 2026-11-05 after
+    the 20 GeV/n tail promotion; headline_context.GATE_STEP, areal_density_confidence). (Zero-valued endpoints, e.g. a penetration-gated node,
     fall back to linear.) Below the thinnest / above the thickest anchor it clamps to
     the end anchor (the regime gate keeps callers inside the measured band). Returns
     the whole-body effective absorbed rate (Gy/s), effective dose-eq rate (Sv/s) and
@@ -1263,13 +1300,14 @@ def fold_gcr_thinwall(spec, phi_MV: float = 400.0, material: Optional[str] = Non
             return fa * (fb / fa) ** t
         return fa + t * (fb - fa)
 
-    D_eff = E = Evar = 0.0
+    D_eff = E = 0.0
+    # shell-correlated effective-dose variance, interpolated like the doses
+    Evar = ip(folded[lo]["Evar"], folded[hi]["Evar"])
     rows = []
     for k, wT in organs:
         Hd = ip(folded[lo]["HD"][k], folded[hi]["HD"][k])
         Hi = ip(folded[lo]["HI"][k], folded[hi]["HI"][k])
-        Hv = ip(folded[lo]["HIvar"][k], folded[hi]["HIvar"][k])
-        D_eff += wT * Hd; E += wT * Hi; Evar += (wT ** 2) * Hv
+        D_eff += wT * Hd; E += wT * Hi
         rows.append({"shell": k, "wT": wT, "absorbed_gy_s": Hd, "doseeq_sv_s": Hi})
 
     per_species = {}
@@ -1308,24 +1346,27 @@ def areal_density_confidence(ad_gcm2: float) -> dict:
                        (The pre-2026-10-27 "~1.1x OLTARIS" agreement came from a
                        compensating pin+heavy-ion pair, now removed.)
       * ad <= 12    -> MEDIUM: thin-wall kernel regime, close but OPTIMISTIC
-                       (per-element kernel E 177 mSv/yr = ~0.78x of OLTARIS-Al
-                       ~228 at 10 g/cm^2) -- may under-warn.
+                       (per-element kernel E ~198 mSv/yr = ~0.87x of OLTARIS-Al
+                       ~228 at 10 g/cm^2, after the 2026-11-05 20 GeV/n tail
+                       promotion) -- may under-warn.
       * 12 < ad < 40 -> LOW: straddles the 19 g/cm^2 kernel/flood handoff. The
-                       kernel side is measured (E 158 = ~0.7x OLTARIS at the
-                       gate; <Q> 2.16 continuous with OLTARIS deep, paper.
+                       kernel side is measured (E 182.6 = ~0.8x OLTARIS at the
+                       gate after the tail promotion; <Q> 2.16 continuous with OLTARIS deep, paper.
                        crossover_coherence). Flood side MEASURED on the PC
                        2026-11-03 (paper/accuracy_flood_sweep.py, 750 cm Al dome,
                        full composition): skin 218.4 mSv/yr = 0.96x OLTARIS,
                        phantom 203.6 +/-12% = 0.89x. So crossing the gate the
-                       headline steps UP ~1.3-1.4x, from an optimistic kernel to a
-                       near-OLTARIS flood. (The old "kernel 0.52x vs flood 2.6x,
+                       headline steps UP ~1.2x (GATE_STEP), from an optimistic
+                       kernel to a near-OLTARIS flood. Both sides predate the
+                       2026-11-16 phi->W and spectrum-grid fixes (flood ~2-4% lower
+                       at phi=400); re-measure before quoting. (The old "kernel 0.52x vs flood 2.6x,
                        2-3x off" figures predate the 2026-10 fixes and are retired.)
 
     Returns {level, label, message} for a GUI banner. Purely advisory -- it
     changes no computed dose. Boundaries are soft engineering cut points, not
     physics edges; treat a design near a boundary as the lower-confidence side."""
     if ad_gcm2 >= 40.0:
-        return {"level": "high", "label": "validated regime",
+        return {"level": "high", "label": "thick-wall regime (most reliable)",
                 "message": ("Wall areal density is in the thick regime, where the "
                             "flood Monte Carlo is most reliable. Its GCR input "
                             "(Matthiae 2013) matches measured solar-minimum proton "
@@ -1334,25 +1375,36 @@ def areal_density_confidence(ad_gcm2: float) -> dict:
     if ad_gcm2 <= 12.0:
         return {"level": "medium", "label": "thin-wall (optimistic)",
                 "message": ("Thin-wall kernel regime: reasonably close to OLTARIS "
-                            "but OPTIMISTIC (~0.8x at 10 g/cm^2), so the true dose "
+                            "but OPTIMISTIC (~0.85-0.9x at 10 g/cm^2), so the true dose "
                             "may be somewhat higher than shown.")}
     return {"level": "low", "label": "crossover band",
             "message": ("Areal density straddles the ~19 g/cm^2 hand-off "
                         "between the thin-wall and thick-wall dose engines -- "
                         "the least-certain band. Near the hand-off the thin-wall "
-                        "engine reads ~0.7x OLTARIS (optimistic) while the "
+                        "engine reads ~0.8x OLTARIS (optimistic) while the "
                         "thick-wall engine reads ~0.9-1.0x, so the number jumps "
-                        "up ~1.3-1.4x across the hand-off. Treat as indicative; a "
+                        "up ~1.2x across the hand-off. Treat as indicative; a "
                         "clearly thicker or thinner wall gives a firmer number.")}
+
+
+def _gcr_fold_material(spec) -> str:
+    """The material whose R(E) transport fold_gcr_thinwall ACTUALLY loads for this
+    design. The per-element kernel is aluminium-only, so while it is active every wall
+    -- polyethylene and suit laminate included -- folds on aluminium transport, even
+    though _gcr_calibration_material names the (legacy, 5-ion) material kernel."""
+    if current_model().perelement == "perelement" and _has_perelem_kernel():
+        return "aluminium"
+    return _gcr_calibration_material(spec)
 
 
 def _gcr_thinwall_calibrated(spec) -> bool:
     """True when the thin-wall fold sits squarely on its calibration: in-regime AND the
-    wall is dominated by the chosen kernel's calibration material (aluminium, or the
-    suit laminate when the EVA kernel is shipped -- the material the R(E) transport was
-    measured through). A mixed / off-material thin wall still folds but is flagged
-    indicative, mirroring _spe_kernel_calibrated on the shielding side."""
-    material = _gcr_calibration_material(spec)
+    wall is dominated by the material the loaded kernel was transported through
+    (aluminium; or polyethylene / the suit laminate only when their own kernel is the
+    one folded -- not under the aluminium-only per-element kernel). A mixed / off-
+    material thin wall still folds but is flagged indicative, mirroring
+    _spe_kernel_calibrated on the shielding side."""
+    material = _gcr_fold_material(spec)
     return (_gcr_thinwall_applies(spec)
             and _calibration_areal_fraction(spec, material) >= 0.8)
 
@@ -1486,15 +1538,26 @@ def fold_spe(scenario: SPEScenario, spec) -> dict:
             "anchor_cm2": ms.spe_integral_fluence(scenario.event)}
 
 
+SPE_KERNEL_WINDOW = 0.25   # fractional areal-density window around the kernel wall
+
+
+def _spe_kernel_wall_gcm2() -> float:
+    return float(_load_spe_kernel()["meta"]["cal_wall_areal_g_cm2"])
+
+
 def _spe_kernel_calibrated(spec) -> bool:
     """True when the design sits in the shielded regime the kernel was measured on.
 
-    R(E) bakes in the transport through the calibration wall (~147 g/cm^2 regolith),
-    so folding is faithful only for designs of comparable areal density. Off-
-    calibration walls (much thinner/thicker) still get a number, but flagged."""
-    K = _load_spe_kernel()
-    cal_ad = K["meta"]["cal_wall_areal_g_cm2"]
-    return abs(spec.areal_density_gcm2() - cal_ad) / cal_ad <= 0.25
+    R(E) bakes in the transport through ONE calibration wall (147.5 g/cm^2 regolith
+    stack) and starts at 430 MeV, the just-penetrating energy for that wall. fold_spe
+    does not re-transport through the design's wall -- only the 1/R^2 gauge term
+    changes -- so the fold is a measurement only for walls of comparable areal
+    density. A thinner wall lets <430 MeV protons through that the kernel never saw
+    (dose UNDERSTATED, possibly by orders of magnitude); a thicker wall is folded as
+    if it were 147.5 g/cm^2 (dose probably overstated, not verified). Outside the
+    window the number is still computed but the verdict is NOT ASSESSED."""
+    cal_ad = _spe_kernel_wall_gcm2()
+    return abs(spec.areal_density_gcm2() - cal_ad) / cal_ad <= SPE_KERNEL_WINDOW
 
 
 # ----------------------------------------------------------------------
@@ -1523,6 +1586,28 @@ class SPEAssessment:
     bfo_quality_factor: Optional[float] = None
     skin_dose_gy: Optional[float] = None      # surface (~0.1 cm) shell dose
     skin_quality_factor: Optional[float] = None
+    skin_rel_err: Optional[float] = None
+    areal_gcm2: Optional[float] = None        # design wall areal density
+    kernel_wall_gcm2: Optional[float] = None  # the one wall R(E) was transported through
+
+    @property
+    def validity_note(self) -> str:
+        """Why the verdict is (not) a measurement for this wall; '' when calibrated."""
+        if self.calibrated:
+            return ""
+        ad, kw = self.areal_gcm2, self.kernel_wall_gcm2
+        if ad is None or kw is None:
+            return "design is outside the SPE kernel's calibration"
+        lo, hi = kw * (1 - SPE_KERNEL_WINDOW), kw * (1 + SPE_KERNEL_WINDOW)
+        head = (f"wall {ad:.0f} g/cm² is outside the SPE kernel's "
+                f"{lo:.0f}–{hi:.0f} g/cm² range (kernel transported through one "
+                f"{kw:.1f} g/cm² wall)")
+        if ad < kw:
+            return (head + "; protons below 430 MeV that cross this thinner wall are "
+                    "not in the kernel, so the dose is UNDERSTATED, possibly by "
+                    "orders of magnitude")
+        return (head + "; the thicker wall is folded as if it were the kernel wall, "
+                "so the dose is probably overstated (not verified)")
 
     @property
     def event_mgy(self) -> float:
@@ -1551,6 +1636,10 @@ class SPEAssessment:
         return self.event_msv / DOSE_LIMITS_MSV[limit_key]
 
     def verdict(self, limit_key: str = "nasa_30day") -> str:
+        # The fold is wall-independent (one kernel wall); off that wall the number
+        # is not a measurement of THIS design, so no verdict is issued.
+        if not self.calibrated:
+            return "NOT ASSESSED"
         f = self.fraction_of(limit_key)
         if f < 0.5:
             return "SAFE"
@@ -1561,6 +1650,9 @@ class SPEAssessment:
     def summary(self, limit_key: str = "nasa_30day") -> dict:
         return {
             "scenario": self.scenario_name,
+            "rel_err": None if self.rel_err is None else round(self.rel_err, 3),
+            "calibrated": self.calibrated,
+            "validity_note": self.validity_note,
             "event_mGy": round(self.event_mgy, 2),
             "event_mSv": round(self.event_msv, 1),
             "quality_factor": round(self.quality_factor, 2),
@@ -1618,6 +1710,9 @@ def assess_spe(result: RunResult, scenario: SPEScenario,
         bfo_quality_factor=(dn / dd) if dd else None,
         skin_dose_gy=sd,
         skin_quality_factor=(sn / sd) if sd else None,
+        skin_rel_err=(sd_sem / sd) if sd else None,
+        areal_gcm2=spec.areal_density_gcm2(),
+        kernel_wall_gcm2=_spe_kernel_wall_gcm2(),
     )
 
 

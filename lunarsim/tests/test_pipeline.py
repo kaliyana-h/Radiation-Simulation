@@ -15,6 +15,7 @@ No TOPAS, no G4 data, no network -- pure Python, sub-second. Physics validation
 file only asserts the interface computes what it claims.
 """
 
+import dataclasses
 import json
 import math
 import os
@@ -1235,10 +1236,12 @@ class TestGcrThinWallFold(unittest.TestCase):
         if not dosimetry._has_gcr_kernel("evasuit"):
             self.skipTest("EVA kernel not shipped on this machine yet")
         spec = eva_suit_spec()
-        self.assertEqual(dosimetry._gcr_calibration_material(spec), "evasuit")
-        self.assertTrue(dosimetry._gcr_thinwall_applies(spec))       # ~0.28 g/cm^2
-        self.assertTrue(dosimetry._gcr_thinwall_calibrated(spec))    # suit-family wall
-        a = dosimetry.assess_gcr_thinwall(spec, mission_days=365.0, phi_MV=400.0)
+        legacy = dataclasses.replace(dosimetry.current_model(), perelement="none")
+        with dosimetry.use_model(legacy):            # material kernels = 5-ion path
+            self.assertEqual(dosimetry._gcr_calibration_material(spec), "evasuit")
+            self.assertTrue(dosimetry._gcr_thinwall_applies(spec))   # ~0.28 g/cm^2
+            self.assertTrue(dosimetry._gcr_thinwall_calibrated(spec))  # suit-family wall
+            a = dosimetry.assess_gcr_thinwall(spec, mission_days=365.0, phi_MV=400.0)
         self.assertEqual(a.regime, "thinwall")
         self.assertGreater(a.annual_msv, 0.0)
         # per-species effective dose must sum to the headline (same invariant as Al)
@@ -1272,10 +1275,12 @@ class TestGcrThinWallFold(unittest.TestCase):
         # log-log inter-anchor interpolation does not commute with the organ sum.
         spec = HabitatSpec(name="poly", shape="dome", inner_radius_cm=750.0,
                            walls=[WallLayer("polyethylene", 2.025 / 0.94)])  # = 2.025 g/cm^2
-        self.assertEqual(dosimetry._gcr_calibration_material(spec), "polyethylene")
-        self.assertTrue(dosimetry._gcr_thinwall_applies(spec))
-        self.assertTrue(dosimetry._gcr_thinwall_calibrated(spec))    # poly-dominated wall
-        a = dosimetry.assess_gcr_thinwall(spec, mission_days=365.0, phi_MV=400.0)
+        legacy = dataclasses.replace(dosimetry.current_model(), perelement="none")
+        with dosimetry.use_model(legacy):            # material kernels = 5-ion path
+            self.assertEqual(dosimetry._gcr_calibration_material(spec), "polyethylene")
+            self.assertTrue(dosimetry._gcr_thinwall_applies(spec))
+            self.assertTrue(dosimetry._gcr_thinwall_calibrated(spec))  # poly-dominated wall
+            a = dosimetry.assess_gcr_thinwall(spec, mission_days=365.0, phi_MV=400.0)
         self.assertEqual(a.regime, "thinwall")
         self.assertGreater(a.annual_msv, 0.0)
         # per-species effective dose must sum to the headline (same invariant as Al)
@@ -1296,6 +1301,25 @@ class TestGcrThinWallFold(unittest.TestCase):
         self.assertFalse(dosimetry._gcr_thinwall_calibrated(spec))   # poly != aluminium
         a = dosimetry.assess_gcr_thinwall(spec, phi_MV=400.0)
         self.assertIsNotNone(a)
+
+    def test_perelement_kernel_flags_non_aluminium_walls_indicative(self):
+        """The per-element kernel is aluminium-only: under it a polyethylene or suit
+        wall folds on Al transport and must NOT be reported as material-calibrated
+        (review 2026-11-15). An aluminium wall stays calibrated."""
+        from lunarsim import dosimetry
+        from lunarsim.spec import eva_suit_spec
+        if not dosimetry._has_perelem_kernel():
+            self.skipTest("per-element kernel not present")
+        pe = dataclasses.replace(dosimetry.current_model(), perelement="perelement")
+        poly = HabitatSpec(name="poly", shape="dome", inner_radius_cm=750.0,
+                           walls=[WallLayer("polyethylene", 2.025 / 0.94)])
+        al = HabitatSpec(name="al", shape="dome", inner_radius_cm=750.0,
+                         walls=[WallLayer("aluminium", 2.025 / 2.7)])
+        with dosimetry.use_model(pe):
+            self.assertEqual(dosimetry._gcr_fold_material(poly), "aluminium")
+            self.assertFalse(dosimetry._gcr_thinwall_calibrated(poly))
+            self.assertFalse(dosimetry._gcr_thinwall_calibrated(eva_suit_spec()))
+            self.assertTrue(dosimetry._gcr_thinwall_calibrated(al))
 
     def test_eva_kernel_is_shell_corrected_composition(self):
         """Regression guard: the shipped EVA kernel must stay on the shell wall

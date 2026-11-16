@@ -28,8 +28,8 @@ Pass/flag per design (pooled over seed samples, dose-equivalent batch errors):
 Seeds: round k uses seed k+1+seed_offset; both arms of one sample use the same
 offset but sample differently, so they are treated as independent.
 
-TARGET-BLIND (geometry/direction only); CAL untouched; the default stays
-"equal" -- adopting "solidangle" is the user's decision.
+TARGET-BLIND (geometry/direction only); CAL untouched. The user adopted
+"solidangle" as the make_source default on 2026-11-15; "equal" is the legacy arm.
 
 Usage
 -----

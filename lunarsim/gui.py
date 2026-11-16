@@ -71,7 +71,8 @@ SITE_LABELS = {"mare": "Equatorial mare",
 # offered as free wall materials, so keep them out of the layer-material picker.
 MATERIAL_OPTIONS = [{"label": m.replace("_", " ").capitalize(), "value": m}
                     for m in MATERIALS if m not in SUIT_MATERIALS]
-VERDICT_COLOUR = {"SAFE": "#3fb950", "MARGINAL": "#d29922", "EXCEEDS LIMIT": ACCENT}
+VERDICT_COLOUR = {"SAFE": "#3fb950", "MARGINAL": "#d29922", "EXCEEDS LIMIT": ACCENT,
+                  "NOT ASSESSED": MUTED}
 
 # The headline score is compared against MORE THAN ONE agency limit, because a
 # career dose limit is a risk-policy choice, not a physical constant: the same
@@ -91,7 +92,7 @@ _PILL_BG = {"SAFE": "rgba(63,185,80,0.14)", "MARGINAL": "rgba(210,153,34,0.16)",
 # Every evaluation uses THESE settings, hidden from the student, so that two
 # teams' scores -- generated in separate sessions -- are on one comparable
 # scale and cannot be gamed. The graded number is the habitat-wide (wall-lining)
-# annual effective dose; converge it tightly since it is the official score.
+# annual dose equivalent (an effective-dose proxy); converge it tightly since it is the official score.
 SCORING_TIER = FULL_RUN
 SCORING_MISSION_DAYS = 365
 # Converge on BOTH the skin (wall-lining) dose -- the official score,
@@ -943,9 +944,12 @@ gcr_panel = html.Div(id="panel-gcr", style={"display": "none"}, children=[
     html.Div("GCR Environment", style={"color": INK, "fontSize": "15px",
                                        "fontWeight": 700, "marginBottom": "12px"}),
     html.Div(style=CARD, children=[
-        html.P("Source: force-field-modulated Local Interstellar Spectrum "
-               "(Usoskin 2005), sampled as an isotropic upper hemisphere at the "
-               "lunar surface and transported with FTFP_BERT_HP. The proton "
+        html.P("Source: Matthiä et al. (2013) per-element GCR model, its "
+               "modulation parameter W mapped from the selected solar potential φ, "
+               "sampled over the upper hemisphere (sky bands weighted by solid "
+               "angle) at the lunar surface and transported with FTFP_BERT_HP. "
+               "(The legacy force-field / Usoskin-2005 LIS path is kept only as the "
+               "'none' fallback.) The proton "
                "spectrum below is the reference; the scored run transports the "
                "full weighted GCR ion composition — protons plus the heavier ions "
                "(He, C, O … up to Fe), whose per-ion dose shares appear in the "
@@ -1721,9 +1725,11 @@ def _band_tooltip(band):
 
 def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
                 size_note=None, standards=SCORE_STANDARDS, context=None,
-                band=None):
-    """The headline the student records: habitat-wide annual effective dose,
-    compared against several agency career limits rather than NASA's alone.
+                band=None, quantity="annual dose equivalent"):
+    """The headline the student records: the habitat's annual dose (`quantity` names
+    it -- the thick-wall flood scores the habitat-lining dose equivalent H = Q.D, the
+    thin-wall fold an organ-weighted effective dose), compared against several agency
+    career limits rather than NASA's alone.
 
     The big number is neutral-coloured -- it is the model's physical result and
     carries no pass/fail. Verdict colour lives on the per-standard rows (see
@@ -1740,7 +1746,7 @@ def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
     style = dict(CARD)
     style.update({"borderLeft": f"4px solid {METRIC}", "background": "#161d27",
                   "padding": "18px"})
-    caption = "annual effective dose" + (f" · {qf_label}" if qf_label else "")
+    caption = quantity + (f" · {qf_label}" if qf_label else "")
     children = [
         html.Div("RADIATION PROTECTION SCORE", style={
             "color": MUTED, "fontSize": "11px", "letterSpacing": "0.8px",
@@ -1920,6 +1926,8 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
         qf_label = f"flat Q = {card_assess.quality_factor:g} (fallback)"
     return ([banner] if banner else []) + [
         _score_card(score, rel_txt, card_assess, qf_label=qf_label,
+                    quantity="annual dose equivalent at the habitat lining "
+                             "(effective-dose proxy)",
                     cmp_line=cmp_line, size_note=size_note, context=context,
                     band=systematic_band(job.spec.areal_density_gcm2(), "flood")),
         metric_card("Absorbed dose",
@@ -1961,8 +1969,8 @@ def _analysis_body(a, a_skin, s, job, a_skin_nasa=None):
     rows += [
         _kv("Crew-phantom dose (point, diagnostic)", phantom_pt),
         _kv("Absorbed dose rate", f"{s['dose_rate_uGy_per_day']:.3f} µGy/day"),
-        _kv("Equivalent dose rate", f"{aeq.equiv_rate_msv_day * 1000:.2f} µSv/day"),
-        _kv("Effective dose (mission)", f"{seq['mission_mSv']:.1f} mSv "
+        _kv("Dose-equivalent rate (H = Q·D)", f"{aeq.equiv_rate_msv_day * 1000:.2f} µSv/day"),
+        _kv("Dose equivalent (mission)", f"{seq['mission_mSv']:.1f} mSv "
             f"over {int(seq['mission_days'])} days"),
         _kv("Fraction of career limit", f"{seq['fraction_of_limit'] * 100:.1f} %"),
         _kv("Quality factor (mean, LET-weighted)", qf_txt),
@@ -2048,8 +2056,10 @@ def _thinwall_note(calibrated):
                 "the wall is too thin to build a full shower.")
     return ("#d29922",
             "Thin-wall regime, non-aluminium wall: folded on the aluminium transport "
-            "kernel, so the absolute dose is indicative — the regime is right, the "
-            "material scaling approximate.")
+            "kernel (the 10-ion per-element kernel exists only for aluminium), so the "
+            "absolute dose is indicative — the regime is right, the material scaling "
+            "approximate. For hydrogen-rich walls such as polyethylene the aluminium "
+            "proxy is expected to overstate the dose by a few to ~20%.")
 
 
 def _thinwall_metric_cards(a, job, calibrated):
@@ -2083,6 +2093,7 @@ def _thinwall_metric_cards(a, job, calibrated):
     return ([banner] if banner else []) + [
         _score_card(a.annual_msv, rel_txt, a,
                     qf_label="ICRP-60 Q(L) · thin-wall phantom-matched",
+                    quantity="annual effective dose (organ-weighted)",
                     cmp_line=None,
                     size_note=size_note,
                     context=headline_flags(job.spec.areal_density_gcm2(), "kernel",
@@ -2103,11 +2114,11 @@ def _thinwall_analysis_body(a, job, calibrated):
     calib_note = ("" if calibrated else
                   "  ⚠ non-aluminium wall — folded on the Al kernel, indicative only")
     return [
-        _kv("◆ PROTECTION SCORE (whole-body effective, ICRP-60 Q(L))",
+        _kv("◆ PROTECTION SCORE (organ-weighted effective dose, ICRP-60 Q(L))",
             f"{a.annual_msv:.1f} mSv/year{f' ± {a.rel_err:.0%}' if a.rel_err else ''}"),
         _kv("Verdict (career limit)", s["verdict"]),
         _kv("Absorbed dose rate", f"{a.dose_rate_ugy_day:.3f} µGy/day"),
-        _kv("Equivalent dose rate", f"{a.equiv_rate_msv_day * 1000:.2f} µSv/day"),
+        _kv("Effective dose rate (organ-weighted Q·D)", f"{a.equiv_rate_msv_day * 1000:.2f} µSv/day"),
         _kv("Effective dose (mission)", f"{s['mission_mSv']:.1f} mSv "
             f"over {int(s['mission_days'])} days"),
         _kv("Fraction of career limit", f"{s['fraction_of_limit'] * 100:.1f} %"),
@@ -2138,6 +2149,12 @@ def _spe_score_card(a):
     colour = VERDICT_COLOUR.get(verdict, METRIC)
     frac = a.fraction_of("nasa_30day") * 100
     rel = f" ± {a.rel_err:.0%}" if a.rel_err else ""
+    if a.calibrated:
+        verdict_line = (f"{verdict} · {frac:.0f}% of the "
+                        f"{DOSE_LIMITS_MSV['nasa_30day']:.0f} mSv 30-day BFO limit")
+    else:
+        verdict_line = (f"NOT ASSESSED · {a.validity_note}. The number is the "
+                        "kernel-wall fold, shown for reference only.")
     style = dict(CARD)
     style.update({"borderLeft": f"4px solid {colour}", "background": "#161d27",
                   "padding": "18px"})
@@ -2150,8 +2167,7 @@ def _spe_score_card(a):
             html.Span(f"{a.event_msv:.0f}", style={"color": colour, "fontSize": "42px",
                                                    "fontWeight": 900, "lineHeight": "1"}),
             html.Span(f"mSv / event{rel}", style={"color": INK, "fontSize": "14px"})]),
-        html.Div(f"{verdict} · {frac:.0f}% of the {DOSE_LIMITS_MSV['nasa_30day']:.0f} "
-                 "mSv 30-day BFO limit", style={
+        html.Div(verdict_line, style={
             "color": colour, "fontSize": "12px", "fontWeight": 700, "marginTop": "10px"}),
         html.Div(f"skin {a.skin_msv:.0f} mSv · {a.skin_msv / 1500 * 100:.0f}% of the "
                  "1500 mSv 30-day skin limit"
@@ -2180,13 +2196,13 @@ def _spe_analysis_body(a, job):
     verdict = s["verdict"]
     skin_line = (f"{a.skin_msv:.0f} mSv · {a.skin_msv / 1500 * 100:.1f}% of 1500 limit"
                  if a.skin_msv is not None else "n/a")
-    calib_note = ("" if a.calibrated else
-                  "  ⚠ design is off the kernel's shielded calibration; treat as indicative")
+    calib_note = "" if a.calibrated else f"  ⚠ {a.validity_note}"
+    skin_err = f" ± {a.skin_rel_err:.0%}" if a.skin_rel_err else ""
     return [
         _kv("◆ BFO EVENT DOSE-EQUIVALENT", f"{a.event_msv:.0f} mSv"
             f"{f' ± {a.rel_err:.0%}' if a.rel_err else ''}"),
         _kv("Verdict (30-day BFO limit)", verdict),
-        _kv("Skin dose-equivalent (event)", skin_line),
+        _kv("Skin dose-equivalent (event)", skin_line + skin_err),
         _kv("Absorbed dose, BFO (event)", f"{a.event_mgy:.1f} mGy"),
         _kv("Quality factor, BFO (NASA/Cucinotta)", f"{a.quality_factor:.2f}"),
         _kv("Fraction of 30-day BFO limit", f"{s['fraction_of_limit'] * 100:.1f} %"),
@@ -2201,7 +2217,13 @@ def _spe_analysis_body(a, job):
                  "direct phantom MC is rare-tail-starved; the dose is instead folded from "
                  "the event's proton spectrum against a precomputed shielded response "
                  "kernel R(E) (per-depth, per-organ NASA/ICRP quality factors baked in). "
-                 "BFO is the deep (~5 cm) shell; skin is the surface shell.",
+                 "BFO is the deep (~5 cm) shell; skin is the surface shell. "
+                 "Limits of this estimate: the kernel was transported through ONE "
+                 f"{a.kernel_wall_gcm2 or 147.5:.1f} g/cm² wall, so other walls get no "
+                 "verdict; event spectra are single-exponential in rigidity and lack "
+                 "the hard tail of modern Band fits (Koldobskiy et al. 2021), so the "
+                 "shielded dose may be understated; the ± is the kernel's Monte-Carlo "
+                 "error only.",
                  style={"color": MUTED, "fontSize": "10px",
                         "marginTop": "12px", "fontStyle": "italic"}),
     ]
@@ -2320,9 +2342,10 @@ def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
               f"- 30-day BFO limit: {s['limit_mSv']:.0f} mSv "
               f"({s['fraction_of_limit'] * 100:.1f}% used)",
               f"- **Verdict: {s['verdict']}**",
+              f"- MC error (kernel statistics only): "
+              + (f"±{spe.rel_err:.0%}" if spe.rel_err else "n/a"),
               f"- Method: response-kernel fold (variance-reduced)"
-              + ("" if spe.calibrated else
-                 "  ⚠ off shielded calibration — indicative only")]
+              + ("" if spe.calibrated else f"  ⚠ {spe.validity_note}")]
 
     return "\n".join(L)
 

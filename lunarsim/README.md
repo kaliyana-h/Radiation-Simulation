@@ -6,7 +6,7 @@ missions and for early concept-design comparisons. Galactic cosmic rays (GCR) an
 a solar particle event (SPE) are transported with Geant4 (through TOPAS), or
 folded through precomputed Geant4 response kernels. The tool reports:
 
-- annual GCR effective dose in mSv/yr
+- annual GCR dose in mSv/yr (organ-weighted effective dose for thin walls; habitat-lining dose equivalent H = Q·D, an effective-dose proxy, behind thick shielding)
 - the acute dose from an SPE
 - an honest uncertainty statement
 

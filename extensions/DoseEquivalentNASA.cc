@@ -28,7 +28,9 @@
 //   Q = (1 - P) + (X / L) * P
 //   P = [1 - exp(-(Z*^2/beta^2) / kappa)]^m * [1 - exp(-E/0.2)]
 //   X = 6.24 * (Sigma0/alpha_gamma) = 7000 keV/um   (solid cancer; leukaemia = 1750)
-//   kappa = 1000 (Z <= 4), 500 (Z > 4);   m = 3
+//   kappa = 1000 (Z <= 4), 550 (Z > 4);   m = 3
+//   (Table 5.7, NASA/TP-2013-217375 p.131; was 500 until 2026-11-16 -- a
+//    transcription error that over-read Q_NASA ~4-22% for Z > 4 ions)
 //   Z* = Z [1 - exp(-125 beta Z^(-2/3))]   (Barkas effective charge)
 //   E  = kinetic energy per nucleon in MeV/u;   L = LET in keV/um
 //
@@ -68,7 +70,7 @@ namespace {
 		G4double zeb2 = (zEff * zEff) / beta2;                        // (Z*/beta)^2
 
 		// track-structure probability P_{Z,E}
-		const G4double kappa = (z <= 4) ? 1000.0 : 500.0;
+		const G4double kappa = (z <= 4) ? 1000.0 : 550.0;   // TP-2013-217375 Table 5.7
 		const G4double m     = 3.0;
 		G4double P = std::pow(1.0 - std::exp(-zeb2 / kappa), m)
 					 * (1.0 - std::exp(-ePerNuc / 0.2));
