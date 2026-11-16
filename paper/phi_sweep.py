@@ -153,14 +153,15 @@ def field_only(phis) -> int:
     print(f"\nsolar-min:solar-max swing ({lo_phi:g} -> {hi_phi:g} MV):")
     print(f"  proton flux   : {flux_lo / flux_hi:.2f}x")
     print(f"  dose-eq proxy : {deq_lo / deq_hi:.2f}x")
-    print(f"\nposted deep-space SHIELDED GCR dose-equivalent cycle swing (PRINTED "
-          f"reference, not a target): ~{_LIT_SWING_LO:g}-{_LIT_SWING_HI:g}x")
+    print(f"\nrough free-space/thin-shield GCR dose-equivalent cycle swing (PRINTED, "
+          f"UNSOURCED, not a target): ~{_LIT_SWING_LO:g}-{_LIT_SWING_HI:g}x; "
+          "expected lower behind thick shielding")
     print("READ (field-only screen): the FREE-FIELD swing is EXPECTED to sit ABOVE the "
           "shielded\n  band, not inside it -- the integral reaches down to "
           f"{ms._MAT_EMIN:g} MeV/n, and the low-energy\n  ions it includes are both the "
           "most heavily modulated by phi AND the first stripped by\n  shielding.  "
-          "Transport therefore COMPRESSES the swing toward the ~2-2.5x band (confirmed\n"
-          "  with --run).  What this screen proves: the source knob moves monotonically "
+          "Transport therefore COMPRESSES the swing (--run at 54 g/cm^2 Al gave 1.59x\n"
+          "  on 2026-11-16).  What this screen proves: the source knob moves monotonically "
           "and by a\n  physically large factor (here ~3x), so the exposed phi control is "
           "wired correctly end\n  to end.  The flux and LET*Q swings track closely "
           "because the composition shape is\n  near-rigidity-universal; the transported "
@@ -230,8 +231,8 @@ def run_mc(phis, rel_err: float, max_batches: int, min_batches: int,
     print(f"\nwrote {out_csv}")
     print(f"transported solar-min:solar-max effective-dose swing "
           f"({lo_phi:g} -> {hi_phi:g} MV): {swing:.2f}x")
-    print(f"posted deep-space reference (PRINTED, not a target): "
-          f"~{_LIT_SWING_LO:g}-{_LIT_SWING_HI:g}x")
+    print(f"rough free-space/thin-shield reference (PRINTED, UNSOURCED, not a target): "
+          f"~{_LIT_SWING_LO:g}-{_LIT_SWING_HI:g}x -- a thick wall should swing LESS")
     return 0
 
 
@@ -250,6 +251,9 @@ def main(argv=None) -> int:
                     help="Mode 2 output CSV (default paper/phi_sweep_mc.csv -- the "
                          "committed baseline; pass a runs/ path for what-if runs)")
     args = ap.parse_args(argv)
+    # Hours-long --run output is usually piped through tee; line-buffer so progress
+    # shows as it happens instead of only at exit.
+    sys.stdout.reconfigure(line_buffering=True)
 
     if args.phis:
         phis = [float(x) for x in args.phis.split(",") if x.strip()]

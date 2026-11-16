@@ -37,6 +37,20 @@ class SolarPhaseMapping(unittest.TestCase):
         self.assertLess(w[1], w[2])
         self.assertGreater(w[1], 20.0)   # was 3 under the energy form (unmodulated)
 
+    def test_W_map_matches_high_energy_swing(self):
+        """2026-11-17: W is set by the >1 GeV proton-flux swing, not spectral shape
+        (the shape fit gave W 90 at phi 1100 and under-modulated solar max)."""
+        ms = _ms()
+        self.assertEqual([ms.matthia_W_for_phi(p) for p in (400.0, 650.0, 1100.0)],
+                         [4.0, 63.0, 122.0])
+        for phi in (650.0, 1100.0):
+            ff = (ms._proton_integral_above(lambda e: ms._forcefield_proton_rig(e, 400.0), 1000.0)
+                  / ms._proton_integral_above(lambda e: ms._forcefield_proton_rig(e, phi), 1000.0))
+            W0, W = ms.matthia_W_for_phi(400.0), ms.matthia_W_for_phi(phi)
+            mat = (ms._proton_integral_above(lambda e: ms.mattia_flux(1, e, W0), 1000.0)
+                   / ms._proton_integral_above(lambda e: ms.mattia_flux(1, e, W), 1000.0))
+            self.assertLess(abs(mat / ff - 1.0), 0.03)
+
     def test_kernel_abundances_follow_phi(self):
         """The per-element kernel fold re-derives abundances at the requested phi, so
         solar max lowers the thin-wall dose more than the shape alone would."""

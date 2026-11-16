@@ -1242,8 +1242,8 @@ def fold_gcr_thinwall(spec, phi_MV: float = 400.0, material: Optional[str] = Non
     anchors. Interpolation is geometric in log(areal density) — dose falls off with
     shielding as a power law, so a log-log fit tracks the physics far better than a
     straight line. It does NOT make the hand-off to the flood seamless: the measured
-    kernel->flood step at the ~19 g/cm2 gate is ~1.2x (measured 2026-11-05 after
-    the 20 GeV/n tail promotion; headline_context.GATE_STEP, areal_density_confidence). (Zero-valued endpoints, e.g. a penetration-gated node,
+    kernel->flood step at the ~19 g/cm2 gate is ~1.2x (1.18, re-measured 2026-11-16
+    after the tail promotion and phi->W/spectrum-grid fixes; headline_context.GATE_STEP, areal_density_confidence). (Zero-valued endpoints, e.g. a penetration-gated node,
     fall back to linear.) Below the thinnest / above the thickest anchor it clamps to
     the end anchor (the regime gate keeps callers inside the measured band). Returns
     the whole-body effective absorbed rate (Gy/s), effective dose-eq rate (Sv/s) and
@@ -1357,9 +1357,10 @@ def areal_density_confidence(ad_gcm2: float) -> dict:
                        full composition): skin 218.4 mSv/yr = 0.96x OLTARIS,
                        phantom 203.6 +/-12% = 0.89x. So crossing the gate the
                        headline steps UP ~1.2x (GATE_STEP), from an optimistic
-                       kernel to a near-OLTARIS flood. Both sides predate the
-                       2026-11-16 phi->W and spectrum-grid fixes (flood ~2-4% lower
-                       at phi=400); re-measure before quoting. (The old "kernel 0.52x vs flood 2.6x,
+                       kernel to a near-OLTARIS flood. Flood re-measured
+                       2026-11-16 after the phi->W and spectrum-grid fixes: skin
+                       215.5 (19) / 206.3 (54) mSv/yr, step 1.18; the kernel at
+                       phi=400 is unchanged by those fixes. (The old "kernel 0.52x vs flood 2.6x,
                        2-3x off" figures predate the 2026-10 fixes and are retired.)
 
     Returns {level, label, message} for a GUI banner. Purely advisory -- it

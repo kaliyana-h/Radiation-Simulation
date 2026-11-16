@@ -274,29 +274,36 @@ def _mattia_group_integral(rep_z, W, emin, emax, n):
     return tot
 
 
-@functools.lru_cache(maxsize=64)
-def matthia_W_for_phi(phi_MV):
-    """Map the tool's force-field modulation phi (MV) to the Matthiae solar
-    parameter W by matching the Matthiae proton spectral SHAPE to the tool's own
-    Burger/Usoskin + force-field proton spectrum at phi (flux<->flux over
-    100 MeV..10 GeV, NOT a dose target). ALWAYS uses the RIGIDITY form of the
-    Burger/Usoskin LIS (the cited, correct form), whatever GCR_LIS_VAR is: W is a
-    physical solar-modulation level and must be the same for the flood and kernel
-    engines. (Until 2026-11-16 it honoured GCR_LIS_VAR, so the flood -- pinned to
-    the legacy "energy" form -- mapped phi 400/650/1100 to W 0/3/61 instead of
-    4/49/90 and was left almost unmodulated at solar mean.) Returns the best-fit
-    integer W in [0, 200]. (phi=400 MV -> W=4, consistent with phi=400 ~ solar min
-    and the Matthiae W<->Oulu relation giving W~1-5 at solar min.)"""
-    es = [100.0 * (10000.0 / 100.0) ** (k / 20) for k in range(21)]
+W_REF_PHI_MV = 400.0      # anchor phase (solar min) for the phi -> W swing match
+W_SWING_CUT_MEV = 1000.0  # proton energy floor of the swing-match integral
+
+
+def _forcefield_proton_rig(e_mev, phi_MV):
+    """Tool's Burger/Usoskin LIS (RIGIDITY form, fixed regardless of GCR_LIS_VAR)
+    force-field modulated to phi -- the reference spectrum the W map matches."""
     mp_GeV = E0_PROTON / 1000.0
-    def lis_rig(T_GeV):                       # lis_proton, rigidity form, fixed
-        P_GV = math.sqrt(T_GeV * (T_GeV + 2.0 * mp_GeV))
-        return 1.9e4 * P_GV ** (-2.78) / (1.0 + 0.4866 * P_GV ** (-2.51))
-    def tool_p(e):                            # proton Phi=(1/1)*phi
-        Tm = e + phi_MV
-        factor = (e * (e + 2.0 * E0_PROTON)) / (Tm * (Tm + 2.0 * E0_PROTON))
-        return lis_rig(Tm / 1000.0) * factor
-    ltp = [math.log(tool_p(e)) for e in es]
+    Tm = e_mev + phi_MV
+    T_GeV = Tm / 1000.0
+    P_GV = math.sqrt(T_GeV * (T_GeV + 2.0 * mp_GeV))
+    lis = 1.9e4 * P_GV ** (-2.78) / (1.0 + 0.4866 * P_GV ** (-2.51))
+    return lis * (e_mev * (e_mev + 2.0 * E0_PROTON)) / (Tm * (Tm + 2.0 * E0_PROTON))
+
+
+def _proton_integral_above(f, cut_mev, emax_mev=1e5, n=300):
+    es = [cut_mev * (emax_mev / cut_mev) ** (k / n) for k in range(n + 1)]
+    return sum(0.5 * (f(a) + f(b)) * (b - a) for a, b in zip(es, es[1:]))
+
+
+@functools.lru_cache(maxsize=4)
+def _matthia_W_ref():
+    """W of the anchor phase (phi = W_REF_PHI_MV) from a mean-subtracted log-SHAPE
+    fit of the Matthiae proton spectrum to the force-field one over 100 MeV-10 GeV.
+    Gives W=4 at phi=400, consistent with Matthiae's W~0 at the Dec-2009 minimum.
+    The shape fit is used ONLY for this anchor: it ignores the flux drop between
+    phases, so used at every phi (the pre-2026-11-17 map) it under-modulated solar
+    max (phi 1100 -> W 90 instead of ~122)."""
+    es = [100.0 * (10000.0 / 100.0) ** (k / 20) for k in range(21)]
+    ltp = [math.log(_forcefield_proton_rig(e, W_REF_PHI_MV)) for e in es]
     mtp = sum(ltp) / len(ltp)
     best_err, best_W = float("inf"), 0
     for Wi in range(201):
@@ -305,6 +312,44 @@ def matthia_W_for_phi(phi_MV):
         err = sum(((lm[i] - mm) - (ltp[i] - mtp)) ** 2 for i in range(len(es)))
         if err < best_err:
             best_err, best_W = err, Wi
+    return float(best_W)
+
+
+@functools.lru_cache(maxsize=4)
+def _matthia_swing_table():
+    """Matthiae proton integral above W_SWING_CUT_MEV, relative to W_ref, for
+    integer W in [0, 200] (monotone decreasing in W)."""
+    W_ref = _matthia_W_ref()
+    ref = _proton_integral_above(lambda e: mattia_flux(1, e, W_ref), W_SWING_CUT_MEV)
+    return tuple(
+        _proton_integral_above(lambda e, W=float(Wi): mattia_flux(1, e, W),
+                               W_SWING_CUT_MEV) / ref
+        for Wi in range(201))
+
+
+@functools.lru_cache(maxsize=64)
+def matthia_W_for_phi(phi_MV):
+    """Map the tool's force-field modulation phi (MV) to the Matthiae solar
+    parameter W by matching the SOLAR-CYCLE SWING of the proton flux above
+    1 GeV (the energies that drive dose behind thick walls): W is chosen so that
+    J_Matthiae(>1 GeV; W) / J_Matthiae(>1 GeV; W_ref) equals
+    J_ff(>1 GeV; phi) / J_ff(>1 GeV; 400 MV), with W_ref = 4 at phi = 400 from a
+    spectral-shape fit (see _matthia_W_ref). Flux<->flux, NOT a dose target.
+    The match is insensitive to the cut (0.1/0.5/1/3 GeV give W 118-125 at
+    phi 1100). Result: phi 400/650/1100 -> W 4/63/122, consistent with Matthiae's
+    own convention (W=0 Dec-2009 minimum, W=150 the 1990 extreme maximum).
+    History: until 2026-11-17 the shape fit was used at every phi (W 4/49/90),
+    which discards the flux drop between phases and under-modulated solar max
+    (thick-wall swing 1.59x vs ~1.9-2.3 free-space literature, TP-3682/Liu 2025);
+    until 2026-11-16 it also honoured GCR_LIS_VAR (W 0/3/61 for the flood).
+    Always uses the RIGIDITY-form LIS so flood and kernel share one W.
+    Returns an integer-valued W in [0, 200]."""
+    target = (_proton_integral_above(lambda e: _forcefield_proton_rig(e, phi_MV),
+                                     W_SWING_CUT_MEV)
+              / _proton_integral_above(lambda e: _forcefield_proton_rig(e, W_REF_PHI_MV),
+                                       W_SWING_CUT_MEV))
+    table = _matthia_swing_table()
+    best_W = min(range(len(table)), key=lambda Wi: abs(math.log(table[Wi] / target)))
     return float(best_W)
 
 
