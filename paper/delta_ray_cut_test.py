@@ -32,6 +32,13 @@ line is spliced exactly as paper/fragmentation_sensitivity.py splices it. Config
            identical. Gamma/positron cuts in the region are set explicitly to
            0.05 mm, the value the guide says the region assigns by default.
 The ONLY difference between modular and nodelta is the electron cut inside the phantom.
+Diagnostic arms (added 2026-11-17 after the first H+Fe run gave D nodelta/modular = 5.0,
+i.e. the precondition FAILED):
+  region   same region block, CutForElectron = 0.05 mm (= default) -> does the region
+           ITSELF change D? (should be 1.00)
+  cut1mm   CutForElectron = 1 mm (~350 keV in water) -> does D drift with the cut size?
+Use --nodes H:4,Fe:5 to run only a few nodes with more seeds. The per-node table shows
+D_cfg / D_modular (or vs the first config) and Q = I/D for every config.
 
 Syntax was checked against the TOPAS user guide (Physics > Modular physics lists:
 "s:Ge/MyComponent/AssignToRegionNamed", "d:Ph/Default/ForRegion/MyRegion/CutForElectron";
@@ -104,6 +111,23 @@ def region_cut_lines(shell_names: list[str], e_cut: str = NODELTA_E_CUT) -> list
     return L
 
 
+def parse_nodes(spec: str, meta: dict):
+    """'H:4,Fe:5' -> {('H', 4), ('Fe', 5)}; '' -> None (all nodes)."""
+    if not spec.strip():
+        return None
+    out = set()
+    for tok in spec.split(","):
+        sp, _, idx = tok.strip().partition(":")
+        if sp not in meta or not idx.isdigit() or int(idx) >= len(meta[sp]["nodes_pernuc_mev"]):
+            raise SystemExit(f"bad --nodes entry {tok!r} (species in --species, valid index)")
+        out.add((sp, int(idx)))
+    return out
+
+
+def selected(only, species: str, node: int) -> bool:
+    return only is None or (species, node) in only
+
+
 def config_block(cfg: str, shell_names: list[str]) -> list[str]:
     if cfg == "ftfp":
         return [fs._PHYS_TARGET]
@@ -111,10 +135,14 @@ def config_block(cfg: str, shell_names: list[str]) -> list[str]:
         return fs._modular("g4ion")
     if cfg == "nodelta":
         return fs._modular("g4ion") + region_cut_lines(shell_names)
+    if cfg == "region":     # region exists, every cut = default -> isolates the region itself
+        return fs._modular("g4ion") + region_cut_lines(shell_names, REGION_OTHER_CUT)
+    if cfg == "cut1mm":     # intermediate electron cut (~350 keV in water)
+        return fs._modular("g4ion") + region_cut_lines(shell_names, "1 mm")
     raise ValueError(f"unknown config {cfg!r}; choose from {CONFIGS}")
 
 
-CONFIGS = ("ftfp", "modular", "nodelta")
+CONFIGS = ("ftfp", "modular", "nodelta", "region", "cut1mm")
 
 
 def build_text(cfg: str, material: str, wall: float, species: str, node: int,
@@ -173,6 +201,9 @@ def main(argv=None) -> None:
     p.add_argument("--threads", type=int, default=0)
     p.add_argument("--phi-mv", type=float, default=400.0)
     p.add_argument("--report-organ", default="mid")
+    p.add_argument("--nodes", default="",
+                   help="restrict to species:node-index pairs, e.g. 'H:4,Fe:5' "
+                        "(diagnostic; folded numbers then NOT valid)")
     p.add_argument("--force", action="store_true")
     args = p.parse_args(argv)
 
@@ -195,6 +226,9 @@ def main(argv=None) -> None:
         if badsp:
             raise SystemExit(f"unknown species {badsp}; choose from {list(meta_all)}")
         meta, subset = {s: meta_all[s] for s in want}, True
+    only = parse_nodes(args.nodes, meta)
+    if only is not None:
+        subset = True
     organs = config.organs_from_reference()
     organ_names = [o for o, _ in organs]
     if args.report_organ not in organ_names:
@@ -202,7 +236,8 @@ def main(argv=None) -> None:
     base = Path(args.outdir).resolve()
     base.mkdir(parents=True, exist_ok=True)
 
-    n_runs = sum(len(m["nodes_pernuc_mev"]) for m in meta.values()) * args.seeds
+    n_runs = sum(1 for sn, m in meta.items() for j in range(len(m["nodes_pernuc_mev"]))
+                 if selected(only, sn, j)) * args.seeds
     print("=" * 78)
     print("DELTA-RAY PRODUCTION-CUT A/B  (scorer-convention systematic; TARGET-BLIND)")
     print("=" * 78)
@@ -218,6 +253,8 @@ def main(argv=None) -> None:
         t0, ok, fail = time.time(), 0, 0
         for sname, m in meta.items():
             for j in range(len(m["nodes_pernuc_mev"])):
+                if not selected(only, sname, j):
+                    continue
                 for seed in range(1, args.seeds + 1):
                     rd = fs._run_dir(base, cfg, sname, j, seed)
                     if _run_one(rd, cfg, args.material, args.areal, sname, j, seed,
@@ -255,30 +292,30 @@ def main(argv=None) -> None:
               "  (control ~ production check)")
 
     org = args.report_organ
-    print(f"\n  PER-NODE '{org}' organ: Q-bar = I/D per config; last cols nodelta/modular")
-    hdr = f"   {'sp':>3} {'E MeV/n':>8}" + "".join(f"{c:>9}" for c in cfgs)
-    pair = "modular" in res and "nodelta" in res
-    if pair:
-        hdr += f"{'D ratio':>14}{'Q ratio':>9}"
+    ref = "modular" if "modular" in res else cfgs[0]
+    print(f"\n  PER-NODE '{org}' organ.  D: absorbed vs '{ref}' (±1 sigma from seed scatter);"
+          f"  Q: I/D")
+    hdr = f"   {'sp':>3} {'E MeV/n':>8}"
+    for cfg in cfgs:
+        hdr += f"  {cfg + ' D':>16} {'Q':>6}"
     print(hdr)
     rows = []
     for sname, m in meta.items():
         for j, e in enumerate(m["nodes_pernuc_mev"]):
+            if not selected(only, sname, j):
+                continue
+            Rr = res[ref]["point"]["species"][sname]
             line = f"   {sname:>3} {e:>8.0f}"
             for cfg in cfgs:
-                R = res[cfg]["point"]["species"][sname]["R"][org]
-                line += (f"{R['I'][j]/R['D'][j]:>9.2f}" if R["D"][j] > 0 else f"{'--':>9}")
-            if pair:
-                Ra = res["nodelta"]["point"]["species"][sname]
-                Rb = res["modular"]["point"]["species"][sname]
-                dr, dre = ratio_and_err(Ra["R"][org]["D"][j], Ra["Rsem"][org]["D"][j],
-                                        Rb["R"][org]["D"][j], Rb["Rsem"][org]["D"][j])
-                qa = Ra["R"][org]["I"][j] / Ra["R"][org]["D"][j] if Ra["R"][org]["D"][j] else float("nan")
-                qb = Rb["R"][org]["I"][j] / Rb["R"][org]["D"][j] if Rb["R"][org]["D"][j] else float("nan")
-                line += f"{dr:>8.3f}±{dre:<5.3f}{qa/qb:>9.3f}"
-                rows.append({"species": sname, "E_MeV_n": e, "organ": org,
-                             "D_ratio": f"{dr:.4f}", "D_ratio_err": f"{dre:.4f}",
-                             "Q_ratio": f"{qa/qb:.4f}"})
+                Rc = res[cfg]["point"]["species"][sname]
+                d, sd = Rc["R"][org]["D"][j], Rc["Rsem"][org]["D"][j]
+                dr, dre = ratio_and_err(d, sd, Rr["R"][org]["D"][j], Rr["Rsem"][org]["D"][j])
+                q = Rc["R"][org]["I"][j] / d if d > 0 else float("nan")
+                line += f"  {dr:>9.3f}±{dre:<6.3f} {q:>6.2f}"
+                rows.append({"config": cfg, "species": sname, "E_MeV_n": e, "organ": org,
+                             "D_R": f"{d:.6g}", "D_Rsem": f"{sd:.6g}",
+                             "D_vs_ref": f"{dr:.4f}", "D_vs_ref_err": f"{dre:.4f}",
+                             "Qbar": f"{q:.4f}"})
             print(line)
 
     with open(CSV_PATH, "w", newline="") as fh:

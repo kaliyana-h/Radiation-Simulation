@@ -59,6 +59,28 @@ class DeltaRayHarness(unittest.TestCase):
             self.assertEqual(t.count('s:Ph/Default/Type = "Geant4_Modular"'), 1)
             self.assertIn('"g4ion"', t)
 
+    def test_diagnostic_arms_differ_only_in_electron_cut(self):
+        mod = _text("modular").splitlines()
+        shells = [s[0] for s in config.SHELLS]
+        for cfg, cut in (("region", drt.REGION_OTHER_CUT), ("cut1mm", "1 mm")):
+            t = _text(cfg).splitlines()
+            self.assertEqual([ln for ln in mod if ln not in t], [])
+            self.assertEqual([ln for ln in t if ln not in mod],
+                             drt.region_cut_lines(shells, cut))
+            self.assertIn(f"ForRegion/{drt.REGION}/CutForElectron = {cut}", "\n".join(t))
+
+    def test_parse_nodes(self):
+        meta = {"H": {"nodes_pernuc_mev": [1, 2, 3]}, "Fe": {"nodes_pernuc_mev": [1, 2]}}
+        self.assertIsNone(drt.parse_nodes("", meta))
+        only = drt.parse_nodes("H:2, Fe:0", meta)
+        self.assertEqual(only, {("H", 2), ("Fe", 0)})
+        self.assertTrue(drt.selected(only, "H", 2))
+        self.assertFalse(drt.selected(only, "H", 1))
+        self.assertTrue(drt.selected(None, "Fe", 1))
+        for bad in ("He:0", "H:3", "H", "Fe:x"):
+            with self.assertRaises(SystemExit):
+                drt.parse_nodes(bad, meta)
+
     def test_ratio_error(self):
         r, e = drt.ratio_and_err(2.0, 0.2, 1.0, 0.1)
         self.assertAlmostEqual(r, 2.0)
