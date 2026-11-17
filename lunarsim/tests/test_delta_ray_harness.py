@@ -81,6 +81,19 @@ class DeltaRayHarness(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 drt.parse_nodes(bad, meta)
 
+    def test_energy_balance_incident_and_masses(self):
+        spec = importlib.util.spec_from_file_location(
+            "delta_ray_energy_balance", _REPO_ROOT / "paper" / "delta_ray_energy_balance.py")
+        eb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(eb)
+        t = _text("nodelta")
+        n_src = t.count("/NumberOfHistoriesInRun")
+        self.assertGreater(n_src, 0)
+        self.assertGreater(eb.incident_mev(t), 0.0)
+        m = eb.shell_masses_kg()
+        self.assertAlmostEqual(sum(m.values()),            # nested shells tile the sphere
+                               1e-3 * 4 / 3 * 3.141592653589793 * 15.0 ** 3, places=9)
+
     def test_ratio_error(self):
         r, e = drt.ratio_and_err(2.0, 0.2, 1.0, 0.1)
         self.assertAlmostEqual(r, 2.0)
