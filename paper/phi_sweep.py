@@ -7,8 +7,9 @@ solar-MINIMUM, maximum-GCR, worst-case phase (make_source --phi, RunTier.phi_mv,
 dosimetry phi_MV).  Over the ~11 yr solar cycle the GCR flux is throttled by the
 heliospheric field: low phi (~400 MV) at solar minimum lets the full GCR flux in;
 high phi (~1100 MV) at solar maximum suppresses it, with the deep-space GCR
-dose-equivalent swinging roughly 2-2.5x between the two phases (e.g. CRaTER/LRO and
-HZETRN/OLTARIS cycle studies).  The GUI now EXPOSES phi (Solar Cycle Phase selector,
+dose-equivalent swinging roughly 2-2.5x between the two phases in free space at
+thin shielding (an unsourced rule of thumb; behind ~50 g/cm^2 Al the sourced
+free-space swing is ~1.9-2.26x, see _THICK_SWING_LO/HI).  The GUI now EXPOSES phi (Solar Cycle Phase selector,
 default 400); this script validates that the exposed knob moves the dose the way the
 heliophysics says it should, so the control is defensible in the paper.
 
@@ -28,9 +29,11 @@ Two modes:
     phi scales it cleanly -- a 3 m dome with a 20 cm aluminium wall ~ 54 g/cm^2,
     matching the OLTARIS cross-check design), loop phi in {400, 650, 1100}, run the
     full composition to convergence at each, assess the annual effective (skin),
-    absorbed, and Q-bar, write a CSV, and print the min:max ratio next to the posted
-    ~2-2.5x literature band (a PRINTED reference only -- it is never a fit target and
-    never touches the physics).
+    absorbed, and Q-bar, write a CSV, and print the min:max ratio next to the sourced
+    free-space ~50 g/cm^2 Al band ~1.9-2.26x (Liu 2025 Geant4; NASA TP-3682 HZETRN),
+    an UPPER bound for the lunar 2 pi geometry (a PRINTED reference only -- it is
+    never a fit target and never touches the physics).  2026-11-17 PC run, after the
+    phi->W swing-match fix: 207.9 / 159.6 / 107.7 mSv/yr at 400/650/1100 MV = 1.93x.
 
 TARGET-BLIND: no dose value, limit, or external code is used as an input or target
 anywhere.  Literature ratios appear only in a final printed comparison line.
@@ -63,6 +66,12 @@ _MN_MEV = 938.272          # per-nucleon rest energy
 
 # Posted deep-space GCR dose-equivalent cycle swing, PRINTED reference only.
 _LIT_SWING_LO, _LIT_SWING_HI = 2.0, 2.5
+# Sourced THICK-shield (~50 g/cm^2 Al) dose-equivalent cycle swing, free space (4 pi),
+# PRINTED reference only for --run: Liu 2025 Geant4 phi 400/1000 MV ~1.9-2.0 (read off
+# the figure) and NASA TP-3682 HZETRN solar min 1977 / max 1970, H swing 2.26.  The
+# lunar surface sees a 2 pi sky plus albedo, which should swing somewhat LESS, so this
+# band is an UPPER bound for the tool's number, not a target.
+_THICK_SWING_LO, _THICK_SWING_HI = 1.9, 2.26
 
 _PHASE = {400: "solar minimum (worst case)", 650: "cycle mean", 1100: "solar maximum"}
 
@@ -231,8 +240,9 @@ def run_mc(phis, rel_err: float, max_batches: int, min_batches: int,
     print(f"\nwrote {out_csv}")
     print(f"transported solar-min:solar-max effective-dose swing "
           f"({lo_phi:g} -> {hi_phi:g} MV): {swing:.2f}x")
-    print(f"rough free-space/thin-shield reference (PRINTED, UNSOURCED, not a target): "
-          f"~{_LIT_SWING_LO:g}-{_LIT_SWING_HI:g}x -- a thick wall should swing LESS")
+    print(f"free-space ~50 g/cm^2 Al reference (PRINTED, not a target; Liu 2025 Geant4 "
+          f"/ NASA TP-3682 HZETRN): ~{_THICK_SWING_LO:g}-{_THICK_SWING_HI:g}x -- an UPPER "
+          "bound: the lunar 2 pi sky + albedo should swing somewhat less")
     return 0
 
 
