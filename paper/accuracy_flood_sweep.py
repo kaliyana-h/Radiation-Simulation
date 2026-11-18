@@ -68,7 +68,7 @@ GATE_GCM2 = 19.0
 FLOOD_GRID_GCM2 = [19.0, 25.0, 30.0, 40.0, 50.0, 54.0]
 CSV_PATH = HERE / "accuracy_al_flood.csv"
 CSV_FIELDS = ["areal_gcm2", "al_cm", "flood_eff_mSv_yr", "flood_skin_mSv_yr", "note",
-              "provenance"]
+              "provenance", "flood_eff_nasa_mSv_yr", "flood_skin_nasa_mSv_yr"]
 
 
 def _load_csv() -> dict[float, dict]:
@@ -122,6 +122,14 @@ def _run_depth(gcm2: float, run_dir: Path, tier, args) -> dict:
                                           phi_MV=tier.phi_mv, skin=True,
                                           model=comp.model)
     eff, skin = a_phan.annual_msv, a_skin.annual_msv
+    # NASA/Cucinotta Q twins of the same two scorers (same transport, only Q differs).
+    nasa = {}
+    for col, is_skin in (("flood_eff_nasa_mSv_yr", False), ("flood_skin_nasa_mSv_yr", True)):
+        a_n = dosimetry.assess_composition(comp.species_results, phi_MV=tier.phi_mv,
+                                           skin=is_skin, qf="nasa", model=comp.model)
+        nasa[col] = f"{a_n.annual_msv:.1f}" if a_n is not None else ""
+    print(f"      -> NASA-Q: phantom {nasa['flood_eff_nasa_mSv_yr'] or '--'}, "
+          f"skin {nasa['flood_skin_nasa_mSv_yr'] or '--'} mSv/yr", flush=True)
     print(f"      -> phantom(eff) {eff:7.1f} mSv/yr (rel_err "
           f"{(a_phan.rel_err or 0)*100:4.1f}%),  skin {skin:7.1f} mSv/yr "
           f"(rel_err {(a_skin.rel_err or 0)*100:4.1f}%),  "
@@ -133,7 +141,7 @@ def _run_depth(gcm2: float, run_dir: Path, tier, args) -> dict:
     return {"areal_gcm2": f"{gcm2:g}", "al_cm": f"{t_cm:.2f}",
             "flood_eff_mSv_yr": f"{eff:.1f}", "flood_skin_mSv_yr": f"{skin:.1f}",
             "note": note,
-            "provenance": dosimetry.provenance_str(a_phan.provenance)}
+            "provenance": dosimetry.provenance_str(a_phan.provenance), **nasa}
 
 
 def main(argv=None) -> None:
