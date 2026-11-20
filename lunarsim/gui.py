@@ -706,6 +706,18 @@ def metric_card(label, value, sub, value_color=METRIC, accent=False):
     ])
 
 
+def _pm(rel, sep=" ± ", unknown=" (error n/a)"):
+    """Format a relative MC error for display.
+
+    None means the error is UNKNOWN (fewer than 2 batches, or a species without an
+    estimate), so the label says so instead of silently printing a bare value that
+    looks exact. 0.0 is printed as an error, not hidden. Errors under 10% keep one
+    decimal so a 0.5% skin error is not rounded to "± 0%"."""
+    if rel is None:
+        return unknown
+    return f"{sep}{rel:.1%}" if rel < 0.095 else f"{sep}{rel:.0%}"
+
+
 def _kv(k, v):
     return html.Div(style={"display": "flex", "justifyContent": "space-between",
                            "fontSize": "13px", "padding": "5px 0",
@@ -1481,7 +1493,7 @@ def _poll(_n, jid):
 
     bar = {"background": ACCENT, "height": "100%", "transition": "width .3s",
            "width": f"{job.progress * 100:.0f}%"}
-    err = f" ±{job.rel_err:.0%}" if job.rel_err else ""
+    err = _pm(job.rel_err, sep=" ±", unknown="")
     cap = job.progress_cap or job.max_batches
     if job.combined:
         kind = "SPE+GCR"          # one MC (GCR); the SPE gate is a fold, no phase
@@ -2063,7 +2075,7 @@ def _thinwall_note(calibrated):
 
 
 def _thinwall_metric_cards(a, job, calibrated):
-    rel_txt = f" ± {a.rel_err:.0%}" if a.rel_err else ""
+    rel_txt = _pm(a.rel_err)
     banner = _footprint_banner(job.spec)
     # The regime is explained in the Analysis footnote, so the card stays clean.
     # For an uncalibrated wall the amber "indicative" caveat rides here; for a
@@ -2115,7 +2127,7 @@ def _thinwall_analysis_body(a, job, calibrated):
                   "  ⚠ non-aluminium wall — folded on the Al kernel, indicative only")
     return [
         _kv("◆ PROTECTION SCORE (organ-weighted effective dose, ICRP-60 Q(L))",
-            f"{a.annual_msv:.1f} mSv/year{f' ± {a.rel_err:.0%}' if a.rel_err else ''}"),
+            f"{a.annual_msv:.1f} mSv/year{_pm(a.rel_err)}"),
         _kv("Verdict (career limit)", s["verdict"]),
         _kv("Absorbed dose rate", f"{a.dose_rate_ugy_day:.3f} µGy/day"),
         _kv("Effective dose rate (organ-weighted Q·D)", f"{a.equiv_rate_msv_day * 1000:.2f} µSv/day"),
@@ -2148,7 +2160,7 @@ def _spe_score_card(a):
     verdict = a.verdict("nasa_30day")
     colour = VERDICT_COLOUR.get(verdict, METRIC)
     frac = a.fraction_of("nasa_30day") * 100
-    rel = f" ± {a.rel_err:.0%}" if a.rel_err else ""
+    rel = _pm(a.rel_err)
     if a.calibrated:
         verdict_line = (f"{verdict} · {frac:.0f}% of the "
                         f"{DOSE_LIMITS_MSV['nasa_30day']:.0f} mSv 30-day BFO limit")
@@ -2197,10 +2209,10 @@ def _spe_analysis_body(a, job):
     skin_line = (f"{a.skin_msv:.0f} mSv · {a.skin_msv / 1500 * 100:.1f}% of 1500 limit"
                  if a.skin_msv is not None else "n/a")
     calib_note = "" if a.calibrated else f"  ⚠ {a.validity_note}"
-    skin_err = f" ± {a.skin_rel_err:.0%}" if a.skin_rel_err else ""
+    skin_err = _pm(a.skin_rel_err) if a.skin_msv is not None else ""
     return [
         _kv("◆ BFO EVENT DOSE-EQUIVALENT", f"{a.event_msv:.0f} mSv"
-            f"{f' ± {a.rel_err:.0%}' if a.rel_err else ''}"),
+            f"{_pm(a.rel_err)}"),
         _kv("Verdict (30-day BFO limit)", verdict),
         _kv("Skin dose-equivalent (event)", skin_line + skin_err),
         _kv("Absorbed dose, BFO (event)", f"{a.event_mgy:.1f} mGy"),
@@ -2343,7 +2355,7 @@ def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
               f"({s['fraction_of_limit'] * 100:.1f}% used)",
               f"- **Verdict: {s['verdict']}**",
               f"- MC error (kernel statistics only): "
-              + (f"±{spe.rel_err:.0%}" if spe.rel_err else "n/a"),
+              + _pm(spe.rel_err, sep="±", unknown="n/a"),
               f"- Method: response-kernel fold (variance-reduced)"
               + ("" if spe.calibrated else f"  ⚠ {spe.validity_note}")]
 

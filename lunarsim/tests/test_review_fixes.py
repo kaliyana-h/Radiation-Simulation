@@ -141,5 +141,20 @@ class KernelErrorBars(unittest.TestCase):
         self.assertAlmostEqual(legacy / sample, n / (n - 1), places=9)
 
 
+class ErrorLabel(unittest.TestCase):
+    """GUI error labels: unknown (None) is said, not hidden; 0 and <1% are shown."""
+
+    def test_pm(self):
+        try:
+            from lunarsim import gui
+        except ImportError as e:                       # dash not installed
+            self.skipTest(f"gui import: {e}")
+        self.assertEqual(gui._pm(None), " (error n/a)")
+        self.assertEqual(gui._pm(None, unknown=""), "")
+        self.assertEqual(gui._pm(0.0), " ± 0.0%")
+        self.assertEqual(gui._pm(0.005), " ± 0.5%")
+        self.assertEqual(gui._pm(0.14), " ± 14%")
+
+
 if __name__ == "__main__":
     unittest.main()
