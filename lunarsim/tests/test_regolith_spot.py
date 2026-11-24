@@ -110,5 +110,55 @@ class ProbeEndToEnd(unittest.TestCase):
         self.assertEqual(rows[0]["skin_ratio_relerr"], "")
 
 
+class LightSubset(unittest.TestCase):
+    def _probe(self, root):
+        probe.generate(root, [22.0, 44.0], [0.3, 1.0], base=10, exponent=2.0,
+                       seeds=2, threads=0, phi=rs.PHI_MV)
+
+    def test_runscript_lists_only_subset(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._probe(root)
+            sh = probe.write_runscript(root, ["H", "He"], [44.0]).read_text()
+            runs = [l.strip() for l in sh.splitlines() if l.startswith("  spot")]
+            self.assertEqual(len(runs), 2 * 2 * 2)          # depths x species x seeds
+            self.assertTrue(all(r.startswith("spot44/") for r in runs))
+            self.assertTrue(all(("_H_" in r or "_He_" in r) for r in runs))
+            for r in runs:                                   # every listed run exists
+                self.assertTrue((root / r / f"{r.split('/')[1]}.txt").exists())
+            with self.assertRaises(SystemExit):
+                probe.write_runscript(root, ["Xx"])
+            with self.assertRaises(SystemExit):
+                probe.write_runscript(root, ["H"], [999.0])
+
+    def test_species_compare_with_partial_large_spot(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._probe(root)
+            sd22, sd44 = probe.spot_dir(root, 22.0), probe.spot_dir(root, 44.0)
+            _fake_outputs(sd22, json.loads((sd22 / "manifest.json").read_text()), 1.0)
+            m44 = json.loads((sd44 / "manifest.json").read_text())
+            m44_light = dict(m44, runs=[r for r in m44["runs"]
+                                        if "_H_" in r or "_He_" in r])
+            _fake_outputs(sd44, m44_light, 2.0)     # light ions only, doubled dose
+            self.assertEqual(probe.compare(root, by_species=True), 0)
+            rows = list(__import__("csv").DictReader(
+                (root / "spot_compare_species.csv").open()))
+            for r in rows:
+                if r["spot_cm"] != "44.0":
+                    continue
+                if r["species"] in ("H", "He"):
+                    self.assertAlmostEqual(float(r["skin_over_ref"]), 2.0)
+                    self.assertNotEqual(r["skin_ratio_relerr"], "")
+                else:
+                    self.assertEqual(r["usable"], "False")
+                    self.assertEqual(r["skin_over_ref"], "")
+            total = list(__import__("csv").DictReader((root / "spot_compare.csv").open()))
+            for r in total:                          # partial sum: flagged, no ratio
+                if r["spot_cm"] == "44.0":
+                    self.assertEqual(r["usable"], "False")
+                    self.assertEqual(r["skin_over_ref"], "")
+
+
 if __name__ == "__main__":
     unittest.main()
