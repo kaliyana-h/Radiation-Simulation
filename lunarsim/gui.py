@@ -41,6 +41,7 @@ from .dosimetry import (assess, assess_composition, assess_spe, provenance_str,
                         _gcr_thinwall_calibrated, areal_density_confidence)
 from .geometry import _enclosing_radius_cm
 from .headline_context import (headline_flags, is_q_fallback, COMBINED_ENVELOPE_NOTE,
+                               ENGINE_TEXT,
                                systematic_band, band_text)
 from .jobs import default_runner, JobStatus, ConvergedComposition
 from .trajviz import run_cascade, build_figure
@@ -1071,6 +1072,7 @@ def _scenario_conditions(scenario, phi, spe_event):
     gcr_field = _phi_caption(phi)
     spe = _spe_scenario(spe_event)
     if scenario == "spe":
+        short = "Total event dose vs the 30-day limit"
         note = ("A single solar proton event. The acute test. Scored as "
                 "the TOTAL event dose against the 30-day blood-forming-organ limit, "
                 "not a per-year rate.")
@@ -1080,6 +1082,7 @@ def _scenario_conditions(scenario, phi, spe_event):
             _kv("🔒 Limit", f"{DOSE_LIMITS_MSV['nasa_30day']:.0f} mSv (30-day BFO)"),
         ]
     elif scenario == "both":
+        short = "Two separate gates, never summed"
         note = ("One run, both hazards: the chronic GCR field AND a solar "
                 "event, judged as two SEPARATE pass/fail gates (annual/career limit vs "
                 "the 30-day limit). The two doses are never summed. They reward "
@@ -1093,6 +1096,7 @@ def _scenario_conditions(scenario, phi, spe_event):
             _kv("🔒 Statistics", "converged full run"),
         ]
     else:
+        short = "Mission dose vs the annual / career limits"
         note = (f"The chronic galactic-cosmic-ray field ({gcr_field}), integrated "
                 "over the whole mission and judged against the annual / career limits.")
         rows = [
@@ -1100,7 +1104,13 @@ def _scenario_conditions(scenario, phi, spe_event):
             _kv("🔒 Mission", f"{SCORING_MISSION_DAYS} days"),
             _kv("🔒 Statistics", "converged full run"),
         ]
-    return rows, note
+    return rows, _hover_note(short, note)
+
+
+def _hover_note(short, full):
+    """One short line; the full explanation is the hover tooltip."""
+    return html.Span(short + " ⓘ", title=full, style={
+        "cursor": "help", "textDecoration": "underline dotted"})
 
 
 # ----------------------------------------------------------------------
@@ -1699,6 +1709,8 @@ def _standard_row(assessment, key, name, note):
     ])
 
 
+_ENGINE_SHORT = {ENGINE_TEXT["flood"]: "flood Monte Carlo",
+                 ENGINE_TEXT["kernel"]: "thin-wall kernel fold"}
 _FLAG_COLOUR = {"info": MUTED, "ok": "#3fb950", "warn": "#d29922", "alert": ACCENT}
 
 
@@ -1707,20 +1719,42 @@ def _context_strip(flags):
     as compact lines under the headline. Advisory only -- no dose is changed."""
     if not flags:
         return None
-    return html.Div(style={"marginTop": "10px", "display": "flex",
-                           "flexDirection": "column", "gap": "4px"}, children=[
-        html.Div(("" if f["level"] == "info" else "● ") + f["text"], style={
+    by_key = {f["key"]: f for f in flags}
+    lines = []
+    # Engine + confidence are background: one short line, full text on hover.
+    conf, eng = by_key.get("confidence"), by_key.get("engine")
+    if conf or eng:
+        parts, tip = [], []
+        if conf:
+            parts.append(conf["text"].split(" (")[0])        # "Confidence: HIGH"
+            tip.append(conf["text"])
+        if eng:
+            parts.append(_ENGINE_SHORT.get(eng["text"], "engine"))
+            tip.append(eng["text"])
+        lvl = conf["level"] if conf else "info"
+        lines.append(html.Div(
+            ("● " if conf else "") + " · ".join(parts) + " ⓘ", title="\n\n".join(tip),
+            style={"color": _FLAG_COLOUR.get(lvl, MUTED), "fontSize": "10.5px",
+                   "cursor": "help", "textDecoration": "underline dotted",
+                   "fontWeight": 400 if lvl in ("info", "ok") else 600}))
+    # Near-gate / Q-fallback are actionable warnings: keep their full text.
+    for f in flags:
+        if f["key"] in ("engine", "confidence"):
+            continue
+        lines.append(html.Div("● " + f["text"], style={
             "color": _FLAG_COLOUR.get(f["level"], MUTED), "fontSize": "10.5px",
-            "lineHeight": "1.35",
-            "fontWeight": 400 if f["level"] in ("info", "ok") else 600})
-        for f in flags])
+            "lineHeight": "1.35", "fontWeight": 600}))
+    return html.Div(style={"marginTop": "10px", "display": "flex",
+                           "flexDirection": "column", "gap": "4px"},
+                    children=lines)
 
 
 def _envelope_note():
     """Combined-run caveat: the two gates bound worst + worst, not one epoch."""
-    return html.Div(COMBINED_ENVELOPE_NOTE, style={
-        "color": MUTED, "fontSize": "11px", "fontStyle": "italic",
-        "lineHeight": "1.4", "marginBottom": "4px"})
+    return html.Div(_hover_note("Worst-case pairing, not one solar epoch",
+                                COMBINED_ENVELOPE_NOTE),
+                    style={"color": MUTED, "fontSize": "11px",
+                           "marginBottom": "4px"})
 
 
 def _band_tooltip(band):
