@@ -57,10 +57,12 @@ PHYSICS_LIST_REL = 0.074   # QMD vs modular fragmentation (fragmentation_sensiti
 CEILING_SURFACE = 0.015    # +1.5% at 0 g/cm2 ...
 CEILING_DEEP = 0.04        # ... growing to +4% at 50 g/cm2
 CEILING_DEEP_GCM2 = 50.0
-GATE_STEP = 1.18           # kernel->flood headline step at the 19 g/cm2 crossover,
-                           # MEASURED 2026-11-16 after the phi->W + 100-point spectrum
-                           # fixes: flood skin 215.5 (+/-0.6%) / kernel E 182.6 (750 cm
-                           # Al dome) = 1.180. Was 1.196 on 2026-11-05 (flood 218.4),
+GATE_STEP = 1.169          # kernel->flood headline step at the 19 g/cm2 crossover:
+                           # flood skin 215.5 (+/-0.6%, MEASURED 2026-11-16 after the
+                           # phi->W + 100-point spectrum fixes) / kernel E 184.3 (Al
+                           # dome; 182.6 before the 2026-11-25 45 cm spot rebuild of the
+                           # 50 anchor, paper/kernel_spot45_regen.py) = 1.169. Was 1.180
+                           # with the 22 cm kernel, 1.196 on 2026-11-05 (flood 218.4),
                            # ~1.4 before the tail promotion (paper/tail_vs_flood.py,
                            # gate_ratio_decompose.py)
 NASA_Q_RATIO = 1.20        # ICRP-60 -> NASA/Cucinotta Q at the organ level (Option C

@@ -145,7 +145,8 @@ class TestCrossoverCoherence(unittest.TestCase):
         # absolute flux (dosimetry._calibration_factor), x1.215 on the kernel's
         # rigidity form -> ~158. Since 2026-11-05 the shipped kernel carries the
         # 5/6-20 GeV/n tail (same energy range as the flood source): x1.15 at the
-        # gate -> ~183. Regression anchor, not a target.
+        # gate -> ~183; 184.3 since the 2026-11-25 45 cm spot rebuild of the 50
+        # anchor (interpolation weight). Regression anchor, not a target.
         self.assertAlmostEqual(self.perel[19.0]["E_msv_yr"], 183.0, delta=15.0)
         self.assertGreater(self.base[19.0]["E_msv_yr"], 450.0)
 
