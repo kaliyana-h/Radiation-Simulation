@@ -12,7 +12,10 @@
 #       (Taurus-Littrow), not the old pure-SiO2 proxy.
 #
 #   (3) The REDMoon 4-layer density profile (Dobynde & Guo 2021,
-#       doi:10.1029/2021JE006930), collapsed to 3 distinct slabs
+#       doi:10.1029/2021JE006930, Sec. 2.1 p.2: 1.76 / 2.11 / 1.78 / 1.78
+#       g/cm3, layers 22 / 49 / 153 cm / to centre; they take it from
+#       McKinney et al. 2006, JGR Planets 111(E6), = Apollo 17 drill core used
+#       for the LNPE), collapsed to 3 distinct slabs
 #       because their layers 3 & 4 share rho = 1.78 g/cm3:
 #         0  -> 22 cm   rho = 1.76 g/cm3
 #         22 -> 71 cm   rho = 2.11 g/cm3   (compacted band, 49 cm THICK)

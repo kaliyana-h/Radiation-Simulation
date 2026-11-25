@@ -65,6 +65,11 @@ GATE_STEP = 1.169          # kernel->flood headline step at the 19 g/cm2 crossov
                            # with the 22 cm kernel, 1.196 on 2026-11-05 (flood 218.4),
                            # ~1.4 before the tail promotion (paper/tail_vs_flood.py,
                            # gate_ratio_decompose.py)
+# Flux below the kernel's lowest energy node is dropped by the fold (kernel engine
+# only; the flood transports the full spectrum). Bounded 2026-11-20 as an UPPER
+# limit of the low read: <=5% bare, <=3% at 2.025 g/cm2, 0 from 10 g/cm2 up (those
+# low-energy ions stop in the wall). Piecewise-linear between the kernel anchors.
+BOTTOM_NODE_BIAS = ((0.0, 0.05), (2.025, 0.03), (10.0, 0.0))
 NASA_Q_RATIO = 1.20        # ICRP-60 -> NASA/Cucinotta Q at the organ level (Option C
                            # i3); a CONVENTION choice, reported, not added to the band
 
@@ -72,6 +77,17 @@ NASA_Q_RATIO = 1.20        # ICRP-60 -> NASA/Cucinotta Q at the organ level (Opt
 def _ceiling_bias(ad_gcm2: float) -> float:
     x = min(max(ad_gcm2, 0.0), CEILING_DEEP_GCM2) / CEILING_DEEP_GCM2
     return CEILING_SURFACE + (CEILING_DEEP - CEILING_SURFACE) * x
+
+
+def _bottom_node_bias(ad_gcm2: float) -> float:
+    pts = BOTTOM_NODE_BIAS
+    x = max(ad_gcm2, 0.0)
+    if x >= pts[-1][0]:
+        return 0.0
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        if x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return 0.0
 
 
 def _gate_weight(ad_gcm2: float, crossover_gcm2: float) -> float:
@@ -104,6 +120,11 @@ def systematic_band(ad_gcm2: float, engine: str,
          "lo": 1.0, "hi": 1 + _ceiling_bias(ad_gcm2),
          "kind": "bias", "in_band": True},
     ]
+    if engine == "kernel" and _bottom_node_bias(ad_gcm2) > 0:
+        terms.append({"key": "bottom_node",
+                      "label": "flux below the kernel's lowest energy node (bound)",
+                      "lo": 1.0, "hi": 1 + _bottom_node_bias(ad_gcm2),
+                      "kind": "bias", "in_band": True})
     w = _gate_weight(ad_gcm2, crossover_gcm2)
     if w > 0:
         step = 1 + (GATE_STEP - 1) * w

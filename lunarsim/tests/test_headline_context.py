@@ -100,6 +100,22 @@ class TestSystematicBand(unittest.TestCase):
         self.assertAlmostEqual(ceil(80.0)["hi"], 1.04, places=6)
         self.assertEqual(ceil(0.0)["lo"], 1.0)        # one-sided
 
+    def test_bottom_node_bias_kernel_thin_only(self):
+        def bn(g, eng="kernel"):
+            return next((t for t in systematic_band(g, eng)["terms"]
+                         if t["key"] == "bottom_node"), None)
+        self.assertAlmostEqual(bn(0.0)["hi"], 1.05, places=9)
+        self.assertAlmostEqual(bn(2.025)["hi"], 1.03, places=9)
+        self.assertAlmostEqual(bn(6.0125)["hi"], 1.015, places=9)
+        self.assertEqual(bn(0.0)["lo"], 1.0)          # one-sided: kernel reads low
+        self.assertIsNone(bn(10.0))                   # 0 from 10 g/cm2 up
+        self.assertIsNone(bn(30.0))
+        self.assertIsNone(bn(0.0, "flood"))           # flood has the full spectrum
+        b = systematic_band(0.0, "kernel")
+        ceil = next(t for t in b["terms"] if t["key"] == "ceiling")["hi"]
+        sym = (0.15 ** 2 + 0.25 ** 2) ** 0.5
+        self.assertAlmostEqual(b["hi"], (1 + sym) * ceil * 1.05, places=9)
+
     def test_gate_term_only_near_crossover(self):
         far = systematic_band(54.0, "flood")
         self.assertNotIn("gate", [t["key"] for t in far["terms"]])

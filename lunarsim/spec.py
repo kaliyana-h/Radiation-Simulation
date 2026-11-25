@@ -43,6 +43,15 @@ MATERIALS: dict[str, dict] = {
 
 SHAPES = ("dome", "cylinder", "quonset", "buried")
 
+# Scorer volumes that geometry.py places INSIDE the wall, as siblings of the phantom
+# in World (Geant4 does not check sibling overlaps, so an overlap would silently
+# corrupt the phantom and gauge tallies). The innermost face is the InnerShell air
+# fluence gauge at r = inner - 5 cm (CrewSkin lining is r = [inner-2, inner]); the
+# flat-roof / bulkhead water discs are 2 cm thick, flush under the inner face.
+# test_spec_phantom_clearance checks these against the emitted geometry.
+INNER_SCORER_CLEARANCE_CM = 5.0
+ROOF_LINING_CM = 2.0
+
 # ----------------------------------------------------------------------
 # Regolith site: which lunar terrain the surface/overburden regolith is.
 # ----------------------------------------------------------------------
@@ -154,18 +163,32 @@ class HabitatSpec:
                              f">= phantom_radius_cm ({self.phantom_radius_cm:g})")
         if self.shape == "buried" and self.burial_depth_cm <= 0:
             raise ValueError("burial_depth_cm must be > 0 for a buried habitat")
+        # Clear the in-wall scorer volumes, not just the wall (see
+        # INNER_SCORER_CLEARANCE_CM): the phantom is on the axis, so its radial
+        # reach is phantom_radius_cm for barrels and crew_height+radius for the
+        # dome / quonset circular section centred on the floor origin.
+        r_free = self.inner_radius_cm - INNER_SCORER_CLEARANCE_CM
         if self.shape in ("cylinder", "buried"):
-            # flat roof: clear it vertically; the barrel wall is the radial limit
-            headroom = self.effective_height_cm
+            # flat roof lined by the 2 cm CrewRoof disc; the barrel is the radial limit
+            headroom = self.effective_height_cm - ROOF_LINING_CM
+            if self.phantom_radius_cm > r_free:
+                raise ValueError(
+                    f"crew phantom radius {self.phantom_radius_cm:g} cm overlaps the "
+                    f"inner fluence gauge (r >= {r_free:g} cm). Increase the habitat "
+                    "radius or shrink the phantom.")
         else:
-            # dome / quonset: circular section centred on the floor origin, so the
-            # binding constraint is the slant distance to the shell
-            headroom = self.inner_radius_cm
+            headroom = r_free
+        if self.shape == "quonset":
+            # bulkhead water discs: inner face at +/-(half-length - 2 cm)
+            if self.phantom_radius_cm > self.effective_height_cm / 2.0 - ROOF_LINING_CM:
+                raise ValueError("crew phantom overlaps the quonset end-wall lining: "
+                                 "lengthen the habitat or shrink the phantom.")
         if self.crew_height_cm + self.phantom_radius_cm > headroom:
             raise ValueError(
                 f"crew phantom does not fit: centre {self.crew_height_cm:g} cm + "
                 f"radius {self.phantom_radius_cm:g} cm exceeds the {headroom:g} cm "
-                "interior. Increase the habitat size or lower crew_height_cm.")
+                "free interior (inside the wall-lining scorers). Increase the habitat "
+                "size or lower crew_height_cm.")
 
     # ---- derived geometry ------------------------------------------
     @property
