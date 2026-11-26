@@ -1909,9 +1909,25 @@ def _footprint_banner(spec):
 PHANTOM_MIN_BATCHES = SCORING_MIN_BATCHES
 
 
+def _eq_rel(result, skin: bool):
+    """Error bar for a dose-EQUIVALENT (mSv) number: the dose-equivalent batch
+    error, which carries the Q-bar scatter, falling back to the absorbed one only
+    for results that predate it. The convergence gate reads the same quantity
+    (jobs._rel_err_of), so the bar shown is the error the run stopped on."""
+    if result is None:
+        return None
+    if skin:
+        return (getattr(result, "skin_doseeq_rel_err", None)
+                if getattr(result, "skin_doseeq_rel_err", None) is not None
+                else getattr(result, "skin_dose_rel_err", None))
+    return (getattr(result, "phantom_doseeq_rel_err", None)
+            if getattr(result, "phantom_doseeq_rel_err", None) is not None
+            else getattr(result, "dose_rel_err", None))
+
+
 def _phantom_err_text(result) -> str:
     """' ±N%' only when enough batches back it; otherwise a batch count."""
-    rel = getattr(result, "dose_rel_err", None)
+    rel = _eq_rel(result, skin=False)
     n = getattr(result, "phantom_batches", 0)
     if rel and n >= PHANTOM_MIN_BATCHES:
         return f" ±{rel:.0%}"
@@ -1947,7 +1963,7 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
     if head is not None:
         card_assess = head
         score = head.annual_msv
-        skin_rel = getattr(job.result, "skin_dose_rel_err", None)
+        skin_rel = _eq_rel(job.result, skin=True)
         rel_txt = f" ± {skin_rel:.0%}" if skin_rel else ""
         qf_label = "ICRP-60 Q(L)"
         cmp_line = (f"NASA/Cucinotta Q conservative cross-check: "
@@ -1986,7 +2002,7 @@ def _metric_cards(a, a_skin, s, job, a_skin_nasa=None):
 
 
 def _analysis_body(a, a_skin, s, job, a_skin_nasa=None):
-    skin_err = getattr(job.result, "skin_dose_rel_err", None)
+    skin_err = _eq_rel(job.result, skin=True)
     # Headline dose-equivalent runs on the ICRP-60 Q(L) skin scorer -- the same
     # quantity+convention as the below-gate kernel, so the displayed number no
     # longer flips Q-model at the ~19 g/cm2 crossover. NASA/Cucinotta Q is the

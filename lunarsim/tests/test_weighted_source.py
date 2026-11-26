@@ -220,6 +220,63 @@ class BridgePassThrough(unittest.TestCase):
         self.assertEqual(seen, [SourceBias()])
 
 
+class ProductionDefault(unittest.TestCase):
+    """Runner (GUI) GCR jobs use f0.2 below BIAS_MAX_GCM2; harnesses stay explicit."""
+
+    def _thick(self):
+        return HabitatSpec(name="thick", shape="dome", inner_radius_cm=300.0,
+                           walls=[WallLayer("aluminium", 60.0)])     # ~162 g/cm2
+
+    def test_thin_gets_f02_thick_gets_plain_beam(self):
+        with mock.patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop(jobs.SOURCE_BIAS_ENV, None)
+            self.assertLess(_spec().areal_density_gcm2(), jobs.BIAS_MAX_GCM2)
+            self.assertEqual(jobs.default_source_bias(_spec()),
+                             SourceBias(fraction=0.2, margin_cm=40.0))
+            self.assertGreater(self._thick().areal_density_gcm2(), jobs.BIAS_MAX_GCM2)
+            self.assertIsNone(jobs.default_source_bias(self._thick()))
+
+    def test_env_opt_out_and_typo(self):
+        with mock.patch.dict("os.environ", {jobs.SOURCE_BIAS_ENV: "off"}):
+            self.assertIsNone(jobs.default_source_bias(_spec()))
+        with mock.patch.dict("os.environ", {jobs.SOURCE_BIAS_ENV: "offf"}):
+            with self.assertRaises(ValueError):
+                jobs.default_source_bias(_spec())
+
+    def test_run_composition_default_is_still_plain_beam(self):
+        import inspect
+        self.assertIsNone(inspect.signature(jobs.run_composition)
+                          .parameters["source_bias"].default)
+
+    def _runner_bias(self, spec, **submit_kw):
+        import time
+        seen = []
+
+        def fake(spec, tier, **kw):
+            seen.append(kw.get("source_bias", "MISSING"))
+            raise RuntimeError("stop")
+        with mock.patch.object(jobs, "run_composition", side_effect=fake):
+            r = jobs.LocalThreadRunner(max_parallel=1)
+            jid = r.submit(spec, **submit_kw)
+            t0 = time.time()
+            while not seen and time.time() - t0 < 5:
+                time.sleep(0.01)
+            while r.get(jid).status == jobs.JobStatus.RUNNING and time.time() - t0 < 5:
+                time.sleep(0.01)
+        self.assertEqual(len(seen), 1)
+        return seen[0]
+
+    def test_runner_forwards_default(self):
+        import os
+        with mock.patch.dict("os.environ", {}, clear=False):
+            os.environ.pop(jobs.SOURCE_BIAS_ENV, None)
+            for kw in ({"composition": True},
+                       {"combined": True, "spe": bridge.WORST_CASE_SPE}):
+                self.assertEqual(self._runner_bias(_spec(), **kw), jobs.DEFAULT_SOURCE_BIAS)
+                self.assertIsNone(self._runner_bias(self._thick(), **kw))
+
+
 class _Species:
     """Minimal ConvergedResult stand-in for assess_composition."""
     def __init__(self, dose, doseeq, eq_rel):
@@ -283,6 +340,26 @@ class DoseEquivalentError(unittest.TestCase):
                     jobs.run_composition(_spec(), TIER, sampling="continuous",
                                          seed_offset=off)
             self.assertEqual(seeds[-1], want)
+
+
+class GateUsesDoseEquivalentError(unittest.TestCase):
+    """The stop rule and the reported bars use the E error, absorbed as fallback."""
+
+    def test_assess_rel_prefers_eq(self):
+        a = mock.Mock(rel_err=0.02, eq_rel_err=0.05)
+        self.assertEqual(jobs._assess_rel(a), 0.05)
+        a.eq_rel_err = None
+        self.assertEqual(jobs._assess_rel(a), 0.02)
+        self.assertIsNone(jobs._assess_rel(None))
+
+    def test_rel_err_of_combined(self):
+        c = mock.Mock(skin_dose_rel_err=0.01, skin_doseeq_rel_err=0.03,
+                      dose_rel_err=0.02, phantom_doseeq_rel_err=0.06)
+        self.assertEqual(jobs._rel_err_of(c, "phantom"), 0.06)
+        self.assertEqual(jobs._rel_err_of(c, "skin"), 0.03)
+        self.assertEqual(jobs._rel_err_of(c, "both"), 0.06)
+        c.phantom_doseeq_rel_err = None
+        self.assertEqual(jobs._rel_err_of(c, "phantom"), 0.02)
 
 
 class FomHarness(unittest.TestCase):

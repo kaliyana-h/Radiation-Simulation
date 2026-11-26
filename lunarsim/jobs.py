@@ -28,7 +28,7 @@ from enum import Enum
 from typing import Callable, Optional
 
 from .spec import HabitatSpec
-from .bridge import RunTier, RunResult, QUICK_LOOK, run_design, SPEScenario
+from .bridge import RunTier, RunResult, QUICK_LOOK, run_design, SPEScenario, SourceBias
 from .dosimetry import (assess_composition, GCR_COMPOSITION, GcrModel,
                         current_model, use_model, provenance,
                         FLOOD_LIS_FORM, active_composition, _load_make_source)
@@ -245,7 +245,8 @@ def _pick_rel(skin: Optional[float], phantom: Optional[float],
 
     NOTE: with slack != 1 the return value is a TARGET-NORMALISED error, not a
     raw one -- it is only meaningful against target_rel_err. Never display it as
-    an error bar; the reported bars come from skin_dose_rel_err / dose_rel_err."""
+    an error bar; the reported bars come from the dose-equivalent rel_errs
+    (skin_doseeq_rel_err / phantom_doseeq_rel_err, absorbed fallback)."""
     if converge_on == "skin":
         return skin
     if converge_on == "phantom":
@@ -255,11 +256,30 @@ def _pick_rel(skin: Optional[float], phantom: Optional[float],
     return max(skin, phantom / phantom_slack)
 
 
-def _rel_err_of(combined: ConvergedResult, converge_on: str,
+def _eq_first(eq: Optional[float], absorbed: Optional[float]) -> Optional[float]:
+    """The error of the REPORTED quantity. Every headline is a dose equivalent
+    (mSv), whose batch scatter carries the Q-bar scatter on top of the absorbed
+    scatter (phantom Q-bar spans ~1.7-3.2 across runs), so the gate and the error
+    bars use the dose-equivalent rel_err. Falls back to the absorbed one only when
+    no dose-equivalent error exists (a scorer CSV missing, or an old result)."""
+    return eq if eq is not None else absorbed
+
+
+def _assess_rel(a) -> Optional[float]:
+    """_eq_first for a DoseAssessment (None-safe)."""
+    return None if a is None else _eq_first(a.eq_rel_err, a.rel_err)
+
+
+def _rel_err_of(combined, converge_on: str,
                 phantom_slack: float = 1.0) -> Optional[float]:
-    """_pick_rel for a single-species ConvergedResult."""
-    return _pick_rel(combined.skin_dose_rel_err, combined.dose_rel_err,
-                     converge_on, phantom_slack)
+    """_pick_rel for a ConvergedResult or ConvergedComposition, on the
+    dose-equivalent errors where present (see _eq_first)."""
+    return _pick_rel(
+        _eq_first(getattr(combined, "skin_doseeq_rel_err", None),
+                  combined.skin_dose_rel_err),
+        _eq_first(getattr(combined, "phantom_doseeq_rel_err", None),
+                  combined.dose_rel_err),
+        converge_on, phantom_slack)
 
 
 def run_converged(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
@@ -361,6 +381,10 @@ class ConvergedComposition:
     wall_seconds: float = 0.0
     dose_rel_err: Optional[float] = None        # combined (central phantom)
     skin_dose_rel_err: Optional[float] = None   # combined (habitat-wide skin)
+    # combined ICRP dose-equivalent errors -- what the gate and the GUI bars use
+    # (the absorbed ones above stay for absorbed-dose rows; see _eq_first)
+    phantom_doseeq_rel_err: Optional[float] = None
+    skin_doseeq_rel_err: Optional[float] = None
     returncode: int = 0
     log_tail: str = ""
     # the GCR model the beam was generated under -- pass it back to
@@ -529,6 +553,40 @@ def _neyman_histories(p: list, sigma: list, cost: list, budget_s: float,
     return [max(1, round(x / sources)) for x in n]
 
 
+# ----------------------------------------------------------------------
+# Production default for the weighted disc source (GUI / Runner jobs only)
+# ----------------------------------------------------------------------
+SOURCE_BIAS_ENV = "LUNARSIM_SOURCE_BIAS"     # "auto" (default) | "off"
+DEFAULT_SOURCE_BIAS = SourceBias(fraction=0.2, margin_cm=40.0)
+# Above this overhead areal density the bias buys nothing: the measured phantom
+# figure of merit is 11-18x at 19 and 54 g/cm2 but ~1x at the 150 g/cm2 buried
+# habitat (+13% wall time), where the secondary field has lost the memory of
+# where the primary entered. The weights are unbiased at all three depths, so
+# the threshold trades efficiency only, never the answer.
+BIAS_MAX_GCM2 = 100.0
+
+
+def default_source_bias(spec: HabitatSpec) -> Optional[SourceBias]:
+    """The source bias a production (Runner) GCR job should use, or None for the
+    plain Beam source.
+
+    Generator-level importance sampling with per-primary weights p/q (Allison et
+    al. 2016, NIM A 835, sec. 5.1) leaves every weight-honouring tally unbiased;
+    validated against the plain beam at al19 / al54 / buried150 for protons,
+    ions and full composition (weighted_source_fom.py). Uses only the phantom's
+    position and size, so it is target-blind. Set LUNARSIM_SOURCE_BIAS=off to
+    get the plain beam everywhere. Paper harnesses pass source_bias explicitly
+    and are not affected; run_composition's own default stays None."""
+    mode = os.environ.get(SOURCE_BIAS_ENV, "auto").strip().lower()
+    if mode in ("off", "0", "none", "false", "no"):
+        return None
+    if mode not in ("auto", "on", "1", "true", "yes", ""):
+        raise ValueError(f"{SOURCE_BIAS_ENV}={mode!r}: expected 'auto' or 'off'")
+    if spec.areal_density_gcm2() > BIAS_MAX_GCM2:
+        return None
+    return DEFAULT_SOURCE_BIAS
+
+
 def run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                     target_rel_err: float = 0.05,
                     min_batches: int = 2, max_batches: int = 12,
@@ -688,8 +746,7 @@ def _run_composition(spec: HabitatSpec, tier: RunTier = QUICK_LOOK,
                                     model=model)
         a_phan = assess_composition(species_results, phi_MV=tier.phi_mv, skin=False,
                                     model=model)
-        rel = _pick_rel(a_skin.rel_err if a_skin else None,
-                        a_phan.rel_err if a_phan else None,
+        rel = _pick_rel(_assess_rel(a_skin), _assess_rel(a_phan),
                         converge_on, phantom_slack)
         if progress_cb:
             progress_cb(rounds, max_batches, rel)
@@ -719,6 +776,8 @@ def _finalize(spec: HabitatSpec, tier: RunTier, species_results: list,
                                  model=model) if species_results else None)
     comp.skin_dose_rel_err = a_skin.rel_err if a_skin else None
     comp.dose_rel_err = a_phan.rel_err if a_phan else None
+    comp.skin_doseeq_rel_err = a_skin.eq_rel_err if a_skin else None
+    comp.phantom_doseeq_rel_err = a_phan.eq_rel_err if a_phan else None
     return comp
 
 
@@ -801,8 +860,7 @@ def _run_composition_stratified(
                                     model=model)
         a_phan = assess_composition(species_results, phi_MV=tier.phi_mv, skin=False,
                                     model=model)
-        rel = _pick_rel(a_skin.rel_err if a_skin else None,
-                        a_phan.rel_err if a_phan else None,
+        rel = _pick_rel(_assess_rel(a_skin), _assess_rel(a_phan),
                         converge_on, phantom_slack)
         if progress_cb:
             progress_cb(rounds, max_batches, rel)
@@ -998,6 +1056,7 @@ class LocalThreadRunner(JobRunner):
                         min_batches=job.min_batches,
                         progress_cb=progress_cb,
                         cancel_cb=lambda: job._cancel,
+                        source_bias=default_source_bias(job.spec),
                     )
                 elif job.spe is not None:
                     # a single acute event: one converged proton run under the
@@ -1021,6 +1080,7 @@ class LocalThreadRunner(JobRunner):
                         min_batches=job.min_batches,
                         progress_cb=progress_cb,
                         cancel_cb=lambda: job._cancel,
+                        source_bias=default_source_bias(job.spec),
                     )
                 else:
                     result = run_converged(
