@@ -176,7 +176,8 @@ def run_point(key: str, args) -> dict:
           f"full composition, converge on skin ...", flush=True)
     cc = jobs.run_composition(spec, tier=FULL_RUN, target_rel_err=args.rel_err,
                               min_batches=args.min_batches, max_batches=args.max_batches,
-                              converge_on="skin")
+                              converge_on="skin",
+                              seed_offset=getattr(args, "seed_offset", 0))
     if not cc.ok:
         print(f"     RUN FAILED (returncode={cc.returncode}). log tail:\n{cc.log_tail}")
         return {"point": key, "ok": False}
@@ -357,6 +358,10 @@ def main(argv=None) -> int:
                          "charged dose is compared with LND in Si directly and is the "
                          f"verdict (dome points; default {SI_DETECTOR_DEFAULT_UM:g} when "
                          "bare3m is requested, else off; 0 = off)")
+    ap.add_argument("--seed-offset", type=int, default=0,
+                    help="shift every batch seed (round r uses r + 1 + offset); 0 = the "
+                         "historical seeds, so a repeat with a new offset is an "
+                         "independent sample (default 0)")
     ap.add_argument("--out", default="runs/lnd_recheck/lnd_recheck.json")
     args = ap.parse_args(argv)
 
@@ -383,6 +388,8 @@ def main(argv=None) -> int:
     print(f"LND total {LND_TOTAL_UGY_H_SI} +- {LND_TOTAL_ERR_SI} uGy/h Si x {SI_TO_WATER:.3f} "
           f"= {LND_TOTAL_UGY_H_WATER:.2f} uGy/h water  (post-hoc reference; "
           f"{LND_TOTAL_UGY_H_SI * SI_TO_WATER_ZHANG:.2f} with 1.30)")
+    if args.seed_offset:
+        print(f"seed offset {args.seed_offset} (independent repeat)")
     if args.si_detector:
         print(f"thin Si detector {args.si_detector:g} um on the inner wall face "
               f"({G.SI_DETECTOR_ENV})")
