@@ -53,6 +53,7 @@ import argparse
 import csv
 import dataclasses
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -220,7 +221,8 @@ def report(path: Path) -> list:
               f"{p['skin_msv']:8.1f} +/-{100 * p['e_sk']:4.1f}% "
               f"{p['phantom_mgy_d']:9.4f} +/-{100 * p['phantom_rel']:3.1f}% "
               f"{p['phantom_msv'] / e0:6.3f} {lp:>14} {ls:>14}{flag}")
-    stamps = sorted({x for p in s for x in p["stamps"]})
+    # The stamp ends in a run timestamp; only the model fields must agree.
+    stamps = sorted({re.sub(r"\s*date=\S+", "", x) for p in s for x in p["stamps"]})
     if len(stamps) > 1:
         print(f"\nWARNING: {len(stamps)} different provenance stamps in the series; "
               "points may not share one model:\n  " + "\n  ".join(stamps))

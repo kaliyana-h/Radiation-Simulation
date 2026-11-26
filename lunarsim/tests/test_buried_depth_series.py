@@ -85,6 +85,29 @@ class RunAndReport(unittest.TestCase):
                                       193.7, s[1]["phantom_msv"], s[1]["e_ph"])
             self.assertAlmostEqual(lam, 200.0, places=3)
 
+    def test_provenance_warning_ignores_run_date(self):
+        import contextlib, io
+        def row(stamp):
+            def f(*a, **k):
+                r = _fake_row(*a, **k); r["provenance"] = stamp; return r
+            return f
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "s.csv"
+            for depth, stamp in (("55.6", "git=a cal=1 date=2026-11-25T12:51Z"),
+                                 ("193.7", "git=a cal=1 date=2026-11-26T09:01Z")):
+                with mock.patch.object(bds.wsf, "run_one", row(stamp)):
+                    bds.main(["run", "--depths", depth, "--rounds", "2", "--csv", str(out)])
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                bds.report(out)
+            self.assertNotIn("WARNING", buf.getvalue())
+            with mock.patch.object(bds.wsf, "run_one", row("git=b cal=1 date=x")):
+                bds.main(["run", "--depths", "100", "--rounds", "2", "--csv", str(out)])
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                bds.report(out)
+            self.assertIn("2 different provenance stamps", buf.getvalue())
+
     def test_dry_run_writes_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             out = Path(d) / "s.csv"
