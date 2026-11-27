@@ -1451,24 +1451,50 @@ def assess_gcr_thinwall(spec, mission_days: float = 365.0,
 
 
 # ----------------------------------------------------------------------
-# SPE proton response-kernel fold  (variance-reduced behind-shield dose)
+# SPE proton response-kernel fold  (depth-resolved behind-shield dose)
 # ----------------------------------------------------------------------
-# Behind ~147 g/cm^2 of regolith only a few percent of even the hardest historical
-# SPE penetrates (>~430 MeV), so a direct phantom MC is rare-tail-starved: the
-# handful of protons that reach the crew land in one under-sampled energy bin and
-# the deep-organ dose fluctuates wildly (a flukey node once read BFO=83 mSv). The
-# fix is the OLTARIS/HZETRN response-function method: precompute, once, a per-organ
-# proton fluence-to-dose response R(E) [Gy*cm^2] by dense monoenergetic transport
-# through the shielded wall, then FOLD any event's proton spectrum against it. No
-# per-event MC, no rare tail -- the response already integrates the transport. The
-# kernel lives in data/spe_proton_kernel.json (17 dense just-penetrating nodes,
-# 22 seeds); see memory [[thin-shield-bragg-limit]] and [[variance-reduction-kernel]].
+# Behind thick shielding only the hard tail of an SPE penetrates, so a direct phantom
+# MC is rare-tail-starved (a flukey node once read BFO=83 mSv). The fix is the
+# OLTARIS/HZETRN response-function method: precompute, once, a per-organ proton
+# fluence-to-dose response R(E) [Gy*cm^2] by monoenergetic transport, then FOLD any
+# event's proton spectrum against it.
+#
+# Since 2026-11-27 the fold uses the DEPTH kernel data/spe_proton_kernel_depth.json
+# (paper/spe_depth_kernel.py): R(E) for 229 nodes 10 MeV-20 GeV at 11 aluminium
+# shell depths 0-200 g/cm^2 (8 seeds, two top-up passes densifying the range
+# thresholds), around the same 15 cm water organ-shell phantom as the GCR kernel.
+# R is per unit FREE-FIELD scalar fluence and carries NO CAL and no flood gauge: the
+# event fluence enters directly, times the scenario's sky fraction. The design's
+# areal density picks the depth (log-linear between bracketing depths); between
+# energy nodes R is interpolated log-log (removes the piecewise-constant bin error at
+# range thresholds). It replaces the one-wall kernel (data/spe_proton_kernel.json,
+# 147.5 g/cm^2 only, nodes from 430 MeV), which missed the <430 MeV protons and was
+# starved at its nodes: it understated the shielded dose x2.6-82 depending on event
+# (paper/spe_depth_kernel_report.txt). That kernel is kept for fold_spe_onewall
+# (report / regression only).
 _SPE_KERNEL_PATH = Path(__file__).with_name("data") / "spe_proton_kernel.json"
+_SPE_DEPTH_KERNEL_PATH = Path(__file__).with_name("data") / "spe_proton_kernel_depth.json"
+
+SPE_SKY_ISOTROPIC = 0.5    # isotropic event, Moon blocks 2 pi (default)
+SPE_SKY_BEAMED = 1.0       # whole event fluence from the sky: beamed upper bound
+# Wall materials folded on the Al kernel without an "indicative" flag: inorganic
+# shields with Z/A 0.48-0.50 like Al (0.482), whose per-g/cm^2 proton stopping and
+# nuclear attenuation are close to Al's (expected within a few percent; not measured
+# here). Hydrogen-rich (polyethylene, water, suit laminate) and high-Z (titanium,
+# steel) walls still fold on Al but are flagged indicative.
+SPE_AL_EQUIVALENT = ("aluminium", "regolith", "concrete")
+SPE_AL_EQUIVALENT_MIN_FRACTION = 0.8
 
 
 @functools.lru_cache(maxsize=1)
 def _load_spe_kernel() -> dict:
     with open(_SPE_KERNEL_PATH) as fh:
+        return json.load(fh)
+
+
+@functools.lru_cache(maxsize=1)
+def _load_spe_depth_kernel() -> dict:
+    with open(_SPE_DEPTH_KERNEL_PATH) as fh:
         return json.load(fh)
 
 
@@ -1484,20 +1510,23 @@ def _spe_dNdE(E: float, r0: float, e0: Optional[float]) -> float:
     return math.exp(-R / r0) * (E + E0_PROTON) / R
 
 
-def _spe_bin_fluence(event: str, r0: float, e0: Optional[float],
-                     edges: list) -> list:
-    """Event proton fluence [/cm^2] integrated into each kernel energy bin.
-
-    The spectral SHAPE is normalised so its integral above 30 MeV equals the event's
-    measured phi(>30 MeV) anchor (make_source.spe_integral_fluence), then integrated
-    over the geometric-mean bin edges. This is the one-time event fluence per bin --
-    the quantity R(E) is folded against."""
+def _spe_scale(event: str, r0: float, e0: Optional[float]) -> float:
+    """Factor turning the _spe_dNdE shape into /cm^2/MeV: its integral above 30 MeV
+    equals the event's measured phi(>30 MeV) anchor (make_source.spe_integral_fluence).
+    Below 30 MeV the same shape is extrapolated (no anchor there)."""
     ms = _load_make_source()
     lo, hi, n = 30.0, 25000.0, 40000
     grid = [lo * (hi / lo) ** (i / (n - 1)) for i in range(n)]
     f = [_spe_dNdE(e, r0, e0) for e in grid]
     tot30 = sum(0.5 * (f[i] + f[i + 1]) * (grid[i + 1] - grid[i]) for i in range(n - 1))
-    scale = ms.spe_integral_fluence(event) / tot30
+    return ms.spe_integral_fluence(event) / tot30
+
+
+def _spe_bin_fluence(event: str, r0: float, e0: Optional[float],
+                     edges: list) -> list:
+    """Event proton fluence [/cm^2] integrated into each kernel energy bin
+    (shape normalised to the >30 MeV anchor, see _spe_scale)."""
+    scale = _spe_scale(event, r0, e0)
 
     def integ(a: float, b: float) -> float:
         m = 600
@@ -1509,14 +1538,147 @@ def _spe_bin_fluence(event: str, r0: float, e0: Optional[float],
     return [integ(edges[j], edges[j + 1]) for j in range(len(edges) - 1)]
 
 
+@functools.lru_cache(maxsize=32)
+def _spe_loglog_weights(event: str, r0: float, e0: Optional[float],
+                        nodes: tuple, m: int = 48) -> tuple:
+    """Per node-interval quadrature ((t_k, w_k), ...): event fluence w_k [/cm^2] at
+    fractional log-E position t_k between nodes j and j+1 (mirrors
+    paper/spe_depth_kernel.loglog_weights)."""
+    scale = _spe_scale(event, r0, e0)
+    out = []
+    for a, b in zip(nodes[:-1], nodes[1:]):
+        g = [a * (b / a) ** (k / m) for k in range(m + 1)]
+        pts = []
+        for k in range(m):
+            e = math.sqrt(g[k] * g[k + 1])
+            pts.append((math.log(e / a) / math.log(b / a),
+                        scale * _spe_dNdE(e, r0, e0) * (g[k + 1] - g[k])))
+        out.append(tuple(pts))
+    return tuple(out)
+
+
+def _spe_depth_point(K: dict, wall: float) -> dict:
+    """R/Rsem at areal density `wall`: log-linear in depth between the bracketing
+    kernel depths (linear where either end is zero); MC errors of the two depths
+    combine in quadrature with the interpolation weights. Raises ValueError outside
+    the kernel grid (mirrors paper/spe_depth_kernel.interp_point)."""
+    pts = sorted(K["H"]["points"], key=lambda p: p["wall_gcm2"])
+    ws = [p["wall_gcm2"] for p in pts]
+    if not ws[0] <= wall <= ws[-1]:
+        raise ValueError(f"wall {wall:g} outside SPE kernel grid {ws[0]:g}-{ws[-1]:g} g/cm2")
+    for p in pts:
+        if p["wall_gcm2"] == wall:
+            return {"R": p["R"], "Rsem": p["Rsem"]}
+    i = next(k for k in range(1, len(ws)) if ws[k] > wall)
+    a, b = pts[i - 1], pts[i]
+    t = (wall - ws[i - 1]) / (ws[i] - ws[i - 1])
+
+    def mix(x, y):
+        if x > 0 and y > 0:
+            return math.exp((1 - t) * math.log(x) + t * math.log(y))
+        return (1 - t) * x + t * y
+
+    out = {"R": {}, "Rsem": {}}
+    for o in a["R"]:
+        out["R"][o] = {q: [mix(x, y) for x, y in zip(a["R"][o][q], b["R"][o][q])]
+                       for q in a["R"][o]}
+        out["Rsem"][o] = {q: [math.hypot((1 - t) * x, t * y) for x, y in
+                              zip(a["Rsem"][o][q], b["Rsem"][o][q])] for q in a["Rsem"][o]}
+    return out
+
+
+def _spe_fold_loglog(R: list, S: list, weights: tuple) -> tuple:
+    """(dose, sem) of one organ/quantity: R interpolated log-log between nodes
+    (linear where an end is 0). The SEM is the linear propagation of the per-node
+    MC errors S through the same interpolation (d dose / d R_j per node; nodes are
+    independent runs, so they add in quadrature)."""
+    tot = 0.0
+    c = [0.0] * len(R)
+    for j, pts in enumerate(weights):
+        x, y = R[j], R[j + 1]
+        if x > 0 and y > 0:
+            lx, ly = math.log(x), math.log(y)
+            for t, w in pts:
+                v = w * math.exp(lx + t * (ly - lx))
+                tot += v
+                c[j] += v * (1 - t) / x
+                c[j + 1] += v * t / y
+        else:
+            for t, w in pts:
+                tot += w * (x + t * (y - x))
+                c[j] += w * (1 - t)
+                c[j + 1] += w * t
+    return tot, math.sqrt(sum((cj * sj) ** 2 for cj, sj in zip(c, S)))
+
+
+def spe_kernel_depth_range() -> tuple:
+    """(min, max) areal density [g/cm^2] the depth kernel was transported through."""
+    d = _load_spe_depth_kernel()["meta"]["depths_gcm2"]
+    return float(min(d)), float(max(d))
+
+
+def _spe_al_equivalent_fraction(spec) -> float:
+    """Fraction of the design's areal density (walls + any buried overburden, the
+    same column as areal_density_gcm2) in Al-equivalent materials SPE_AL_EQUIVALENT."""
+    from .spec import MATERIALS
+    tot = al = 0.0
+    for w in spec.walls:
+        ad = MATERIALS[w.material]["density"] * w.thickness_cm
+        tot += ad
+        if w.material in SPE_AL_EQUIVALENT:
+            al += ad
+    if spec.shape == "buried":
+        ad = MATERIALS["regolith"]["density"] * spec.burial_depth_cm
+        tot += ad
+        al += ad
+    return al / tot if tot else 1.0
+
+
 def fold_spe(scenario: SPEScenario, spec) -> dict:
-    """Fold an SPE proton spectrum against the shielded response kernel.
+    """Fold an SPE proton spectrum against the depth-resolved response kernel.
 
     Returns per-organ-shell {q: (dose_gy, sem_gy)} for q in D (absorbed),
-    I (ICRP-60 dose-equivalent) and N (NASA/Cucinotta dose-equivalent), plus the
-    penetrating fluence and the characteristic rigidity used. The kernel R(E) and
-    its per-node MC error S(E) carry the CAL and the design's 1/R^2 gauge correction,
-    exactly matching the GCR path's normalisation."""
+    I (ICRP-60 dose-equivalent) and N (NASA/Cucinotta dose-equivalent) at the design's
+    areal density, plus the event fluence folded, the characteristic rigidity and
+    sky fraction used, the depth the fold was evaluated at and whether that depth is
+    inside the kernel grid. No CAL and no gauge: R is per unit free-field fluence,
+    folded against the event's free-space omnidirectional fluence x sky fraction.
+
+    A wall outside the kernel grid (above 200 g/cm^2) is folded at the nearest grid
+    depth for reference only (in_grid False -> assess_spe marks it NOT ASSESSED; the
+    clamped number OVERSTATES the dose of the thicker wall)."""
+    K = _load_spe_depth_kernel()
+    ms = _load_make_source()
+    nodes = tuple(K["meta"]["nodes_mev"])
+    e0 = getattr(scenario, "e0_MeV", None)
+    r0 = getattr(scenario, "r0_MV", None) or ms.SPE_EVENTS[scenario.event][0]
+    sky = float(getattr(scenario, "sky_fraction", SPE_SKY_ISOTROPIC))
+    lo, hi = spe_kernel_depth_range()
+    ad = spec.areal_density_gcm2()
+    depth = min(max(ad, lo), hi)
+    point = _spe_depth_point(K, depth)
+    weights = _spe_loglog_weights(scenario.event, float(r0), e0, nodes)
+
+    shells = {}
+    for shell, _wT in K["meta"]["organs"]:
+        res = {}
+        for q in ("D", "I", "N"):
+            val, sem = _spe_fold_loglog(point["R"][shell][q], point["Rsem"][shell][q],
+                                        weights)
+            res[q] = (sky * val, sky * sem)
+        shells[shell] = res
+    folded = sky * sum(w for pts in weights for _t, w in pts)
+    return {"shells": shells, "folded_cm2": folded, "r0_MV": r0, "sky_fraction": sky,
+            "anchor_cm2": ms.spe_integral_fluence(scenario.event),
+            "areal_gcm2": ad, "depth_gcm2": depth, "in_grid": lo <= ad <= hi,
+            "kernel_path": _SPE_DEPTH_KERNEL_PATH}
+
+
+def fold_spe_onewall(scenario: SPEScenario, spec) -> dict:
+    """LEGACY one-wall kernel fold (data/spe_proton_kernel.json), kept only so the
+    depth-kernel report can compare against what the GUI shipped before 2026-11-27.
+    Carries the CAL and the design's 1/R^2 gauge correction, exactly as before; no
+    sky fraction (the old convention was 1.0). Not used for any verdict."""
     K = _load_spe_kernel()
     ms = _load_make_source()
     H = K["H"]
@@ -1541,26 +1703,19 @@ def fold_spe(scenario: SPEScenario, spec) -> dict:
             "anchor_cm2": ms.spe_integral_fluence(scenario.event)}
 
 
-SPE_KERNEL_WINDOW = 0.25   # fractional areal-density window around the kernel wall
-
-
-def _spe_kernel_wall_gcm2() -> float:
-    return float(_load_spe_kernel()["meta"]["cal_wall_areal_g_cm2"])
-
-
 def _spe_kernel_calibrated(spec) -> bool:
-    """True when the design sits in the shielded regime the kernel was measured on.
+    """True when the design's areal density lies inside the depth kernel's grid
+    (0-200 g/cm^2 of Al-shell transport). Thicker walls are NOT ASSESSED: the fold
+    would have to extrapolate in depth. Material is flagged separately
+    (_spe_material_indicative), it does not withhold the verdict."""
+    lo, hi = spe_kernel_depth_range()
+    return lo <= spec.areal_density_gcm2() <= hi
 
-    R(E) bakes in the transport through ONE calibration wall (147.5 g/cm^2 regolith
-    stack) and starts at 430 MeV, the just-penetrating energy for that wall. fold_spe
-    does not re-transport through the design's wall -- only the 1/R^2 gauge term
-    changes -- so the fold is a measurement only for walls of comparable areal
-    density. A thinner wall lets <430 MeV protons through that the kernel never saw
-    (dose UNDERSTATED, possibly by orders of magnitude); a thicker wall is folded as
-    if it were 147.5 g/cm^2 (dose probably overstated, not verified). Outside the
-    window the number is still computed but the verdict is NOT ASSESSED."""
-    cal_ad = _spe_kernel_wall_gcm2()
-    return abs(spec.areal_density_gcm2() - cal_ad) / cal_ad <= SPE_KERNEL_WINDOW
+
+def _spe_material_indicative(spec) -> bool:
+    """True when less than 80% of the column is Al-equivalent (SPE_AL_EQUIVALENT):
+    the fold still runs on the Al kernel, but the number is indicative (amber)."""
+    return _spe_al_equivalent_fraction(spec) < SPE_AL_EQUIVALENT_MIN_FRACTION
 
 
 # ----------------------------------------------------------------------
@@ -1579,7 +1734,7 @@ class SPEAssessment:
     event_dose_gy: float            # absorbed dose for the whole event (headline shell)
     quality_factor: float
     event_fluence_cm2: float        # real total event proton fluence used to normalise
-    sim_fluence_cm2: float          # penetrating (>~430 MeV) fluence reaching the crew
+    sim_fluence_cm2: float          # event fluence folded (10 MeV-20 GeV) x sky fraction
     scenario_name: str = ""
     rel_err: Optional[float] = None
     # --- kernel-fold extras (depth-resolved acute dose) ------------------
@@ -1591,26 +1746,37 @@ class SPEAssessment:
     skin_quality_factor: Optional[float] = None
     skin_rel_err: Optional[float] = None
     areal_gcm2: Optional[float] = None        # design wall areal density
-    kernel_wall_gcm2: Optional[float] = None  # the one wall R(E) was transported through
+    kernel_wall_gcm2: Optional[float] = None  # depth the kernel was evaluated at
+    kernel_max_gcm2: Optional[float] = None   # thickest depth in the kernel grid
+    sky_fraction: float = 0.5                 # 0.5 isotropic / 1.0 beamed upper bound
+    material_indicative: bool = False         # <80% of the column Al-equivalent
 
     @property
     def validity_note(self) -> str:
-        """Why the verdict is (not) a measurement for this wall; '' when calibrated."""
-        if self.calibrated:
-            return ""
-        ad, kw = self.areal_gcm2, self.kernel_wall_gcm2
-        if ad is None or kw is None:
-            return "design is outside the SPE kernel's calibration"
-        lo, hi = kw * (1 - SPE_KERNEL_WINDOW), kw * (1 + SPE_KERNEL_WINDOW)
-        head = (f"wall {ad:.0f} g/cm² is outside the SPE kernel's "
-                f"{lo:.0f}–{hi:.0f} g/cm² range (kernel transported through one "
-                f"{kw:.1f} g/cm² wall)")
-        if ad < kw:
-            return (head + "; protons below 430 MeV that cross this thinner wall are "
-                    "not in the kernel, so the dose is UNDERSTATED, possibly by "
-                    "orders of magnitude")
-        return (head + "; the thicker wall is folded as if it were the kernel wall, "
-                "so the dose is probably overstated (not verified)")
+        """Why the verdict is withheld (outside the depth grid) or only indicative
+        (non-Al-equivalent wall); '' when neither applies."""
+        notes = []
+        if not self.calibrated:
+            ad, top = self.areal_gcm2, self.kernel_max_gcm2
+            if ad is None or top is None:
+                notes.append("design is outside the SPE kernel's depth range")
+            else:
+                notes.append(
+                    f"wall {ad:.0f} g/cm² is thicker than the SPE kernel's deepest "
+                    f"{top:.0f} g/cm²; the number is the {top:.0f} g/cm² fold, which "
+                    "overstates the dose of this thicker wall")
+        if self.material_indicative:
+            notes.append("wall is mostly hydrogen-rich or high-Z material, folded on "
+                         "the aluminium kernel, so the dose is indicative only")
+        return "; ".join(notes)
+
+    @property
+    def sky_label(self) -> str:
+        if self.sky_fraction >= 1.0:
+            return "beamed event, upper bound (sky fraction 1.0)"
+        if self.sky_fraction == 0.5:
+            return "isotropic event, Moon blocks 2π (sky fraction 0.5)"
+        return f"sky fraction {self.sky_fraction:g}"
 
     @property
     def event_mgy(self) -> float:
@@ -1639,8 +1805,8 @@ class SPEAssessment:
         return self.event_msv / DOSE_LIMITS_MSV[limit_key]
 
     def verdict(self, limit_key: str = "nasa_30day") -> str:
-        # The fold is wall-independent (one kernel wall); off that wall the number
-        # is not a measurement of THIS design, so no verdict is issued.
+        # Beyond the kernel's deepest depth the number is a clamped reference fold,
+        # not a measurement of THIS design, so no verdict is issued.
         if not self.calibrated:
             return "NOT ASSESSED"
         f = self.fraction_of(limit_key)
@@ -1655,6 +1821,8 @@ class SPEAssessment:
             "scenario": self.scenario_name,
             "rel_err": None if self.rel_err is None else round(self.rel_err, 3),
             "calibrated": self.calibrated,
+            "material_indicative": self.material_indicative,
+            "sky_fraction": self.sky_fraction,
             "validity_note": self.validity_note,
             "event_mGy": round(self.event_mgy, 2),
             "event_mSv": round(self.event_msv, 1),
@@ -1671,18 +1839,17 @@ def assess_spe(result: RunResult, scenario: SPEScenario,
                skin: bool = True) -> Optional[SPEAssessment]:
     """Convert an SPE scenario into a total-event dose assessment by kernel fold.
 
-    Behind thick regolith a direct phantom MC of an SPE is rare-tail-starved (the
-    penetrating flux piles into one under-sampled energy bin), so the dose is taken
-    instead from folding the event's proton spectrum against the precomputed shielded
-    response kernel R(E) (see fold_spe / [[thin-shield-bragg-limit]]). The transport,
-    depth structure and per-organ NASA/ICRP quality factors are all baked into R(E),
-    so this needs no per-event reruns and is immune to the sampling starvation.
+    Behind shielding a direct phantom MC of an SPE is rare-tail-starved, so the dose
+    is taken from folding the event's proton spectrum against the depth-resolved
+    response kernel R(E) at the design's areal density (see fold_spe /
+    [[thin-shield-bragg-limit]]). Transport, depth structure and per-organ NASA/ICRP
+    quality factors are baked into R(E), so no per-event reruns are needed.
 
-    `result` supplies only the design geometry (result.spec) for the 1/R^2 gauge
-    correction; its (noisy) SPE dose is no longer used. skin=True (default, as the
-    GUI calls it) makes the headline the SKIN shell; the deep blood-forming-organ
-    dose -- the binding acute constraint -- is always populated (bfo_msv). Returns
-    None only if the geometry is missing."""
+    `result` supplies only the design geometry (result.spec); its SPE MC dose is not
+    used. skin=True makes the headline the SKIN shell; the deep blood-forming-organ
+    dose -- the binding acute constraint -- is always populated (bfo_msv). The
+    scenario's sky_fraction (0.5 isotropic default, 1.0 beamed upper bound) scales
+    every dose linearly. Returns None only if the geometry is missing."""
     spec = getattr(result, "spec", None)
     if spec is None:
         return None
@@ -1704,18 +1871,21 @@ def assess_spe(result: RunResult, scenario: SPEScenario,
         event_dose_gy=hd,
         quality_factor=eff_q,
         event_fluence_cm2=fold["anchor_cm2"],
-        sim_fluence_cm2=fold["penetrating_cm2"],
+        sim_fluence_cm2=fold["folded_cm2"],
         scenario_name=scenario.name,
         rel_err=rel_err,
         method="kernel-fold",
-        calibrated=_spe_kernel_calibrated(spec),
+        calibrated=fold["in_grid"],
         bfo_dose_gy=dd,
         bfo_quality_factor=(dn / dd) if dd else None,
         skin_dose_gy=sd,
         skin_quality_factor=(sn / sd) if sd else None,
         skin_rel_err=(sd_sem / sd) if sd else None,
-        areal_gcm2=spec.areal_density_gcm2(),
-        kernel_wall_gcm2=_spe_kernel_wall_gcm2(),
+        areal_gcm2=fold["areal_gcm2"],
+        kernel_wall_gcm2=fold["depth_gcm2"],
+        kernel_max_gcm2=spe_kernel_depth_range()[1],
+        sky_fraction=fold["sky_fraction"],
+        material_indicative=_spe_material_indicative(spec),
     )
 
 

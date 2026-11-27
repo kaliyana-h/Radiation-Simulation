@@ -224,7 +224,7 @@ def run_fold(radius_cm: float, wall_cm: float, site: str) -> int:
         walls=[WallLayer(material="aluminium", thickness_cm=wall_cm)],
         regolith_site=site)
 
-    class _Result:            # assess_spe needs only result.spec for the 1/R^2 gauge
+    class _Result:            # assess_spe needs only result.spec (areal density)
         pass
     result = _Result()
     result.spec = spec
@@ -232,10 +232,11 @@ def run_fold(radius_cm: float, wall_cm: float, site: str) -> int:
     print(f"\nSPE KERNEL-FOLD SWEEP  (reference design: {radius_cm / 100:.1f} m Al dome, "
           f"{wall_cm:g} cm wall, {spec.areal_density_gcm2():.1f} g/cm^2)")
     calib = dosimetry._spe_kernel_calibrated(spec)
-    print(f"  shielded-kernel calibration regime: {calib}"
-          + ("" if calib else "  (off-calibration -> numbers indicative, ratios robust)"))
+    print(f"  inside the SPE depth kernel (0-200 g/cm^2): {calib}"
+          + ("" if calib else "  (clamped at 200 -> numbers overstated, ratios indicative)")
+          + f"   sky fraction {scenarios['feb1956'].sky_fraction:g}")
     print("-" * 86)
-    print(f"{'event':<30} {'skin mSv':>10} {'BFO mSv':>10} {'pen /cm^2':>12} "
+    print(f"{'event':<30} {'skin mSv':>10} {'BFO mSv':>10} {'fold /cm^2':>12} "
           f"{'Q_BFO':>7}")
     print("-" * 86)
     rows = []

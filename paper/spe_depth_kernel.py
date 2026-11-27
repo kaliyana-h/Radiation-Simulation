@@ -87,7 +87,7 @@ SPOT_MARGIN = 1.35        # spot >= 1.35 x shell outer radius (spot45: 45/33.5)
 SPOT_STEP_CM = 5.0
 QUANTS = ("D", "I", "N")
 SCORERS = {"D": "DoseToMedium", "I": "DoseEquivalent_ICRP", "N": "DoseEquivalent_NASA"}
-SKY_FRACTION = 1.0        # shipped convention (directional event); 0.5 = isotropic 2 pi
+SKY_FRACTION = 1.0        # report convention (beamed); the GUI default is 0.5 = isotropic 2 pi
 DATA = REPO_ROOT / "lunarsim" / "data"
 DEST = DATA / "spe_proton_kernel_depth.json"
 SHIPPED = DATA / "spe_proton_kernel.json"
@@ -297,7 +297,7 @@ def collect(out: Path, dest: Path = DEST) -> dict:
 
 
 # --------------------------------------------------------------------------
-# fold (report-side; mirrors dosimetry.fold_spe minus CAL/gauge)
+# fold (report-side; bin-fold twin of the log-log fold dosimetry.fold_spe now ships)
 # --------------------------------------------------------------------------
 def bin_edges(nodes: list) -> list:
     return ([nodes[0]] + [math.sqrt(nodes[j] * nodes[j + 1]) for j in range(len(nodes) - 1)]
@@ -428,7 +428,7 @@ def old_kernel_fold(event: str) -> dict:
                        inner_radius_cm=meta["cal_inner_radius_cm"],
                        walls=[WallLayer(m, t) for m, t in meta["cal_wall"]])
     sc = SPEScenario(name=event, event=event, fluence_cm2=0.0)
-    return dosimetry.fold_spe(sc, spec)["shells"]
+    return dosimetry.fold_spe_onewall(sc, spec)["shells"]
 
 
 def below_cut_share(point: dict, event: str, nodes: list, cut_mev: float) -> dict:
@@ -455,7 +455,7 @@ def report(path: Path = DEST, events=None, walls=None) -> dict:
     print(f"SPE depth kernel {path.name}: {len(grid)} depths, {len(nodes)} nodes "
           f"{nodes[0]:g}-{nodes[-1]:g} MeV, {K['H']['points'][0]['seeds']} seeds")
     print(f"provenance: {K['meta'].get('provenance')}")
-    print(f"sky fraction {SKY_FRACTION:g} (directional, shipped convention); "
+    print(f"sky fraction {SKY_FRACTION:g} (beamed upper bound; GUI default 0.5); "
           "isotropic-2pi values are exactly half\n")
     for ev in events:
         pb = bin_fluence(ev, nodes)

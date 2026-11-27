@@ -7,10 +7,12 @@ not silently regress:
 
   * the new OCT1989_SPE constant carries the fluence_cm2 that the fold's own
     normalisation implies (the phi(>30 MeV) anchor integrated over the sampled band);
-  * the three events stay strictly ordered aug1972 < oct1989 < feb1956 in BOTH the
-    penetrating fluence and the deep (BFO) dose-equivalent behind thick shielding --
-    i.e. the hard event binds inside the habitat;
-  * the per-event mean quality factor rises with spectral hardness.
+  * the three events stay strictly ordered aug1972 < oct1989 < feb1956 in the deep
+    (BFO) dose-equivalent behind thick shielding -- the hard event binds inside;
+  * behind a thick wall the BFO quality factor FALLS with spectral hardness on the
+    depth kernel (soft events reach the BFO only through slow, high-LET stopping
+    protons and secondaries; the hard event's dose is carried by fast primaries);
+  * the sky fraction scales the fold linearly (0.5 isotropic default, 1.0 beamed).
 
 TARGET-BLIND: no dose value, limit, or external reference appears here. Runs without
 dash or TOPAS (the acute verdict is a response-kernel fold), so it is laptop-safe.
@@ -45,7 +47,7 @@ def _band_ratio(r0: float, n: int = 40000) -> float:
 
 
 class _Result:
-    """Minimal stand-in: assess_spe reads only result.spec (for the 1/R^2 gauge)."""
+    """Minimal stand-in: assess_spe reads only result.spec (for the areal density)."""
     def __init__(self, spec):
         self.spec = spec
 
@@ -74,11 +76,11 @@ class TestSpeEvent(unittest.TestCase):
         self.assertLess(ms.SPE_EVENTS["aug1972"][0], ms.SPE_EVENTS["oct1989"][0])
         self.assertLess(ms.SPE_EVENTS["oct1989"][0], ms.SPE_EVENTS["feb1956"][0])
 
-    def test_penetrating_fluence_rises_with_hardness(self):
-        pen = [dosimetry.assess_spe(self.result, s, skin=False).sim_fluence_cm2
-               for s in self.events]
-        self.assertTrue(pen[0] < pen[1] < pen[2],
-                        f"penetrating fluence not monotone in hardness: {pen}")
+    def test_folded_fluence_is_sky_times_event_fluence(self):
+        for s in self.events:
+            a = dosimetry.assess_spe(self.result, s, skin=False)
+            self.assertAlmostEqual(a.sim_fluence_cm2 / (s.sky_fraction * s.fluence_cm2),
+                                   1.0, delta=0.01, msg=s.event)
 
     def test_deep_dose_rises_with_hardness(self):
         bfo = [dosimetry.assess_spe(self.result, s, skin=False).bfo_msv
@@ -86,11 +88,39 @@ class TestSpeEvent(unittest.TestCase):
         self.assertTrue(bfo[0] < bfo[1] < bfo[2],
                         f"BFO dose not monotone in hardness behind thick wall: {bfo}")
 
-    def test_quality_factor_rises_with_hardness(self):
+    def test_quality_factor_falls_with_hardness_behind_thick_wall(self):
         q = [dosimetry.assess_spe(self.result, s, skin=False).bfo_quality_factor
              for s in self.events]
-        self.assertTrue(q[0] < q[1] < q[2],
-                        f"BFO quality factor not monotone in hardness: {q}")
+        self.assertTrue(q[0] > q[1] > q[2],
+                        f"BFO quality factor not falling with hardness: {q}")
+
+    def test_default_sky_is_isotropic(self):
+        for s in self.events:
+            self.assertEqual(s.sky_fraction, dosimetry.SPE_SKY_ISOTROPIC)
+
+    def test_beamed_sky_doubles_every_shell(self):
+        import dataclasses
+        for s in self.events:
+            iso = dosimetry.assess_spe(self.result, s, skin=False)
+            beam = dosimetry.assess_spe(
+                self.result, dataclasses.replace(s, sky_fraction=dosimetry.SPE_SKY_BEAMED),
+                skin=False)
+            self.assertAlmostEqual(beam.bfo_msv, 2 * iso.bfo_msv, places=9)
+            self.assertAlmostEqual(beam.skin_msv, 2 * iso.skin_msv, places=9)
+            self.assertEqual(beam.bfo_quality_factor, iso.bfo_quality_factor)
+
+    def test_material_indicative_flag(self):
+        poly = HabitatSpec(name="p", shape="dome", inner_radius_cm=300.0,
+                           walls=[WallLayer("polyethylene", 50.0)])
+        reg = HabitatSpec(name="r", shape="dome", inner_radius_cm=300.0,
+                          walls=[WallLayer("aluminium", 1.0),
+                                 WallLayer("regolith", 50.0)])
+        a = dosimetry.assess_spe(_Result(poly), WORST_CASE_SPE)
+        b = dosimetry.assess_spe(_Result(reg), WORST_CASE_SPE)
+        self.assertTrue(a.material_indicative)
+        self.assertIn("indicative", a.validity_note)
+        self.assertNotEqual(a.verdict(), "NOT ASSESSED")    # flagged, not withheld
+        self.assertFalse(b.material_indicative)
 
     def test_hard_event_is_the_shielded_worst_case(self):
         # The default (WORST_CASE_SPE) must be the worst at the deep shell.

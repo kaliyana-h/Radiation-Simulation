@@ -1088,30 +1088,42 @@ class TestSpeKernelFold(unittest.TestCase):
                                  skin=False)
         self.assertEqual(a.method, "kernel-fold")
         self.assertTrue(a.calibrated)
-        # feb1956 behind 147 g/cm^2: BFO ~4.5 mSv, skin ~8.2 mSv (offline fold)
-        self.assertAlmostEqual(a.event_msv, 4.5, delta=1.0)   # headline = BFO
-        self.assertAlmostEqual(a.skin_msv, 8.2, delta=1.5)
+        self.assertFalse(a.material_indicative)   # 94% Al-equivalent column
+        self.assertEqual(a.sky_fraction, 0.5)
+        # feb1956 behind 147.5 g/cm^2, depth kernel, sky 0.5: half the sky-1 values
+        # in paper/spe_depth_kernel_report.txt (BFO N 21.64, skin N 44.93 mSv)
+        self.assertAlmostEqual(a.event_msv, 21.64 / 2, delta=0.3)   # headline = BFO
+        self.assertAlmostEqual(a.skin_msv, 44.93 / 2, delta=0.5)
         self.assertGreater(a.skin_msv, a.event_msv)           # skin > BFO (depth)
         self.assertLess(a.fraction_of("nasa_30day"), 0.1)     # far under the limit
 
     def test_hard_event_dominates_behind_shield(self):
-        # the shielding-dependent fork: the HARD event (feb1956) doses the crew far
-        # more behind thick regolith than the SOFT high-fluence one (aug1972),
-        # despite aug1972's ~5x larger total fluence -- soft protons are stopped.
+        # the shielding-dependent fork: the HARD event (feb1956) doses the crew more
+        # behind thick regolith than the SOFT high-fluence one (aug1972), despite
+        # aug1972's ~9x larger total fluence -- soft protons are stopped.
         from lunarsim import dosimetry
         from lunarsim.bridge import WORST_CASE_SPE, SOFT_SPE
         r = _FakeRun(self._cal_dome())
         hard = dosimetry.assess_spe(r, WORST_CASE_SPE, skin=False)
         soft = dosimetry.assess_spe(r, SOFT_SPE, skin=False)
-        self.assertGreater(hard.event_msv, 10 * soft.event_msv)
+        self.assertGreater(hard.event_msv, 3 * soft.event_msv)
 
-    def test_off_calibration_wall_is_flagged(self):
+    def test_thin_wall_is_assessed_thick_wall_is_not(self):
+        # the depth kernel spans 0-200 g/cm^2: a thin wall is now a measurement
+        # (the old one-wall kernel withheld it); beyond 200 no verdict is issued.
         from lunarsim import dosimetry
         from lunarsim.bridge import WORST_CASE_SPE
         thin = HabitatSpec(name="t", shape="dome", inner_radius_cm=750.0,
                            walls=[WallLayer("aluminium", 5.0)])   # ~13.5 g/cm^2
         a = dosimetry.assess_spe(_FakeRun(thin), WORST_CASE_SPE, skin=False)
-        self.assertFalse(a.calibrated)   # kernel not valid off its shielded regime
+        self.assertTrue(a.calibrated)
+        self.assertEqual(a.validity_note, "")
+        thick = HabitatSpec(name="k", shape="dome", inner_radius_cm=750.0,
+                            walls=[WallLayer("aluminium", 100.0)])  # ~270 g/cm^2
+        b = dosimetry.assess_spe(_FakeRun(thick), WORST_CASE_SPE, skin=False)
+        self.assertFalse(b.calibrated)
+        self.assertEqual(b.verdict(), "NOT ASSESSED")
+        self.assertIn("200 g/cm²", b.validity_note)
 
 
 class TestGcrThinWallFold(unittest.TestCase):

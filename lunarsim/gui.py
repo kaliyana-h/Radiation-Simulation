@@ -195,9 +195,28 @@ SPE_PRESETS = [                                 # (value, short name, caption)
 ]
 
 
-def _spe_scenario(event) -> "SPEScenario":
-    """SPEScenario for a radio value; falls back to the shielded worst case."""
-    return SPE_SCENARIOS.get(str(event), WORST_CASE_SPE)
+# Sky fraction of the event fold. An isotropic event seen from the lunar surface
+# arrives over 2π only (the Moon blocks the lower hemisphere): 0.5, the OLTARIS /
+# GCR convention and the default. 1.0 folds the full free-space fluence onto the
+# crew, an upper bound for a strongly beamed (field-aligned) onset.
+SPE_SKY_DEFAULT = 0.5
+SPE_SKY_PRESETS = [                             # (value, short name, caption)
+    (0.5, "Isotropic", "Moon blocks half the sky (default)"),
+    (1.0, "Beamed event", "full fluence on the crew · upper bound"),
+]
+
+
+def _spe_scenario(event, sky=None) -> "SPEScenario":
+    """SPEScenario for a radio value (falls back to the shielded worst case),
+    with the chosen sky fraction (falls back to the isotropic 0.5)."""
+    sc = SPE_SCENARIOS.get(str(event), WORST_CASE_SPE)
+    try:
+        f = float(sky)
+    except (TypeError, ValueError):
+        f = SPE_SKY_DEFAULT
+    if f not in {v for v, _, _ in SPE_SKY_PRESETS}:
+        f = SPE_SKY_DEFAULT
+    return sc if f == sc.sky_fraction else _dc_replace(sc, sky_fraction=f)
 
 CARD = {"background": CARD_BG, "border": f"1px solid {BORDER}",
         "borderRadius": "10px", "padding": "16px", "marginBottom": "14px"}
@@ -858,6 +877,16 @@ sidebar = html.Div(style={"width": "270px", "minWidth": "270px", "padding": "22p
     html.Div("Defines the acute case. Used only when the scenario includes an SPE.",
              style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
                     "margin": "4px 0 0"}),
+    dcc.RadioItems(id="spe-sky", value=SPE_SKY_DEFAULT,
+                   options=[{"label": f" {name}: {cap}", "value": v}
+                            for v, name, cap in SPE_SKY_PRESETS],
+                   style={"color": INK, "fontSize": "13px", "marginTop": "8px"},
+                   labelStyle={"display": "flex", "alignItems": "center",
+                               "marginBottom": "6px", "color": INK},
+                   inputStyle={"marginRight": "8px", "accentColor": ACCENT}),
+    html.Div("Event arrival. The dose scales linearly: beamed is exactly 2× isotropic.",
+             style={"color": MUTED, "fontSize": "11px", "lineHeight": "1.5",
+                    "margin": "4px 0 0"}),
 
     html.Div("Scoring Conditions", style=SECTION),
     html.Div(id="scoring-conditions", style={**CARD, "padding": "12px"}),
@@ -1067,10 +1096,12 @@ def _switch_tab(tab):
 @app.callback(
     Output("scoring-conditions", "children"), Output("scenario-note", "children"),
     Input("scenario", "value"), Input("phi-select", "value"),
-    Input("spe-select", "value"))
-def _scenario_conditions(scenario, phi, spe_event):
+    Input("spe-select", "value"), Input("spe-sky", "value"))
+def _scenario_conditions(scenario, phi, spe_event, spe_sky=None):
     gcr_field = _phi_caption(phi)
-    spe = _spe_scenario(spe_event)
+    spe = _spe_scenario(spe_event, spe_sky)
+    sky = ("beamed, upper bound (1.0)" if spe.sky_fraction >= 1.0
+           else f"isotropic ({spe.sky_fraction:g})")
     if scenario == "spe":
         short = "Total event dose vs the 30-day limit"
         note = ("A single solar proton event. The acute test. Scored as "
@@ -1078,7 +1109,8 @@ def _scenario_conditions(scenario, phi, spe_event):
                 "not a per-year rate.")
         rows = [
             _kv("Event", spe.name),
-            _kv("Fluence", f"{spe.fluence_cm2:.1e} p/cm²"),
+            _kv("Fluence", f"{spe.fluence_cm2:.1e} p/cm² (free space)"),
+            _kv("Sky", sky),
             _kv("🔒 Limit", f"{DOSE_LIMITS_MSV['nasa_30day']:.0f} mSv (30-day BFO)"),
         ]
     elif scenario == "both":
@@ -1091,7 +1123,7 @@ def _scenario_conditions(scenario, phi, spe_event):
                 "worst + worst envelope, not one solar epoch.")
         rows = [
             _kv("GCR field", gcr_field),
-            _kv("SPE event", spe.name),
+            _kv("SPE event", f"{spe.name} · sky {sky}"),
             _kv("🔒 Gates", "career limit  +  30-day BFO limit"),
             _kv("🔒 Statistics", "converged full run"),
         ]
@@ -1393,9 +1425,10 @@ def _style_cascade(fig):
     State("regolith-site", "value"),
     State("phi-select", "value"),
     State("spe-select", "value"),
+    State("spe-sky", "value"),
     prevent_initial_call=True)
 def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length, burial,
-              site, phi, spe_event):
+              site, phi, spe_event, spe_sky=None):
     layers = _layers_from_components(mats, ids, thks, active)
     if not any(L["t"] > 0 for L in layers):
         # No layer has a thickness -- refuse rather than score a fabricated wall.
@@ -1406,7 +1439,7 @@ def _evaluate(n, shape, inner_r, mats, ids, thks, active, scenario, length, buri
     # every dosimetry fold read, so one override keeps the whole chain consistent.
     tier = (SCORING_TIER if float(phi) == SCORING_TIER.phi_mv
             else _dc_replace(SCORING_TIER, phi_mv=float(phi)))
-    spe = _spe_scenario(spe_event)
+    spe = _spe_scenario(spe_event, spe_sky)
     if scenario == "spe":
         # One acute event: a single proton cone at the fixed event fluence.
         # Converge on the wall lining (the skin/BFO surface); no ion composition.
@@ -2198,8 +2231,8 @@ def _spe_score_card(a):
         verdict_line = (f"{verdict} · {frac:.0f}% of the "
                         f"{DOSE_LIMITS_MSV['nasa_30day']:.0f} mSv 30-day BFO limit")
     else:
-        verdict_line = (f"NOT ASSESSED · {a.validity_note}. The number is the "
-                        "kernel-wall fold, shown for reference only.")
+        verdict_line = (f"NOT ASSESSED · {a.validity_note}. Shown for reference "
+                        "only.")
     style = dict(CARD)
     style.update({"borderLeft": f"4px solid {colour}", "background": "#161d27",
                   "padding": "18px"})
@@ -2218,6 +2251,14 @@ def _spe_score_card(a):
                  "1500 mSv 30-day skin limit"
                  if a.skin_msv is not None else "",
                  style={"color": MUTED, "fontSize": "11px", "marginTop": "4px"}),
+        html.Div(f"Event arrival: {a.sky_label}",
+                 style={"color": MUTED, "fontSize": "11px", "marginTop": "4px"}),
+        html.Div("Indicative: the wall is mostly hydrogen-rich or high-Z material, "
+                 "folded on the aluminium SPE kernel. The material scaling is "
+                 "approximate (for polyethylene the aluminium proxy is expected to "
+                 "overstate the dose).",
+                 style={"color": "#d29922", "fontSize": "11px", "marginTop": "6px"})
+        if a.material_indicative else "",
     ])
 
 
@@ -2227,7 +2268,7 @@ def _spe_metric_cards(a, job):
         metric_card("Absorbed dose, BFO (event)", f"{a.event_mgy:.2f} mGy",
                     "deep (~5 cm) organ total, folded behind the shield"),
         metric_card("Quality factor, BFO", f"{a.quality_factor:.2f}",
-                    "NASA/Cucinotta Q for the penetrating proton field"),
+                    "NASA/Cucinotta Q of the proton field at the deep shell"),
         metric_card("30-day BFO limit",
                     f"{DOSE_LIMITS_MSV['nasa_30day']:.0f} mSv",
                     f"event delivers {a.fraction_of('nasa_30day') * 100:.1f}% of it"),
@@ -2241,7 +2282,7 @@ def _spe_analysis_body(a, job):
     verdict = s["verdict"]
     skin_line = (f"{a.skin_msv:.0f} mSv · {a.skin_msv / 1500 * 100:.1f}% of 1500 limit"
                  if a.skin_msv is not None else "n/a")
-    calib_note = "" if a.calibrated else f"  ⚠ {a.validity_note}"
+    calib_note = f"  ⚠ {a.validity_note}" if a.validity_note else ""
     skin_err = _pm(a.skin_rel_err) if a.skin_msv is not None else ""
     return [
         _kv("◆ BFO EVENT DOSE-EQUIVALENT", f"{a.event_msv:.0f} mSv"
@@ -2251,23 +2292,31 @@ def _spe_analysis_body(a, job):
         _kv("Absorbed dose, BFO (event)", f"{a.event_mgy:.1f} mGy"),
         _kv("Quality factor, BFO (NASA/Cucinotta)", f"{a.quality_factor:.2f}"),
         _kv("Fraction of 30-day BFO limit", f"{s['fraction_of_limit'] * 100:.1f} %"),
-        _kv("Event proton fluence (>30 MeV)", f"{a.event_fluence_cm2:.1e} /cm²"),
-        _kv("Penetrating fluence (reaches crew)", f"{a.sim_fluence_cm2:.1e} /cm²"),
+        _kv("Event proton fluence (>30 MeV, free space)",
+            f"{a.event_fluence_cm2:.1e} /cm²"),
+        _kv("Fluence folded (10 MeV–20 GeV × sky)", f"{a.sim_fluence_cm2:.1e} /cm²"),
+        _kv("Event arrival", a.sky_label),
+        _kv("Kernel depth", f"{a.kernel_wall_gcm2:.1f} g/cm²"
+            if a.kernel_wall_gcm2 is not None else "n/a"),
         _kv("Scenario", a.scenario_name + calib_note),
         _kv("Method", "response-kernel fold (variance-reduced)"),
         html.Div("A single acute solar particle event delivers its whole proton "
                  "fluence over hours, so the dose is a one-off total judged against the "
-                 "30-day blood-forming-organ limit, not an annual rate. Behind thick "
-                 "regolith only a few percent of even the hardest event penetrates, so a "
-                 "direct phantom MC is rare-tail-starved; the dose is instead folded from "
-                 "the event's proton spectrum against a precomputed shielded response "
-                 "kernel R(E) (per-depth, per-organ NASA/ICRP quality factors baked in). "
-                 "BFO is the deep (~5 cm) shell; skin is the surface shell. "
-                 "Limits of this estimate: the kernel was transported through ONE "
-                 f"{a.kernel_wall_gcm2 or 147.5:.1f} g/cm² wall, so other walls get no "
-                 "verdict; event spectra are single-exponential in rigidity and lack "
-                 "the hard tail of modern Band fits (Koldobskiy et al. 2021), so the "
-                 "shielded dose may be understated; the ± is the kernel's Monte-Carlo "
+                 "30-day blood-forming-organ limit, not an annual rate. Behind shielding "
+                 "a direct phantom MC is rare-tail-starved, so the dose is instead "
+                 "folded from the event's proton spectrum against a precomputed "
+                 "depth-resolved response kernel R(E, depth) (229 proton energies "
+                 "10 MeV–20 GeV, 0–200 g/cm² aluminium, per-organ NASA/ICRP quality "
+                 "factors baked in), interpolated to this wall's areal density. BFO is "
+                 "the deep (~5 cm) shell; skin is the surface shell. An isotropic event "
+                 "reaches the surface from half the sky (fraction 0.5); 'beamed' folds "
+                 "the full free-space fluence (1.0) as an upper bound. "
+                 "Limits of this estimate: the kernel is an aluminium shell in vacuum "
+                 "(no regolith floor albedo), so other materials are scaled as "
+                 "aluminium-equivalent; walls thicker than 200 g/cm² get no verdict; "
+                 "event spectra are single-exponential in rigidity and lack the hard "
+                 "tail of modern Band fits (Koldobskiy et al. 2021), so the Feb-1956 "
+                 "deep dose may be understated; the ± is the kernel's Monte-Carlo "
                  "error only.",
                  style={"color": MUTED, "fontSize": "10px",
                         "marginTop": "12px", "fontStyle": "italic"}),
@@ -2378,8 +2427,9 @@ def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
         L += ["## Gate 2 — solar particle event (acute)" if combined
               else "## Scenario — solar particle event (acute)",
               f"- Event: {spe.scenario_name}",
-              f"- Event proton fluence (>30 MeV): {spe.event_fluence_cm2:.1e} /cm²",
-              f"- Penetrating fluence (reaches crew): {spe.sim_fluence_cm2:.1e} /cm²",
+              f"- Event proton fluence (>30 MeV, free space): {spe.event_fluence_cm2:.1e} /cm²",
+              f"- Event arrival: {spe.sky_label}",
+              f"- Fluence folded (10 MeV–20 GeV × sky): {spe.sim_fluence_cm2:.1e} /cm²",
               f"- **BFO event dose-equivalent: {spe.event_msv:.0f} mSv**",
               f"- Skin event dose-equivalent: {skin_txt}",
               f"- Absorbed dose (BFO): {spe.event_mgy:.2f} mGy",
@@ -2389,8 +2439,8 @@ def _report_text(job, gcr=None, spe=None, thinwall=None) -> str:
               f"- **Verdict: {s['verdict']}**",
               f"- MC error (kernel statistics only): "
               + _pm(spe.rel_err, sep="±", unknown="n/a"),
-              f"- Method: response-kernel fold (variance-reduced)"
-              + ("" if spe.calibrated else f"  ⚠ {spe.validity_note}")]
+              f"- Method: depth-resolved response-kernel fold (variance-reduced)"
+              + (f"  ⚠ {spe.validity_note}" if spe.validity_note else "")]
 
     return "\n".join(L)
 

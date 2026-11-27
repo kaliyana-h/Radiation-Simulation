@@ -137,6 +137,14 @@ class SPEScenario:
     cone_deg: float = 25.0       # angular half-spread of the arriving beam
     r0_MV: Optional[float] = None   # override characteristic rigidity; None -> event default
     e0_MeV: Optional[float] = None  # LEGACY: exp-in-energy spectrum instead of rigidity
+    # Fraction of the free-space omnidirectional event fluence that reaches the
+    # habitat (dosimetry.fold_spe). 0.5 = isotropic event, the Moon blocks the lower
+    # 2 pi (HZETRN/OLTARIS lunar-surface convention, same as the GCR upper
+    # hemisphere). 1.0 = the whole event fluence arrives from the sky: a beamed /
+    # strongly anisotropic event, the upper bound. The SPE_EVENTS fluences are
+    # free-space omnidirectional event integrals (checked 2026-11-27 against
+    # Koldobskiy et al. 2021, A&A 647, A132, Tables 1-2: >30 MeV within ~15%).
+    sky_fraction: float = 0.5
 
 
 # The physically-worst SPE differs by shielding regime (a genuine physics fork).
