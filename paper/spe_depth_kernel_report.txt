@@ -1,85 +1,84 @@
-SPE depth kernel spe_proton_kernel_depth.json: 11 depths, 97 nodes 10-20000 MeV, 8 seeds
+SPE depth kernel spe_proton_kernel_depth.json: 11 depths, 229 nodes 10-20000 MeV, 8 seeds
 provenance: {'git': 'fdc904f0', 'engine': 'kernel_gen', 'lis_form': 'rigidity', 'perelement': 'perelement', 'emax_per_nuc': 20000.0, 'shape': 'pernuc', 'cal': 0.9493345471984778, 'date': '2026-11-27T11:30Z'}
 sky fraction 1 (directional, shipped convention); isotropic-2pi values are exactly half
 
 == aug1972: R0 100 MV, phi(>30) 5e+09 /cm2, binned 1.38e+10 /cm2
    wall    skin D    skin N    skin I     BFO D     BFO N   Q_N    rel maxnode   thin%  ll/bin thinLL%
   g/cm2       mGy       mSv       mSv       mGy       mSv
-      0 1.853e+04 3.133e+04 2.302e+04     583.5     781.7  1.34  0.011    0.07    +0.1   0.994    -1.1
-      2      2447      3521      2880     441.9     590.1  1.34  0.013    0.07    -0.3   0.994    -1.5
-      5     889.7      1238      1051     312.5     413.1  1.32  0.014    0.09    +2.6   0.994    +0.8
-     10     337.1     473.6     405.8     192.3     259.7  1.35  0.013    0.09    +0.6   0.991    -2.3
-     20     108.7     169.1     140.5     86.16       122  1.42  0.015    0.11    -1.0   0.991    -3.8
-     35     34.91     79.06     60.78     33.51     56.57  1.69  0.027    0.11    +5.5   0.980    +2.4
-     50     17.04     50.82     36.63     15.96      36.3  2.27  0.058    0.08    +7.7   0.978    +1.3
-     75     6.397     39.87     24.57      5.84     14.85  2.54  0.042    0.08    -0.9   0.961    -4.0
-    100     3.385      32.1     19.98     2.712      10.2  3.76  0.096    0.06    +0.6   0.944    +3.3
-    150     1.576     16.03     10.09     1.053      4.87  4.62  0.073    0.06    -3.8   0.966    -5.0
-    200    0.9706     10.96     7.288     0.891     4.017  4.51  0.131    0.09   -18.0   0.963   -22.6
+      0 1.853e+04 3.133e+04 2.301e+04     582.3     780.3  1.34  0.012    0.07    +0.1   0.996    -1.1
+      2      2444      3518      2877     439.9     587.4  1.34  0.014    0.07    -0.3   0.999    -1.5
+      5     886.5      1234      1047     310.8     410.8  1.32  0.017    0.11    +2.6   0.999    +0.8
+     10     333.9       469     402.3     190.7     257.6  1.35  0.015    0.08    +0.6   0.999    -2.3
+     20     107.2     167.1     138.9     85.79     121.4  1.42  0.026    0.11    -1.0   0.996    -3.8
+     35     34.85     78.44     60.29     33.35     55.97  1.68  0.034    0.10    +5.5   0.990    +2.4
+     50     16.99     50.53     36.42     15.84     35.91  2.27  0.128    0.12    +7.7   0.989    +1.3
+     75     6.434     39.32     24.45     5.758      14.9  2.59  0.061    0.13    -3.1   0.981    -6.4
+    100     3.418     32.66     20.41     2.678     9.575  3.58  0.117    0.12    +5.2   0.979    +8.1
+    150     1.544     16.39     10.37     1.122     5.067  4.52  0.089    0.14   -10.1   0.969   -11.3
+    200     1.036     11.17     7.421    0.7833     4.075  5.20  0.156    0.24   -10.0   0.982   -16.7
   vs shipped one-wall kernel @147.5 g/cm2 (report only, not a gate):
-    skin D: new 1.605  shipped 0.07477  new/shipped 21.473  (isotropic-2pi 10.736)
-    skin N: new 16.4  shipped 0.2033  new/shipped 80.669  (isotropic-2pi 40.335)
-    BFO  D: new 1.078  shipped 0.08623  new/shipped 12.500  (isotropic-2pi 6.250)
-    BFO  N: new 4.99  shipped 0.1053  new/shipped 47.388  (isotropic-2pi 23.694)
+    skin D: new 1.579  shipped 0.07477  new/shipped 21.117  (isotropic-2pi 10.559)
+    skin N: new 16.77  shipped 0.2033  new/shipped 82.480  (isotropic-2pi 41.240)
+    BFO  D: new 1.141  shipped 0.08623  new/shipped 13.237  (isotropic-2pi 6.618)
+    BFO  N: new 5.162  shipped 0.1053  new/shipped 49.020  (isotropic-2pi 24.510)
   decomposition: protons below the shipped kernel's first node (430 MeV)
-    skin D: share from <430 MeV  82.2%   new(>=430)/shipped 3.823
-    skin N: share from <430 MeV  91.5%   new(>=430)/shipped 6.838
-    BFO  D: share from <430 MeV  72.0%   new(>=430)/shipped 3.495
-    BFO  N: share from <430 MeV  84.5%   new(>=430)/shipped 7.323
-  CHECK (bin fold): one node >50% of BFO N, or thinning >5%, at [35.0, 50.0, 200.0] g/cm2
-  CHECK (log-log fold): thinning >5% at [150.0, 200.0] g/cm2 -> node grid too coarse there
+    skin D: share from <430 MeV  81.3%   new(>=430)/shipped 3.952
+    skin N: share from <430 MeV  91.5%   new(>=430)/shipped 7.005
+    BFO  D: share from <430 MeV  74.0%   new(>=430)/shipped 3.438
+    BFO  N: share from <430 MeV  85.2%   new(>=430)/shipped 7.248
+  CHECK (bin fold): one node >50% of BFO N, or thinning >5%, at [35.0, 50.0, 100.0, 150.0, 200.0] g/cm2
+  CHECK (log-log fold): thinning >5% at [75.0, 100.0, 150.0, 200.0] g/cm2 -> node grid too coarse there
 
 == oct1989: R0 150 MV, phi(>30) 1.5e+09 /cm2, binned 2.96e+09 /cm2
    wall    skin D    skin N    skin I     BFO D     BFO N   Q_N    rel maxnode   thin%  ll/bin thinLL%
   g/cm2       mGy       mSv       mSv       mGy       mSv
-      0      3803      6045      4628     352.6     464.6  1.32  0.010    0.06    +0.1   0.997    -0.8
-      2     884.1      1216      1029     289.1     378.6  1.31  0.011    0.06    +0.5   0.996    -0.5
-      5     438.2     590.1     514.2     228.9     299.1  1.31  0.013    0.07    +2.2   0.996    +0.8
-     10     225.4     307.8     270.3     163.1     215.6  1.32  0.012    0.07    +0.2   0.993    -1.6
-     20     102.7     147.8     127.6     92.24     125.2  1.36  0.012    0.10    -0.4   0.994    -2.1
-     35     45.49     81.15     66.11     46.79     70.69  1.51  0.016    0.10    +2.5   0.989    +0.8
-     50     26.13     56.47     43.58     26.44     45.86  1.73  0.024    0.10    -0.9   0.987    -3.1
-     75     11.92     40.34     27.93     12.45     23.69  1.90  0.023    0.10    -2.7   0.986    -5.7
-    100     6.422     31.88     21.39     6.275      14.8  2.36  0.043    0.08    -4.4   0.974    -4.6
-    150       2.6     18.65      12.1     2.318     7.725  3.33  0.043    0.06    -7.1   0.984    -9.1
-    200     1.512      13.8     9.195     1.421     5.663  3.99  0.085    0.06   -11.6   0.979   -13.2
+      0      3803      6045      4628       352       464  1.32  0.012    0.08    +0.1   0.998    -0.8
+      2     883.2      1215      1028     288.2     377.5  1.31  0.014    0.09    +0.5   0.999    -0.5
+      5     437.1     588.7       513     228.1     297.9  1.31  0.018    0.13    +2.2   1.000    +0.8
+     10       224     305.9     268.8     162.2     214.3  1.32  0.012    0.07    +0.2   0.999    -1.6
+     20     101.8     146.7     126.7     91.96     124.8  1.36  0.017    0.10    -0.4   0.997    -2.1
+     35     45.44      80.8     65.84     46.69     70.36  1.51  0.017    0.10    +2.5   0.993    +0.8
+     50     26.06     56.28     43.43     26.29     45.56  1.73  0.032    0.10    -0.9   0.993    -3.1
+     75     11.99      40.4      28.1     12.29      23.7  1.93  0.030    0.08    -2.5   0.995    -4.0
+    100     6.486     32.48     21.85     6.249     14.55  2.33  0.048    0.07    -2.5   0.991    -2.3
+    150     2.631     19.06      12.4     2.351     7.838  3.33  0.054    0.09    -7.8   0.988    -8.8
+    200     1.573     14.02     9.295     1.364     5.673  4.16  0.101    0.17    -6.3   0.990   -10.0
   vs shipped one-wall kernel @147.5 g/cm2 (report only, not a gate):
-    skin D: new 2.677  shipped 0.4815  new/shipped 5.560  (isotropic-2pi 2.780)
-    skin N: new 19.06  shipped 1.436  new/shipped 13.273  (isotropic-2pi 6.636)
-    BFO  D: new 2.378  shipped 0.5685  new/shipped 4.183  (isotropic-2pi 2.092)
-    BFO  N: new 7.9  shipped 0.7839  new/shipped 10.079  (isotropic-2pi 5.039)
+    skin D: new 2.71  shipped 0.4815  new/shipped 5.628  (isotropic-2pi 2.814)
+    skin N: new 19.47  shipped 1.436  new/shipped 13.560  (isotropic-2pi 6.780)
+    BFO  D: new 2.409  shipped 0.5685  new/shipped 4.237  (isotropic-2pi 2.118)
+    BFO  N: new 8.001  shipped 0.7839  new/shipped 10.207  (isotropic-2pi 5.103)
   decomposition: protons below the shipped kernel's first node (430 MeV)
-    skin D: share from <430 MeV  42.3%   new(>=430)/shipped 3.210
-    skin N: share from <430 MeV  65.6%   new(>=430)/shipped 4.572
-    BFO  D: share from <430 MeV  32.3%   new(>=430)/shipped 2.832
-    BFO  N: share from <430 MeV  53.1%   new(>=430)/shipped 4.731
+    skin D: share from <430 MeV  41.3%   new(>=430)/shipped 3.303
+    skin N: share from <430 MeV  65.5%   new(>=430)/shipped 4.672
+    BFO  D: share from <430 MeV  33.9%   new(>=430)/shipped 2.800
+    BFO  N: share from <430 MeV  53.9%   new(>=430)/shipped 4.704
   CHECK (bin fold): one node >50% of BFO N, or thinning >5%, at [150.0, 200.0] g/cm2
-  CHECK (log-log fold): thinning >5% at [75.0, 150.0, 200.0] g/cm2 -> node grid too coarse there
+  CHECK (log-log fold): thinning >5% at [150.0, 200.0] g/cm2 -> node grid too coarse there
 
 == feb1956: R0 220 MV, phi(>30) 1e+09 /cm2, binned 1.59e+09 /cm2
    wall    skin D    skin N    skin I     BFO D     BFO N   Q_N    rel maxnode   thin%  ll/bin thinLL%
   g/cm2       mGy       mSv       mSv       mGy       mSv
-      0      1912      2896      2298     356.4     468.4  1.31  0.010    0.05    +0.0   0.998    -0.7
-      2     652.4     874.3     759.2     307.1     400.9  1.31  0.010    0.05    +1.3   0.997    +0.6
-      5     396.9     525.6     466.5     261.6     342.6  1.31  0.012    0.06    +1.8   0.997    +0.7
-     10     249.3     338.9     301.7     205.1     270.7  1.32  0.011    0.06    +0.5   0.995    -0.7
-     20     142.7       203     177.8     135.6       184  1.36  0.011    0.08    +0.1   0.995    -1.2
-     35     79.15     133.3       111     83.51     123.8  1.48  0.013    0.08    +1.8   0.993    +0.7
-     50     53.11     104.9     83.48     54.62      89.2  1.63  0.018    0.09    -2.4   0.992    -3.5
-     75     29.66     80.52     58.99     31.61     55.43  1.75  0.019    0.08    -1.4   0.992    -3.5
-    100     18.25     65.41     45.99      18.3     36.63  2.00  0.024    0.08    -2.1   0.987    -2.7
-    150     8.205     43.35      29.1     7.903     21.12  2.67  0.028    0.07    -5.3   0.991    -6.7
-    200     4.784     33.21     22.34     4.428     14.46  3.27  0.045    0.07    -3.5   0.990    -4.1
+      0      1912      2895      2298       356     467.9  1.31  0.013    0.09    +0.0   0.999    -0.7
+      2     651.9     873.8     758.7     306.5       400  1.31  0.014    0.11    +1.3   1.000    +0.6
+      5     396.2     524.7     465.7     260.9     341.7  1.31  0.020    0.13    +1.8   1.000    +0.7
+     10     248.3     337.5     300.6     204.2     269.6  1.32  0.012    0.06    +0.5   0.999    -0.7
+     20       142       202     176.9     135.3     183.6  1.36  0.016    0.12    +0.1   0.998    -1.2
+     35     79.07     132.9     110.8     83.41     123.4  1.48  0.015    0.09    +1.8   0.995    +0.7
+     50        53     104.7     83.28     54.39     88.83  1.63  0.022    0.12    -2.4   0.996    -3.5
+     75     29.82     80.86     59.42      31.3     55.39  1.77  0.020    0.08    -1.1   0.998    -1.8
+    100     18.41     66.47     46.78     18.26     36.54  2.00  0.027    0.11    -1.4   0.997    -1.4
+    150     8.358     44.18      29.7     7.917     21.23  2.68  0.031    0.06    -4.4   0.996    -4.9
+    200     4.842     33.36     22.36     4.455     14.55  3.27  0.051    0.08    -2.6   0.995    -4.2
   vs shipped one-wall kernel @147.5 g/cm2 (report only, not a gate):
-    skin D: new 8.429  shipped 2.467  new/shipped 3.417  (isotropic-2pi 1.708)
-    skin N: new 44.1  shipped 7.747  new/shipped 5.693  (isotropic-2pi 2.847)
-    BFO  D: new 8.083  shipped 2.728  new/shipped 2.963  (isotropic-2pi 1.482)
-    BFO  N: new 21.54  shipped 4.272  new/shipped 5.041  (isotropic-2pi 2.521)
+    skin D: new 8.582  shipped 2.467  new/shipped 3.479  (isotropic-2pi 1.739)
+    skin N: new 44.93  shipped 7.747  new/shipped 5.800  (isotropic-2pi 2.900)
+    BFO  D: new 8.095  shipped 2.728  new/shipped 2.968  (isotropic-2pi 1.484)
+    BFO  N: new 21.64  shipped 4.272  new/shipped 5.064  (isotropic-2pi 2.532)
   decomposition: protons below the shipped kernel's first node (430 MeV)
-    skin D: share from <430 MeV  18.1%   new(>=430)/shipped 2.800
-    skin N: share from <430 MeV  37.5%   new(>=430)/shipped 3.558
-    BFO  D: share from <430 MeV  13.6%   new(>=430)/shipped 2.561
-    BFO  N: share from <430 MeV  27.9%   new(>=430)/shipped 3.636
-  CHECK (bin fold): one node >50% of BFO N, or thinning >5%, at [150.0] g/cm2
-  CHECK (log-log fold): thinning >5% at [150.0] g/cm2 -> node grid too coarse there
+    skin D: share from <430 MeV  17.8%   new(>=430)/shipped 2.860
+    skin N: share from <430 MeV  37.6%   new(>=430)/shipped 3.617
+    BFO  D: share from <430 MeV  14.3%   new(>=430)/shipped 2.542
+    BFO  N: share from <430 MeV  28.4%   new(>=430)/shipped 3.625
+  CHECK (log-log fold): thinning >5% at [] g/cm2 -> none, node grid adequate
 
