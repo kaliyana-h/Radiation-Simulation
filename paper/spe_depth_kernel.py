@@ -345,6 +345,52 @@ def fold(point: dict, pb: list, sky: float = SKY_FRACTION) -> dict:
     return res
 
 
+def _spectrum(event: str):
+    """(dN/dE callable, scale) with the same >30 MeV normalisation as dosimetry."""
+    from lunarsim import dosimetry
+    ms = dosimetry._load_make_source()
+    r0 = ms.SPE_EVENTS[event][0]
+    lo, hi, n = 30.0, 25000.0, 40000
+    g = [lo * (hi / lo) ** (i / (n - 1)) for i in range(n)]
+    f = [dosimetry._spe_dNdE(e, r0, None) for e in g]
+    tot = sum(0.5 * (f[i] + f[i + 1]) * (g[i + 1] - g[i]) for i in range(n - 1))
+    return (lambda e: dosimetry._spe_dNdE(e, r0, None)), ms.spe_integral_fluence(event) / tot
+
+
+def loglog_weights(event: str, nodes: list, m: int = 48) -> list:
+    """Per node-interval quadrature [(t_k, w_k)]: fluence weights w_k [/cm^2] at
+    fractional log-E positions t_k between nodes j and j+1."""
+    dnde, scale = _spectrum(event)
+    out = []
+    for a, b in zip(nodes[:-1], nodes[1:]):
+        g = [a * (b / a) ** (k / m) for k in range(m + 1)]
+        pts = []
+        for k in range(m):
+            e = math.sqrt(g[k] * g[k + 1])
+            pts.append((math.log(e / a) / math.log(b / a), scale * dnde(e) * (g[k + 1] - g[k])))
+        out.append(pts)
+    return out
+
+
+def fold_loglog(point: dict, weights: list, sky: float = SKY_FRACTION) -> dict:
+    """Fold with R interpolated log-log between nodes (linear where an end is 0).
+    {organ: {q: dose}}. Removes the piecewise-constant bin error at range thresholds."""
+    res = {}
+    for o, Rq in point["R"].items():
+        res[o] = {}
+        for q, R in Rq.items():
+            tot = 0.0
+            for j, pts in enumerate(weights):
+                x, y = R[j], R[j + 1]
+                if x > 0 and y > 0:
+                    lx, ly = math.log(x), math.log(y)
+                    tot += sum(w * math.exp(lx + t * (ly - lx)) for t, w in pts)
+                else:
+                    tot += sum(w * (x + t * (y - x)) for t, w in pts)
+            res[o][q] = sky * tot
+    return res
+
+
 def thinned(point: dict, nodes: list) -> tuple[dict, list]:
     """Every-other-node kernel (keeps both ends) for the discretisation check."""
     keep = sorted(set(range(0, len(nodes), 2)) | {len(nodes) - 1})
@@ -366,6 +412,18 @@ def old_kernel_fold(event: str) -> dict:
     return dosimetry.fold_spe(sc, spec)["shells"]
 
 
+def below_cut_share(point: dict, event: str, nodes: list, cut_mev: float) -> dict:
+    """{organ: {q: (dose_above_cut, share_below_cut)}} with bin fluence clipped at cut."""
+    from lunarsim import dosimetry
+    r0 = dosimetry._load_make_source().SPE_EVENTS[event][0]
+    edges = [max(e, cut_mev) for e in bin_edges(nodes)]
+    pb_hi = [dosimetry._spe_bin_fluence(event, r0, None, [a, b])[0] if b > a else 0.0
+             for a, b in zip(edges[:-1], edges[1:])]
+    full, hi = fold(point, bin_fluence(event, nodes)), fold(point, pb_hi)
+    return {o: {q: (hi[o][q][0], 1.0 - hi[o][q][0] / full[o][q][0] if full[o][q][0] else 0.0)
+                for q in hi[o]} for o in hi}
+
+
 def report(path: Path = DEST, events=None, walls=None) -> dict:
     from lunarsim import dosimetry
     K = json.loads(path.read_text())
@@ -385,9 +443,11 @@ def report(path: Path = DEST, events=None, walls=None) -> dict:
         print(f"== {ev}: R0 {ms.SPE_EVENTS[ev][0]:g} MV, phi(>30) "
               f"{ms.spe_integral_fluence(ev):.3g} /cm2, binned {sum(pb):.3g} /cm2")
         print(f"{'wall':>7} {'skin D':>9} {'skin N':>9} {'skin I':>9} {'BFO D':>9} "
-              f"{'BFO N':>9} {'Q_N':>5} {'rel':>6} {'maxnode':>7} {'thin%':>7}")
+              f"{'BFO N':>9} {'Q_N':>5} {'rel':>6} {'maxnode':>7} {'thin%':>7} "
+              f"{'ll/bin':>7} {'thinLL%':>7}")
         print(f"{'g/cm2':>7} {'mGy':>9} {'mSv':>9} {'mSv':>9} {'mGy':>9} {'mSv':>9}")
         rows = []
+        ww, wt = loglog_weights(ev, nodes), None
         for w in walls:
             pt = interp_point(K, w)
             f = fold(pt, pb)
@@ -397,13 +457,19 @@ def report(path: Path = DEST, events=None, walls=None) -> dict:
                                   f["deep"]["D"][0], f["deep"]["N"][0])
             rel = f["deep"]["N"][1] / bN if bN else float("nan")
             thin = 100.0 * (ft["deep"]["N"][0] / bN - 1.0) if bN else float("nan")
+            wt = wt or loglog_weights(ev, sn)
+            ll = fold_loglog(pt, ww)["deep"]["N"]
+            llt = fold_loglog(sub, wt)["deep"]["N"]
+            thin_ll = 100.0 * (llt / ll - 1.0) if ll else float("nan")
             row = {"wall": w, "skin_D_mGy": 1e3 * sd, "skin_N_mSv": 1e3 * sN,
                    "skin_I_mSv": 1e3 * sI, "bfo_D_mGy": 1e3 * bd, "bfo_N_mSv": 1e3 * bN,
-                   "bfo_rel": rel, "bfo_maxnode": f["deep"]["N"][2], "thin_pct": thin}
+                   "bfo_rel": rel, "bfo_maxnode": f["deep"]["N"][2], "thin_pct": thin,
+                   "bfo_N_ll_mSv": 1e3 * ll, "thin_ll_pct": thin_ll}
             rows.append(row)
             print(f"{w:7g} {1e3*sd:9.4g} {1e3*sN:9.4g} {1e3*sI:9.4g} {1e3*bd:9.4g} "
                   f"{1e3*bN:9.4g} {(bN/bd if bd else 0):5.2f} {rel:6.3f} "
-                  f"{row['bfo_maxnode']:7.2f} {thin:+7.1f}")
+                  f"{row['bfo_maxnode']:7.2f} {thin:+7.1f} "
+                  f"{(ll / bN if bN else float('nan')):7.3f} {thin_ll:+7.1f}")
         old = old_kernel_fold(ev)
         if grid[0] <= 147.5 <= grid[-1]:
             new = fold(interp_point(K, 147.5), pb)
@@ -414,10 +480,21 @@ def report(path: Path = DEST, events=None, walls=None) -> dict:
                     r = f"{a/b:.3f}" if b else "n/a"
                     print(f"    {lab} {q}: new {1e3*a:.4g}  shipped {1e3*b:.4g}  "
                           f"new/shipped {r}  (isotropic-2pi {0.5*a/b if b else float('nan'):.3f})")
+            cut = dosimetry._load_spe_kernel()["meta"]["nodes_mev"][0]
+            dec = below_cut_share(interp_point(K, 147.5), ev, nodes, cut)
+            print(f"  decomposition: protons below the shipped kernel's first node ({cut:g} MeV)")
+            for o, lab in (("skin", "skin"), ("deep", "BFO ")):
+                for q in ("D", "N"):
+                    hi, share = dec[o][q]
+                    b = old[o][q][0]
+                    print(f"    {lab} {q}: share from <{cut:g} MeV {share:6.1%}   "
+                          f"new(>={cut:g})/shipped {hi / b if b else float('nan'):.3f}")
         flags = [r["wall"] for r in rows if r["bfo_maxnode"] > 0.5 or abs(r["thin_pct"]) > 5]
         if flags:
-            print(f"  CHECK: one node carries >50% of BFO N, or thinning moves it >5%, at "
-                  f"{flags} g/cm2 -> node grid too coarse there")
+            print(f"  CHECK (bin fold): one node >50% of BFO N, or thinning >5%, at {flags} g/cm2")
+        flags = [r["wall"] for r in rows if abs(r["thin_ll_pct"]) > 5]
+        print(f"  CHECK (log-log fold): thinning >5% at {flags} g/cm2"
+              + (" -> node grid too coarse there" if flags else " -> none, node grid adequate"))
         print()
         out[ev] = rows
     return out

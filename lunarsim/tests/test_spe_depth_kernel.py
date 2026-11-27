@@ -143,6 +143,32 @@ class Fold(unittest.TestCase):
         self.assertGreater(above, 0.8 * anchor)
         self.assertGreater(sum(pb), anchor)
 
+    def test_loglog_fold(self):
+        pb = sdk.bin_fluence("oct1989", NODES)
+        ww = sdk.loglog_weights("oct1989", NODES)
+        # constant R: log-log and bin folds integrate the same 10 MeV-20 GeV fluence
+        K = _kernel([0.0, 10.0], lambda w, j: 3.0e-10)
+        pt = sdk.interp_point(K, 0.0)
+        self.assertAlmostEqual(sdk.fold_loglog(pt, ww, sky=1.0)["deep"]["D"] /
+                               sdk.fold(pt, pb, sky=1.0)["deep"]["D"][0], 1.0, places=4)
+        # power-law R is exact under log-log: compare with a fine direct integral
+        Kp = _kernel([0.0, 10.0], lambda w, j: 1e-12 * (NODES[j] / 100.0) ** 1.5)
+        dnde, scale = sdk._spectrum("oct1989")
+        n, a, b = 200000, NODES[0], NODES[-1]
+        g = [a * (b / a) ** (i / n) for i in range(n + 1)]
+        ref = sum(scale * dnde(math.sqrt(x * y)) * (y - x) * 1e-12 *
+                  (math.sqrt(x * y) / 100.0) ** 1.5 for x, y in zip(g[:-1], g[1:]))
+        got = sdk.fold_loglog(sdk.interp_point(Kp, 0.0), ww, sky=1.0)["skin"]["N"]
+        self.assertAlmostEqual(got / ref, 1.0, places=3)
+
+    def test_below_cut_share(self):
+        K = _kernel([0.0, 10.0], lambda w, j: 1e-11)
+        pt = sdk.interp_point(K, 0.0)
+        d0 = sdk.below_cut_share(pt, "aug1972", NODES, NODES[0])
+        self.assertAlmostEqual(d0["skin"]["D"][1], 0.0, places=9)
+        d = sdk.below_cut_share(pt, "aug1972", NODES, 430.0)
+        self.assertTrue(0.9 < d["skin"]["D"][1] < 1.0)    # soft event: most fluence < 430
+
     def test_interp_log_midpoint_and_bounds(self):
         K = _kernel([10.0, 30.0], lambda w, j: math.exp(-w / 10.0))
         mid = sdk.interp_point(K, 20.0)["R"]["deep"]["D"][0]
@@ -161,6 +187,8 @@ class Fold(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 rows = sdk.report(p, events=["aug1972"], walls=[0.0, 147.5])
             self.assertIn("vs shipped one-wall kernel", buf.getvalue())
+            self.assertIn("decomposition", buf.getvalue())
+            self.assertIn("CHECK (log-log fold)", buf.getvalue())
             self.assertEqual([r["wall"] for r in rows["aug1972"]], [0.0, 147.5])
             self.assertGreater(rows["aug1972"][0]["bfo_N_mSv"],
                                rows["aug1972"][1]["bfo_N_mSv"])
