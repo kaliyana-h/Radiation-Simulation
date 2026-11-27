@@ -218,6 +218,9 @@ class TopUp(unittest.TestCase):
         self.assertTrue(any(140 < e < 170 for e in new), new)
         self.assertTrue(all(100 <= e <= 240 for e in new), new)
         self.assertFalse(set(new) & set(NODES))
+        only = sdk.topup_plan(_step_kernel(150.0), events=self.EVENTS, seeds=3,
+                              depths=[10])
+        self.assertEqual(only, {10.0: plan[10.0]})
 
     def test_noise_only_difference_is_not_refined(self):
         K = _step_kernel(150.0)

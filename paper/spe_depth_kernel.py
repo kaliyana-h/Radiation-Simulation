@@ -615,7 +615,7 @@ def _point_seed_ranges(p: dict, n_nodes: int) -> list:
 
 def topup_plan(K: dict, events=None, min_share: float = TOPUP_MIN_SHARE,
                split: int = TOPUP_SPLIT, reseed_depths=(), reseed_band=(100.0, 500.0),
-               reseed_seeds: int = 0, seeds: int = SEEDS) -> dict:
+               reseed_seeds: int = 0, seeds: int = SEEDS, depths=None) -> dict:
     """{wall: [(energy_mev, first_seed, n_seeds), ...]} for the top-up batch.
 
     New nodes (inside flagged intervals) get seeds 1..seeds. Optional re-seeding of
@@ -640,6 +640,8 @@ def topup_plan(K: dict, events=None, min_share: float = TOPUP_MIN_SHARE,
     plan = {}
     for p in sorted(K["H"]["points"], key=lambda p: p["wall_gcm2"]):
         w = p["wall_gcm2"]
+        if depths is not None and w not in [float(d) for d in depths]:
+            continue
         # plan on this depth's measured nodes (a merged kernel also holds nodes
         # interpolated in E here; refining or re-seeding those is meaningless)
         own, on = measured(p, nodes)
@@ -861,6 +863,8 @@ def main(argv=None) -> int:
     pt.add_argument("--base", type=Path, default=DEST)
     pt.add_argument("--out", type=Path)
     pt.add_argument("--seeds", type=int, default=SEEDS)
+    pt.add_argument("--depths", type=float, nargs="+",
+                    help="only plan these kernel depths (default: all)")
     pt.add_argument("--split", type=int, default=TOPUP_SPLIT)
     pt.add_argument("--min-share", type=float, default=TOPUP_MIN_SHARE)
     pt.add_argument("--reseed-depths", type=float, nargs="+", default=())
@@ -877,7 +881,7 @@ def main(argv=None) -> int:
         K = json.loads(a.base.read_text())
         plan = topup_plan(K, min_share=a.min_share, split=a.split,
                           reseed_depths=a.reseed_depths, reseed_band=tuple(a.reseed_band),
-                          reseed_seeds=a.reseed_seeds, seeds=a.seeds)
+                          reseed_seeds=a.reseed_seeds, seeds=a.seeds, depths=a.depths)
         print_plan(plan, K)
         if a.dry_run:
             return 0
