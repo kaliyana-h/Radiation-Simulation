@@ -478,12 +478,15 @@ def report(path: Path = DEST, events=None, walls=None) -> dict:
             f = fold(pt, pb)
             # discretisation check on this depth's MEASURED nodes only
             own, on = measured(pt, nodes)
-            fo = fold(own, bin_fluence(ev, on))["deep"]["N"][0]
+            # rel and maxnode also come from measured nodes: an E-interpolated fill
+            # is not an independent sample, so counting it shrinks both
+            fo_N = fold(own, bin_fluence(ev, on))["deep"]["N"]
+            fo = fo_N[0]
             sub, sn = thinned(own, on)
             ft = fold(sub, bin_fluence(ev, sn))
             sd, sN, sI, bd, bN = (f["skin"]["D"][0], f["skin"]["N"][0], f["skin"]["I"][0],
                                   f["deep"]["D"][0], f["deep"]["N"][0])
-            rel = f["deep"]["N"][1] / bN if bN else float("nan")
+            rel = fo_N[1] / fo if fo else float("nan")
             thin = 100.0 * (ft["deep"]["N"][0] / fo - 1.0) if fo else float("nan")
             ll = fold_loglog(pt, ww)["deep"]["N"]
             llo = fold_loglog(own, wts(on))["deep"]["N"]
@@ -491,7 +494,7 @@ def report(path: Path = DEST, events=None, walls=None) -> dict:
             thin_ll = 100.0 * (llt / llo - 1.0) if llo else float("nan")
             row = {"wall": w, "skin_D_mGy": 1e3 * sd, "skin_N_mSv": 1e3 * sN,
                    "skin_I_mSv": 1e3 * sI, "bfo_D_mGy": 1e3 * bd, "bfo_N_mSv": 1e3 * bN,
-                   "bfo_rel": rel, "bfo_maxnode": f["deep"]["N"][2], "thin_pct": thin,
+                   "bfo_rel": rel, "bfo_maxnode": fo_N[2], "thin_pct": thin,
                    "bfo_N_ll_mSv": 1e3 * ll, "thin_ll_pct": thin_ll}
             rows.append(row)
             print(f"{w:7g} {1e3*sd:9.4g} {1e3*sN:9.4g} {1e3*sI:9.4g} {1e3*bd:9.4g} "

@@ -319,6 +319,12 @@ class TopUp(unittest.TestCase):
                 rows = sdk.report(dest, events=["feb1956"], walls=[20.0])
             self.assertIn("32 nodes", buf.getvalue())
             self.assertEqual([r["wall"] for r in rows["feb1956"]], [20.0])
+            # at 0 g/cm2 the 130 MeV fill must not count as a sample in rel/maxnode
+            with contextlib.redirect_stdout(io.StringIO()):
+                r0 = sdk.report(dest, events=["feb1956"], walls=[0.0])["feb1956"][0]
+            fm = sdk.fold(own, sdk.bin_fluence("feb1956", on))["deep"]["N"]
+            self.assertAlmostEqual(r0["bfo_rel"], fm[1] / fm[0], places=12)
+            self.assertAlmostEqual(r0["bfo_maxnode"], fm[2], places=12)
 
     def test_merge_refuses_mismatched_batch(self):
         with tempfile.TemporaryDirectory() as d:
