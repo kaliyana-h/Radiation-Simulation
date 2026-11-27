@@ -1,0 +1,67 @@
+SPE depth kernel spe_proton_kernel_depth.json: 11 depths, 31 nodes 10-20000 MeV, 8 seeds
+provenance: {'git': 'fdc904f0', 'engine': 'kernel_gen', 'lis_form': 'rigidity', 'perelement': 'perelement', 'emax_per_nuc': 20000.0, 'shape': 'pernuc', 'cal': 0.9493345471984778, 'date': '2026-11-27T11:30Z'}
+sky fraction 1 (directional, shipped convention); isotropic-2pi values are exactly half
+
+== aug1972: R0 100 MV, phi(>30) 5e+09 /cm2, binned 1.38e+10 /cm2
+   wall    skin D    skin N    skin I     BFO D     BFO N   Q_N    rel maxnode   thin%
+  g/cm2       mGy       mSv       mSv       mGy       mSv
+      0 1.852e+04 3.021e+04 2.263e+04     590.1     794.2  1.35  0.022    0.27    -1.1
+      2      2473      3441      2877     439.7     584.8  1.33  0.027    0.29    -1.2
+      5     859.2      1189      1016     313.9       417  1.33  0.026    0.30    +9.1
+     10     320.9     461.3       397     188.5     255.8  1.36  0.025    0.35    -5.8
+     20     108.4     166.2     139.3     90.57     128.8  1.42  0.030    0.39    +2.5
+     35     33.02     76.39     57.62     34.45     58.19  1.69  0.040    0.38   +10.5
+     50      18.5     53.32     37.61     15.61     35.34  2.26  0.140    0.24   +14.4
+     75     7.489     40.03     25.57     5.221     14.86  2.85  0.092    0.20   +12.9
+    100     3.518     32.58     20.47     2.577     9.605  3.73  0.163    0.20   +21.4
+    150     1.478     16.38     10.48    0.8803     4.547  5.16  0.161    0.17    -7.9
+    200     0.998     12.41     8.084    0.8128     4.012  4.94  0.303    0.38    -2.4
+  vs shipped one-wall kernel @147.5 g/cm2 (report only, not a gate):
+    skin D: new 1.516  shipped 0.07477  new/shipped 20.278  (isotropic-2pi 10.139)
+    skin N: new 16.73  shipped 0.2033  new/shipped 82.282  (isotropic-2pi 41.141)
+    BFO  D: new 0.906  shipped 0.08623  new/shipped 10.507  (isotropic-2pi 5.253)
+    BFO  N: new 4.669  shipped 0.1053  new/shipped 44.335  (isotropic-2pi 22.167)
+  CHECK: one node carries >50% of BFO N, or thinning moves it >5%, at [5.0, 10.0, 35.0, 50.0, 75.0, 100.0, 150.0] g/cm2 -> node grid too coarse there
+
+== oct1989: R0 150 MV, phi(>30) 1.5e+09 /cm2, binned 2.96e+09 /cm2
+   wall    skin D    skin N    skin I     BFO D     BFO N   Q_N    rel maxnode   thin%
+  g/cm2       mGy       mSv       mSv       mGy       mSv
+      0      3804      5863      4569     355.2     470.6  1.32  0.020    0.21    -3.3
+      2       892      1199      1031     287.4     376.3  1.31  0.025    0.24    -0.8
+      5     427.9     571.1       501     229.4     300.1  1.31  0.025    0.27    +5.7
+     10     218.6     305.5     268.5     159.5     212.4  1.33  0.021    0.30    -3.7
+     20     101.7     145.8     126.6     95.62       130  1.36  0.023    0.38    -2.8
+     35     43.11      76.4      61.8     47.14     71.41  1.51  0.025    0.39   +13.4
+     50     28.14      59.7     46.03      25.6     43.63  1.70  0.045    0.32    -2.0
+     75     13.97     42.84     30.43     11.28     22.41  1.99  0.043    0.31   +17.7
+    100      6.47     31.82      21.5      5.77     13.87  2.40  0.065    0.24    +1.8
+    150     2.631     19.38     12.68     1.942     6.707  3.45  0.083    0.16    +3.4
+    200      1.49     14.27     9.454     1.367     5.756  4.21  0.200    0.26    -6.6
+  vs shipped one-wall kernel @147.5 g/cm2 (report only, not a gate):
+    skin D: new 2.708  shipped 0.4815  new/shipped 5.624  (isotropic-2pi 2.812)
+    skin N: new 19.75  shipped 1.436  new/shipped 13.753  (isotropic-2pi 6.877)
+    BFO  D: new 2.012  shipped 0.5685  new/shipped 3.539  (isotropic-2pi 1.769)
+    BFO  N: new 6.905  shipped 0.7839  new/shipped 8.809  (isotropic-2pi 4.405)
+  CHECK: one node carries >50% of BFO N, or thinning moves it >5%, at [5.0, 35.0, 75.0, 200.0] g/cm2 -> node grid too coarse there
+
+== feb1956: R0 220 MV, phi(>30) 1e+09 /cm2, binned 1.59e+09 /cm2
+   wall    skin D    skin N    skin I     BFO D     BFO N   Q_N    rel maxnode   thin%
+  g/cm2       mGy       mSv       mSv       mGy       mSv
+      0      1913      2824      2276     358.4       473  1.32  0.019    0.19    -3.8
+      2     657.2     866.7     761.5     305.3       399  1.31  0.022    0.21    +0.1
+      5     390.4     512.1     457.3     261.8     342.9  1.31  0.024    0.22    +3.8
+     10     244.1     338.4     301.1     200.7     267.5  1.33  0.020    0.26    -2.3
+     20     141.1     201.7     177.1     139.2     188.7  1.36  0.022    0.32    -3.9
+     35     75.53     125.9     104.5     83.77     124.8  1.49  0.022    0.32   +11.9
+     50     56.46     110.7     88.23     53.06     85.51  1.61  0.034    0.29    -6.3
+     75     33.65      85.5     63.79     29.44     52.43  1.78  0.034    0.29   +16.3
+    100     18.24     65.67     46.22     17.02     35.05  2.06  0.043    0.26    -2.8
+    150     8.456     44.58     30.14     6.853     18.45  2.69  0.050    0.21    +7.4
+    200     4.674     33.44     22.45     4.327     14.89  3.44  0.101    0.22    -8.2
+  vs shipped one-wall kernel @147.5 g/cm2 (report only, not a gate):
+    skin D: new 8.669  shipped 2.467  new/shipped 3.514  (isotropic-2pi 1.757)
+    skin N: new 45.27  shipped 7.747  new/shipped 5.844  (isotropic-2pi 2.922)
+    BFO  D: new 7.058  shipped 2.728  new/shipped 2.588  (isotropic-2pi 1.294)
+    BFO  N: new 18.93  shipped 4.272  new/shipped 4.431  (isotropic-2pi 2.215)
+  CHECK: one node carries >50% of BFO N, or thinning moves it >5%, at [35.0, 50.0, 75.0, 150.0, 200.0] g/cm2 -> node grid too coarse there
+
