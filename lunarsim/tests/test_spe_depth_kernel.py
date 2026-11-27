@@ -194,5 +194,139 @@ class Fold(unittest.TestCase):
                                rows["aug1972"][1]["bfo_N_mSv"])
 
 
+def _step_kernel(E_thr, sem_rel=0.01):
+    """R(E) jumps x100 between two nodes at E_thr; power law elsewhere."""
+    return _kernel([0.0, 10.0], lambda w, j: 1e-12 * (NODES[j] / 100.0) ** 0.5 *
+                   (100.0 if NODES[j] > E_thr else 1.0))
+
+
+class TopUp(unittest.TestCase):
+    EVENTS = ["oct1989"]
+
+    def test_split_interval(self):
+        self.assertEqual(sdk.split_interval(100.0, 120.0, 4), [104.7, 109.5, 114.7])
+        self.assertEqual(sdk.split_interval(10.0, 1000.0, 2), [100.0])
+
+    def test_plan_flags_step_not_power_law(self):
+        smooth = _kernel([0.0, 10.0], lambda w, j: 1e-12 * (NODES[j] / 100.0) ** 1.5)
+        self.assertEqual(sdk.topup_plan(smooth, events=self.EVENTS), {})
+        plan = sdk.topup_plan(_step_kernel(150.0), events=self.EVENTS, seeds=3)
+        self.assertEqual(sorted(plan), [0.0, 10.0])
+        new = [e for e, first, n in plan[0.0]]
+        self.assertTrue(all((first, n) == (1, 3) for _, first, n in plan[0.0]))
+        # the step sits in 140-170; its pair partner interval is refined too
+        self.assertTrue(any(140 < e < 170 for e in new), new)
+        self.assertTrue(all(100 <= e <= 240 for e in new), new)
+        self.assertFalse(set(new) & set(NODES))
+
+    def test_noise_only_difference_is_not_refined(self):
+        K = _step_kernel(150.0)
+        for p in K["H"]["points"]:                     # 200% node noise
+            for o in p["Rsem"]:
+                for q in p["Rsem"][o]:
+                    p["Rsem"][o][q] = [2.0 * r for r in p["R"][o][q]]
+        self.assertEqual(sdk.topup_plan(K, events=self.EVENTS), {})
+
+    def test_reseed_numbers_after_base(self):
+        smooth = _kernel([0.0, 10.0], lambda w, j: 1e-12 * (NODES[j] / 100.0) ** 1.5)
+        plan = sdk.topup_plan(smooth, events=self.EVENTS, reseed_depths=[10.0],
+                              reseed_band=(100.0, 140.0), reseed_seeds=4)
+        self.assertEqual(plan, {10.0: [(100.0, 9, 4), (120.0, 9, 4), (140.0, 9, 4)]})
+
+    def _base(self, d):
+        out, dest = Path(d) / "k", Path(d) / "k.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            sdk.emit(out, DEPTHS, NODES, seeds=2)
+            man = json.loads((out / "manifest.json").read_text())
+            _fake_outputs(out, man)
+            sdk.collect(out, dest)
+        return dest
+
+    @staticmethod
+    def _fake_topup(out, man, f):
+        for r in man["runs"]:
+            d = out / "runs" / r["name"]
+            for o, *_ in config.SHELLS:
+                for q in sdk.QUANTS:
+                    v = f(r["wall_gcm2"], r["energy_mev"], q) * \
+                        (1.0 + (0.02 if r["seed"] % 2 else -0.02)) * sdk.phi_ff(r["wall_gcm2"])
+                    (d / f"{sdk.csv_name(o, q)}.csv").write_text(f"# x\n{v!r}\n")
+
+    def test_emit_merge_pool_fill_and_report(self):
+        import statistics
+        f = lambda w, e, q: 5e-9 * math.exp(-w / 50.0)
+        with tempfile.TemporaryDirectory() as d:
+            base = self._base(d)
+            # 20 g/cm2: one new node (130 MeV) + 2 extra seeds on node 3 (25 MeV)
+            plan = {20.0: [(25.0, 3, 2), (130.0, 1, 2)]}
+            tu, dest = Path(d) / "tu", Path(d) / "merged.json"
+            n = sdk.topup_emit(tu, base, plan)
+            self.assertEqual(n, 4)
+            man = json.loads((tu / "manifest.json").read_text())
+            self.assertEqual(man["kind"], "topup")
+            self.assertTrue((tu / "runs" / "spe_aluminium_w20_e130_s2" / "run.txt").exists())
+            self.assertIn("d:So/K0/BeamEnergy = 130 MeV",
+                          (tu / "runs" / "spe_aluminium_w20_e130_s1" / "run.txt").read_text())
+            with self.assertRaises(SystemExit):        # nothing has run yet
+                sdk.topup_merge(base, tu, dest)
+            self._fake_topup(tu, man, f)
+            with contextlib.redirect_stdout(io.StringIO()):
+                K = sdk.topup_merge(base, tu, dest)
+            nodes = K["meta"]["nodes_mev"]
+            self.assertEqual(len(nodes), len(NODES) + 1)
+            i130, i25 = nodes.index(130.0), nodes.index(25.0)
+            P = {p["wall_gcm2"]: p for p in K["H"]["points"]}
+            # pooled 25 MeV cell = all four seed samples
+            phi = sdk.phi_ff(20.0)
+            vals = [_fake_value(20.0, 3, "deep", "N", s) / phi for s in (1, 2)] + \
+                   [f(20.0, 25.0, "N") * (1 + x) for x in (0.02, -0.02)]
+            self.assertAlmostEqual(P[20.0]["R"]["deep"]["N"][i25] / statistics.fmean(vals),
+                                   1.0, places=9)
+            self.assertAlmostEqual(P[20.0]["Rsem"]["deep"]["N"][i25] /
+                                   (statistics.stdev(vals) / 2.0), 1.0, places=9)
+            self.assertEqual(P[20.0]["node_seeds"][i25], 4)
+            self.assertEqual(P[20.0]["seed_ranges"][i25], [[1, 2], [3, 4]])
+            self.assertAlmostEqual(P[20.0]["R"]["skin"]["D"][i130] /
+                                   f(20.0, 130.0, "D"), 1.0, places=9)
+            self.assertEqual(P[20.0]["filled_mev"], [])
+            # other depths: 130 MeV filled log-log between their 120 and 140 nodes
+            self.assertEqual(P[0.0]["filled_mev"], [130.0])
+            lo, hi = P[0.0]["R"]["mid"]["D"][i130 - 1], P[0.0]["R"]["mid"]["D"][i130 + 1]
+            t = math.log(130 / 120) / math.log(140 / 120)
+            self.assertAlmostEqual(P[0.0]["R"]["mid"]["D"][i130],
+                                   lo ** (1 - t) * hi ** t, places=20)
+            self.assertEqual(P[0.0]["node_seeds"][i130], 0)
+            self.assertEqual(len(K["meta"]["topups"]), 1)
+            # the same seeds again -> overlap refused
+            with self.assertRaises(SystemExit):
+                sdk.topup_merge(dest, tu, Path(d) / "again.json")
+            # report runs on the merged grid
+            with contextlib.redirect_stdout(io.StringIO()) as buf:
+                rows = sdk.report(dest, events=["feb1956"], walls=[20.0])
+            self.assertIn("32 nodes", buf.getvalue())
+            self.assertEqual([r["wall"] for r in rows["feb1956"]], [20.0])
+
+    def test_merge_refuses_mismatched_batch(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = self._base(d)
+            tu = Path(d) / "tu"
+            sdk.topup_emit(tu, base, {20.0: [(130.0, 1, 2)]})
+            man = json.loads((tu / "manifest.json").read_text())
+            man["hist0"] += 1
+            (tu / "manifest.json").write_text(json.dumps(man))
+            with self.assertRaises(SystemExit):
+                sdk.topup_merge(base, tu, Path(d) / "m.json")
+
+    def test_cli_dry_run_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "k.json"
+            p.write_text(json.dumps(_step_kernel(150.0)))
+            with contextlib.redirect_stdout(io.StringIO()) as buf:
+                sdk.main(["topup", "--base", str(p), "--dry-run",
+                          "--out", str(Path(d) / "tu")])
+            self.assertIn("total", buf.getvalue())
+            self.assertFalse((Path(d) / "tu").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -51,6 +51,13 @@ Usage (PC, from ~/topas):
   bash runs/spe_depth/run_all.sh 2>&1 | tee runs/spe_depth.log
   .venv/bin/python paper/spe_depth_kernel.py collect --out runs/spe_depth
   .venv/bin/python paper/spe_depth_kernel.py report | tee paper/spe_depth_kernel_report.txt
+
+Top-up (densify the node grid at each depth's range threshold, then merge):
+  .venv/bin/python paper/spe_depth_kernel.py topup --dry-run
+  .venv/bin/python paper/spe_depth_kernel.py topup --out runs/spe_depth_topup
+  bash runs/spe_depth_topup/run_all.sh 2>&1 | tee runs/spe_depth_topup.log
+  .venv/bin/python paper/spe_depth_kernel.py merge --out runs/spe_depth_topup
+  .venv/bin/python paper/spe_depth_kernel.py report | tee paper/spe_depth_kernel_report.txt
 """
 from __future__ import annotations
 
@@ -500,6 +507,308 @@ def report(path: Path = DEST, events=None, walls=None) -> dict:
     return out
 
 
+# --------------------------------------------------------------------------
+# top-up: refine the node grid where the thinning check says the error lives
+# --------------------------------------------------------------------------
+# The 31-node grid is too coarse at each depth's range threshold, where R(E) jumps
+# ~100x inside one node interval. The top-up inserts nodes only there, measured at
+# the same depth, illumination and seeds convention, and merges them into the
+# kernel JSON. Choosing WHERE is internal (node-thinning sensitivity), so no
+# external dose enters: target-blind.
+TOPUP_MIN_SHARE = 0.01    # refine a thinned interval whose log-log contribution moves
+                          # by > 1% of the fold total (any event / organ / D or N)
+TOPUP_SPLIT = 4           # each refined node interval -> 4 sub-intervals (3 new nodes)
+TOPUP_NSIGMA = 2.0        # ... and by more than 2 sigma of its own MC noise (from Rsem)
+TOPUP_QUANTS = ("D", "N")
+
+
+def _ll_contrib(R: list, weights: list) -> list:
+    """Per node-interval log-log fold contribution (linear where an end is 0)."""
+    out = []
+    for j, pts in enumerate(weights):
+        x, y = R[j], R[j + 1]
+        if x > 0 and y > 0:
+            lx, ly = math.log(x), math.log(y)
+            out.append(sum(w * math.exp(lx + t * (ly - lx)) for t, w in pts))
+        else:
+            out.append(sum(w * (x + t * (y - x)) for t, w in pts))
+    return out
+
+
+def _thin_keep(n: int) -> list:
+    return sorted(set(range(0, n, 2)) | {n - 1})
+
+
+def refine_intervals(point: dict, nodes: list, events: list, weights: dict,
+                     min_share: float = TOPUP_MIN_SHARE) -> list:
+    """Indices j of node intervals [nodes[j], nodes[j+1]] to refine at one depth.
+
+    The every-other-node fold merges intervals pairwise; where one merged interval's
+    contribution differs from the sum of its two full-grid intervals by more than
+    min_share of that fold's total AND by more than TOPUP_NSIGMA times its MC noise
+    (propagated from Rsem), both full intervals are flagged. Noise-only differences
+    (sub-threshold nodes deep in the wall) call for more seeds, not more nodes.
+    weights = {(event, 'full'|'thin'): loglog_weights(...)}."""
+    keep = _thin_keep(len(nodes))
+    flag = set()
+
+    def diffs(R, wf, wt):
+        cf = _ll_contrib(R, wf)
+        ct = _ll_contrib([R[j] for j in keep], wt)
+        return [ct[k] - sum(cf[keep[k]:keep[k + 1]]) for k in range(len(keep) - 1)], sum(cf)
+
+    for ev in events:
+        wf, wt = weights[(ev, "full")], weights[(ev, "thin")]
+        for o, Rq in point["R"].items():
+            for q in TOPUP_QUANTS:
+                R, S = Rq[q], point["Rsem"][o][q]
+                d0, tot = diffs(R, wf, wt)
+                if tot <= 0:
+                    continue
+                # noise on each pair's difference: move each node by its SEM,
+                # add the responses in quadrature (nodes are independent runs)
+                var = [0.0] * len(d0)
+                for j, s in enumerate(S):
+                    if s <= 0:
+                        continue
+                    Rj = list(R)
+                    Rj[j] += s
+                    dj, _ = diffs(Rj, wf, wt)
+                    for k in range(len(d0)):
+                        var[k] += (dj[k] - d0[k]) ** 2
+                for k, d in enumerate(d0):
+                    if abs(d) > min_share * tot and abs(d) > TOPUP_NSIGMA * math.sqrt(var[k]):
+                        flag.update(range(keep[k], keep[k + 1]))
+    return sorted(flag)
+
+
+def split_interval(a: float, b: float, split: int = TOPUP_SPLIT) -> list:
+    """Interior log-spaced nodes of [a, b], 4 significant figures."""
+    return [float(f"{a * (b / a) ** (k / split):.4g}") for k in range(1, split)]
+
+
+def _point_seed_ranges(p: dict, n_nodes: int) -> list:
+    """Per-node list of [first, last] seed ranges (base JSON: 1..seeds)."""
+    return p.get("seed_ranges") or [[[1, p["seeds"]]] for _ in range(n_nodes)]
+
+
+def topup_plan(K: dict, events=None, min_share: float = TOPUP_MIN_SHARE,
+               split: int = TOPUP_SPLIT, reseed_depths=(), reseed_band=(100.0, 500.0),
+               reseed_seeds: int = 0, seeds: int = SEEDS) -> dict:
+    """{wall: [(energy_mev, first_seed, n_seeds), ...]} for the top-up batch.
+
+    New nodes (inside flagged intervals) get seeds 1..seeds. Optional re-seeding of
+    EXISTING nodes in reseed_band at reseed_depths gets reseed_seeds more seeds,
+    numbered after the highest seed already in the kernel (no overlap, so they pool
+    as independent samples)."""
+    from lunarsim import dosimetry
+    nodes = K["meta"]["nodes_mev"]
+    events = events or list(dosimetry._load_make_source().SPE_EVENTS)
+    keep = _thin_keep(len(nodes))
+    weights = {}
+    for ev in events:
+        weights[(ev, "full")] = loglog_weights(ev, nodes)
+        weights[(ev, "thin")] = loglog_weights(ev, [nodes[j] for j in keep])
+    have = set(nodes)
+    plan = {}
+    for p in sorted(K["H"]["points"], key=lambda p: p["wall_gcm2"]):
+        w = p["wall_gcm2"]
+        new = []
+        for j in refine_intervals(p, nodes, events, weights, min_share):
+            new += [e for e in split_interval(nodes[j], nodes[j + 1], split) if e not in have]
+        runs = [(e, 1, seeds) for e in sorted(set(new))]
+        if reseed_seeds and w in [float(d) for d in reseed_depths]:
+            ranges = _point_seed_ranges(p, len(nodes))
+            for j, e in enumerate(nodes):
+                if reseed_band[0] <= e <= reseed_band[1]:
+                    first = max(r[1] for r in ranges[j]) + 1
+                    runs.append((e, first, reseed_seeds))
+        if runs:
+            plan[w] = sorted(runs)
+    return plan
+
+
+def topup_run_name(wall_gcm2: float, energy_mev: float, seed: int) -> str:
+    return f"spe_{MATERIAL}_w{wall_gcm2:g}_e{energy_mev:g}_s{seed}"
+
+
+def topup_emit(out: Path, base: Path, plan: dict, threads: int = 1) -> int:
+    K = json.loads(base.read_text())
+    hist0 = K["meta"]["hist0"]
+    if K["meta"].get("spot_margin") != SPOT_MARGIN:
+        raise SystemExit(f"{base}: spot_margin {K['meta'].get('spot_margin')} != "
+                         f"{SPOT_MARGIN}; top-up would not match the base illumination")
+    runs = out / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    man = {"kind": "topup", "base": str(base), "material": MATERIAL, "hist0": hist0,
+           "spot_margin": SPOT_MARGIN, "physics": config.PHYSICS, "threads": threads,
+           "points": [{"wall_gcm2": float(w), "beam_spot_cm": spot_cm(w),
+                       "histories": histories(w, hist0), "phi_ff_cm2": phi_ff(w, hist0)}
+                      for w in sorted(plan)],
+           "runs": []}
+    for w in sorted(plan):
+        for e, first, n in plan[w]:
+            for seed in range(first, first + n):
+                rn = topup_run_name(w, e, seed)
+                (runs / rn).mkdir(exist_ok=True)
+                (runs / rn / "run.txt").write_text(
+                    build_param_file(w, e, seed, threads, hist0))
+                man["runs"].append({"name": rn, "wall_gcm2": float(w),
+                                    "energy_mev": float(e), "seed": seed})
+    (out / "manifest.json").write_text(json.dumps(man, indent=2))
+    generate._write_runner(out)
+    return len(man["runs"])
+
+
+def print_plan(plan: dict, K: dict) -> None:
+    nodes = K["meta"]["nodes_mev"]
+    tot = 0
+    for w in sorted(plan):
+        new = [e for e, f, n in plan[w] if e not in nodes]
+        old = [e for e, f, n in plan[w] if e in nodes]
+        nr = sum(n for _, _, n in plan[w])
+        tot += nr
+        line = f"  {w:6g} g/cm2  {len(new):2d} new nodes"
+        if new:
+            line += f" {min(new):g}-{max(new):g} MeV"
+        if old:
+            line += f", {len(old)} re-seeded"
+        print(line + f"  ({nr} runs)")
+    print(f"  total {tot} runs")
+
+
+def _pool(m1, s1, n1, m2, s2, n2):
+    """Pool two independent sample sets given mean, SEM and size -> (mean, SEM)."""
+    n = n1 + n2
+    m = (n1 * m1 + n2 * m2) / n
+    v1, v2 = (s1 * s1 * n1, s2 * s2 * n2)            # sample variances
+    var = ((n1 - 1) * v1 + (n2 - 1) * v2 + n1 * (m1 - m) ** 2 + n2 * (m2 - m) ** 2) / (n - 1)
+    return m, math.sqrt(var / n)
+
+
+def _interp_e(nodes: list, R: list, e: float) -> float:
+    """Log-log in E between this depth's measured nodes (linear where an end is 0)."""
+    j = max(i for i in range(len(nodes) - 1) if nodes[i] <= e)
+    t = math.log(e / nodes[j]) / math.log(nodes[j + 1] / nodes[j])
+    x, y = R[j], R[j + 1]
+    if x > 0 and y > 0:
+        return math.exp((1 - t) * math.log(x) + t * math.log(y))
+    return (1 - t) * x + t * y
+
+
+def topup_merge(base: Path, out: Path, dest: Path) -> dict:
+    """Merge a finished top-up batch into the kernel JSON.
+
+    Same energy at the same depth -> pooled with the base samples (refuses
+    overlapping seed numbers). New energy -> inserted. The node grid becomes the
+    union over depths; a depth that did not measure a union node gets it by log-log
+    interpolation in E of its OWN measured nodes, and is listed in 'filled_mev'
+    (these sit away from that depth's threshold, where R(E) is smooth)."""
+    K = json.loads(base.read_text())
+    man = json.loads((out / "manifest.json").read_text())
+    if man.get("kind") != "topup" or man.get("material") != MATERIAL:
+        raise SystemExit(f"{out}: not an {MATERIAL} top-up batch")
+    if man["hist0"] != K["meta"]["hist0"] or man["spot_margin"] != K["meta"]["spot_margin"]:
+        raise SystemExit(f"{out}: hist0/spot_margin differ from {base}")
+    if man["physics"] != K["meta"]["physics"]:
+        raise SystemExit(f"{out}: physics {man['physics']!r} != {K['meta']['physics']!r}")
+    organ0 = config.SHELLS[0][0]
+    miss = [r["name"] for r in man["runs"]
+            if not all((out / "runs" / r["name"] / f"{csv_name(organ0, q)}.csv").exists()
+                       for q in QUANTS)]
+    if miss:
+        raise SystemExit(f"{out}: {len(miss)} runs have no output, e.g. {miss[:3]}")
+    organs = [s[0] for s in config.SHELLS]
+    phi = {p["wall_gcm2"]: p["phi_ff_cm2"] for p in man["points"]}
+    groups = {}                                       # (wall, E) -> [seeds]
+    for r in man["runs"]:
+        groups.setdefault((r["wall_gcm2"], r["energy_mev"]), []).append(r["seed"])
+    old_nodes = K["meta"]["nodes_mev"]
+    pts = {p["wall_gcm2"]: p for p in K["H"]["points"]}
+    # per depth: measured {E: (R, S, n, ranges)} starting from the base
+    meas = {}
+    for w, p in pts.items():
+        held = set(p.get("filled_mev", []))
+        ranges = _point_seed_ranges(p, len(old_nodes))
+        nseed = p.get("node_seeds") or [p["seeds"]] * len(old_nodes)
+        meas[w] = {e: ({o: {q: p["R"][o][q][j] for q in QUANTS} for o in organs},
+                       {o: {q: p["Rsem"][o][q][j] for q in QUANTS} for o in organs},
+                       nseed[j], ranges[j])
+                   for j, e in enumerate(old_nodes) if e not in held}
+    for (w, e), seeds in sorted(groups.items()):
+        if w not in meas:
+            raise SystemExit(f"top-up depth {w:g} is not in the base kernel")
+        R, S = {}, {}
+        for o in organs:
+            R[o], S[o] = {}, {}
+            for q in QUANTS:
+                vals = []
+                for s in seeds:
+                    f = out / "runs" / topup_run_name(w, e, s) / f"{csv_name(o, q)}.csv"
+                    v = generate._read_scalar_csv(f)
+                    if v is None:
+                        raise SystemExit(f"unreadable scorer output {f}")
+                    vals.append(v / phi[w])
+                R[o][q] = statistics.fmean(vals)
+                S[o][q] = statistics.stdev(vals) / math.sqrt(len(vals)) if len(vals) > 1 else 0.0
+        n2, rng2 = len(seeds), [min(seeds), max(seeds)]
+        if max(seeds) - min(seeds) + 1 != n2:
+            raise SystemExit(f"top-up seeds at {w:g}/{e:g} MeV are not contiguous: {seeds}")
+        if e in meas[w]:
+            R1, S1, n1, rng1 = meas[w][e]
+            if any(a <= rng2[1] and rng2[0] <= b for a, b in rng1):
+                raise SystemExit(f"seed overlap at {w:g} g/cm2 {e:g} MeV: "
+                                 f"base {rng1} vs top-up {rng2}")
+            for o in organs:
+                for q in QUANTS:
+                    R[o][q], S[o][q] = _pool(R1[o][q], S1[o][q], n1, R[o][q], S[o][q], n2)
+            meas[w][e] = (R, S, n1 + n2, rng1 + [rng2])
+        else:
+            meas[w][e] = (R, S, n2, [rng2])
+    union = sorted({e for m in meas.values() for e in m})
+    points = []
+    for w in sorted(meas):
+        m = meas[w]
+        own = sorted(m)
+        if own[0] > union[0] or own[-1] < union[-1]:
+            raise SystemExit(f"depth {w:g}: measured nodes do not span the union grid")
+        R = {o: {q: [] for q in QUANTS} for o in organs}
+        S = {o: {q: [] for q in QUANTS} for o in organs}
+        filled, nseed, ranges = [], [], []
+        for e in union:
+            if e in m:
+                r, s, n, rg = m[e]
+                for o in organs:
+                    for q in QUANTS:
+                        R[o][q].append(r[o][q])
+                        S[o][q].append(s[o][q])
+            else:
+                filled.append(e)
+                n, rg = 0, []
+                for o in organs:
+                    for q in QUANTS:
+                        R[o][q].append(_interp_e(own, [m[x][0][o][q] for x in own], e))
+                        S[o][q].append(_interp_e(own, [m[x][1][o][q] for x in own], e))
+            nseed.append(n)
+            ranges.append(rg)
+        base_pt = {k: v for k, v in pts[w].items()
+                   if k not in ("R", "Rsem", "filled_mev", "node_seeds", "seed_ranges")}
+        measured = [n for n in nseed if n]
+        points.append({**base_pt, "seeds": min(measured), "R": R, "Rsem": S,
+                       "node_seeds": nseed, "seed_ranges": ranges, "filled_mev": filled})
+    K["meta"]["nodes_mev"] = union
+    K["meta"].setdefault("topups", []).append(
+        {"batch": str(out), "runs": len(man["runs"]),
+         "new_nodes": sorted({e for (w, e) in groups if e not in old_nodes}),
+         "provenance": generate._provenance()})
+    K["H"]["points"] = points
+    dest.write_text(json.dumps(K, indent=2))
+    nf = sum(len(p["filled_mev"]) for p in points)
+    print(f"merged {len(man['runs'])} top-up runs ({len(groups)} depth/energy cells) -> "
+          f"{dest}: {len(union)} nodes, {nf} depth/node cells interpolated in E")
+    return K
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -517,8 +826,37 @@ def main(argv=None) -> int:
     pr.add_argument("--kernel", type=Path, default=DEST)
     pr.add_argument("--events", nargs="+")
     pr.add_argument("--walls", type=float, nargs="+")
+    pt = sub.add_parser("topup", help="emit dense nodes where node-thinning moves the fold")
+    pt.add_argument("--base", type=Path, default=DEST)
+    pt.add_argument("--out", type=Path)
+    pt.add_argument("--seeds", type=int, default=SEEDS)
+    pt.add_argument("--split", type=int, default=TOPUP_SPLIT)
+    pt.add_argument("--min-share", type=float, default=TOPUP_MIN_SHARE)
+    pt.add_argument("--reseed-depths", type=float, nargs="+", default=())
+    pt.add_argument("--reseed-band", type=float, nargs=2, default=(100.0, 500.0))
+    pt.add_argument("--reseed-seeds", type=int, default=0)
+    pt.add_argument("--threads", type=int, default=1)
+    pt.add_argument("--dry-run", action="store_true")
+    pm = sub.add_parser("merge", help="fold a finished top-up batch into the kernel JSON")
+    pm.add_argument("--base", type=Path, default=DEST)
+    pm.add_argument("--out", type=Path, required=True)
+    pm.add_argument("--dest", type=Path)
     a = ap.parse_args(argv)
-    if a.cmd == "emit":
+    if a.cmd == "topup":
+        K = json.loads(a.base.read_text())
+        plan = topup_plan(K, min_share=a.min_share, split=a.split,
+                          reseed_depths=a.reseed_depths, reseed_band=tuple(a.reseed_band),
+                          reseed_seeds=a.reseed_seeds, seeds=a.seeds)
+        print_plan(plan, K)
+        if a.dry_run:
+            return 0
+        if a.out is None:
+            ap.error("topup needs --out (or --dry-run)")
+        n = topup_emit(a.out, a.base, plan, a.threads)
+        print(f"wrote {n} runs to {a.out}")
+    elif a.cmd == "merge":
+        topup_merge(a.base, a.out, a.dest or a.base)
+    elif a.cmd == "emit":
         emit(a.out, sorted(a.depths), NODES_MEV, a.seeds, a.threads, a.hist0)
     elif a.cmd == "collect":
         collect(a.out, a.dest)
