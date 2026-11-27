@@ -320,7 +320,7 @@ def interp_point(K: dict, wall: float) -> dict:
         raise ValueError(f"wall {wall:g} outside kernel grid {ws[0]:g}-{ws[-1]:g} g/cm2")
     for p in pts:
         if p["wall_gcm2"] == wall:
-            return {"R": p["R"], "Rsem": p["Rsem"]}
+            return {"R": p["R"], "Rsem": p["Rsem"], "filled": list(p.get("filled_mev", []))}
     i = next(k for k in range(1, len(ws)) if ws[k] > wall)
     a, b = pts[i - 1], pts[i]
     t = (wall - ws[i - 1]) / (ws[i] - ws[i - 1])
@@ -330,7 +330,8 @@ def interp_point(K: dict, wall: float) -> dict:
             return math.exp((1 - t) * math.log(x) + t * math.log(y))
         return (1 - t) * x + t * y
 
-    out = {"R": {}, "Rsem": {}}
+    out = {"R": {}, "Rsem": {},
+           "filled": sorted(set(a.get("filled_mev", [])) | set(b.get("filled_mev", [])))}
     for o in a["R"]:
         out["R"][o] = {q: [mix(x, y) for x, y in zip(a["R"][o][q], b["R"][o][q])]
                        for q in a["R"][o]}
@@ -398,6 +399,17 @@ def fold_loglog(point: dict, weights: list, sky: float = SKY_FRACTION) -> dict:
     return res
 
 
+def measured(point: dict, nodes: list, filled=None) -> tuple[dict, list]:
+    """The point restricted to the nodes it actually measured (drops top-up nodes
+    that were interpolated in E at this depth), so discretisation checks are not
+    flattered by interpolated stand-ins."""
+    filled = set(point.get("filled", point.get("filled_mev", [])) if filled is None else filled)
+    keep = [j for j, e in enumerate(nodes) if e not in filled]
+    sub = {k: {o: {q: [v[j] for j in keep] for q, v in Rq.items()}
+               for o, Rq in point[k].items()} for k in ("R", "Rsem")}
+    return sub, [nodes[j] for j in keep]
+
+
 def thinned(point: dict, nodes: list) -> tuple[dict, list]:
     """Every-other-node kernel (keeps both ends) for the discretisation check."""
     keep = sorted(set(range(0, len(nodes), 2)) | {len(nodes) - 1})
@@ -454,20 +466,29 @@ def report(path: Path = DEST, events=None, walls=None) -> dict:
               f"{'ll/bin':>7} {'thinLL%':>7}")
         print(f"{'g/cm2':>7} {'mGy':>9} {'mSv':>9} {'mSv':>9} {'mGy':>9} {'mSv':>9}")
         rows = []
-        ww, wt = loglog_weights(ev, nodes), None
+        ww, wcache = loglog_weights(ev, nodes), {}
+
+        def wts(ns):
+            if tuple(ns) not in wcache:
+                wcache[tuple(ns)] = loglog_weights(ev, ns)
+            return wcache[tuple(ns)]
+
         for w in walls:
             pt = interp_point(K, w)
             f = fold(pt, pb)
-            sub, sn = thinned(pt, nodes)
+            # discretisation check on this depth's MEASURED nodes only
+            own, on = measured(pt, nodes)
+            fo = fold(own, bin_fluence(ev, on))["deep"]["N"][0]
+            sub, sn = thinned(own, on)
             ft = fold(sub, bin_fluence(ev, sn))
             sd, sN, sI, bd, bN = (f["skin"]["D"][0], f["skin"]["N"][0], f["skin"]["I"][0],
                                   f["deep"]["D"][0], f["deep"]["N"][0])
             rel = f["deep"]["N"][1] / bN if bN else float("nan")
-            thin = 100.0 * (ft["deep"]["N"][0] / bN - 1.0) if bN else float("nan")
-            wt = wt or loglog_weights(ev, sn)
+            thin = 100.0 * (ft["deep"]["N"][0] / fo - 1.0) if fo else float("nan")
             ll = fold_loglog(pt, ww)["deep"]["N"]
-            llt = fold_loglog(sub, wt)["deep"]["N"]
-            thin_ll = 100.0 * (llt / ll - 1.0) if ll else float("nan")
+            llo = fold_loglog(own, wts(on))["deep"]["N"]
+            llt = fold_loglog(sub, wts(sn))["deep"]["N"]
+            thin_ll = 100.0 * (llt / llo - 1.0) if llo else float("nan")
             row = {"wall": w, "skin_D_mGy": 1e3 * sd, "skin_N_mSv": 1e3 * sN,
                    "skin_I_mSv": 1e3 * sI, "bfo_D_mGy": 1e3 * bd, "bfo_N_mSv": 1e3 * bN,
                    "bfo_rel": rel, "bfo_maxnode": f["deep"]["N"][2], "thin_pct": thin,
@@ -604,23 +625,33 @@ def topup_plan(K: dict, events=None, min_share: float = TOPUP_MIN_SHARE,
     from lunarsim import dosimetry
     nodes = K["meta"]["nodes_mev"]
     events = events or list(dosimetry._load_make_source().SPE_EVENTS)
-    keep = _thin_keep(len(nodes))
-    weights = {}
-    for ev in events:
-        weights[(ev, "full")] = loglog_weights(ev, nodes)
-        weights[(ev, "thin")] = loglog_weights(ev, [nodes[j] for j in keep])
-    have = set(nodes)
+    cache = {}
+
+    def weights_for(ns):
+        key = tuple(ns)
+        if key not in cache:
+            keep = _thin_keep(len(ns))
+            cache[key] = {}
+            for ev in events:
+                cache[key][(ev, "full")] = loglog_weights(ev, ns)
+                cache[key][(ev, "thin")] = loglog_weights(ev, [ns[j] for j in keep])
+        return cache[key]
+
     plan = {}
     for p in sorted(K["H"]["points"], key=lambda p: p["wall_gcm2"]):
         w = p["wall_gcm2"]
+        # plan on this depth's measured nodes (a merged kernel also holds nodes
+        # interpolated in E here; refining or re-seeding those is meaningless)
+        own, on = measured(p, nodes)
+        have = set(on)
         new = []
-        for j in refine_intervals(p, nodes, events, weights, min_share):
-            new += [e for e in split_interval(nodes[j], nodes[j + 1], split) if e not in have]
+        for j in refine_intervals(own, on, events, weights_for(on), min_share):
+            new += [e for e in split_interval(on[j], on[j + 1], split) if e not in have]
         runs = [(e, 1, seeds) for e in sorted(set(new))]
         if reseed_seeds and w in [float(d) for d in reseed_depths]:
             ranges = _point_seed_ranges(p, len(nodes))
             for j, e in enumerate(nodes):
-                if reseed_band[0] <= e <= reseed_band[1]:
+                if e in have and reseed_band[0] <= e <= reseed_band[1]:
                     first = max(r[1] for r in ranges[j]) + 1
                     runs.append((e, first, reseed_seeds))
         if runs:

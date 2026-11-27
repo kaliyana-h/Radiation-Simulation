@@ -297,6 +297,17 @@ class TopUp(unittest.TestCase):
                                    lo ** (1 - t) * hi ** t, places=20)
             self.assertEqual(P[0.0]["node_seeds"][i130], 0)
             self.assertEqual(len(K["meta"]["topups"]), 1)
+            # checks/plans use each depth's MEASURED nodes: 130 is filled at 0 g/cm2
+            own, on = sdk.measured(P[0.0], nodes)
+            self.assertNotIn(130.0, on)
+            self.assertEqual(len(on), len(NODES))
+            self.assertIn(130.0, sdk.measured(P[20.0], nodes)[1])
+            self.assertEqual(sdk.interp_point(K, 10.0)["filled"], [130.0])
+            plan2 = sdk.topup_plan(K, events=["feb1956"], min_share=10.0,
+                                   reseed_depths=[0.0, 20.0], reseed_band=(120.0, 140.0),
+                                   reseed_seeds=2)
+            self.assertEqual(plan2[0.0], [(120.0, 3, 2), (140.0, 3, 2)])
+            self.assertEqual(plan2[20.0], [(120.0, 3, 2), (130.0, 3, 2), (140.0, 3, 2)])
             # the same seeds again -> overlap refused
             with self.assertRaises(SystemExit):
                 sdk.topup_merge(dest, tu, Path(d) / "again.json")
