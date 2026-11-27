@@ -1757,18 +1757,6 @@ def _envelope_note():
                            "marginBottom": "4px"})
 
 
-def _band_tooltip(band):
-    """Hover text listing each systematic term (multipliers) behind the band."""
-    rows = []
-    for t in band["terms"]:
-        rng = (f"×{t['lo']:.2f}–{t['hi']:.2f}" if t["kind"] == "sym" or t["lo"] < 1
-               else f"+{(t['hi'] - 1) * 100:.0f}%")
-        rows.append(f"{t['label']}: {rng}"
-                    + ("" if t["in_band"] else " (not in band)"))
-    return ("Systematic model spread, separate from the MC ± (statistics).\n"
-            + "\n".join(rows))
-
-
 def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
                 size_note=None, standards=SCORE_STANDARDS, context=None,
                 band=None, quantity="annual dose equivalent"):
@@ -1786,9 +1774,8 @@ def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
     no longer rendered on the card.
     size_note, when present, is a (colour, text) advisory that the design is
     oversized and its dose extrapolates past the validated size envelope.
-    band, when present, is a headline_context.systematic_band dict rendered as
-    the model-spread bracket under the caption (the ± beside the number is MC
-    statistics only)."""
+    band is accepted for signature compatibility but not rendered; the systematic
+    band is reported in the downloadable report instead."""
     style = dict(CARD)
     style.update({"borderLeft": f"4px solid {METRIC}", "background": "#161d27",
                   "padding": "18px"})
@@ -1805,12 +1792,8 @@ def _score_card(score, rel_txt, assessment, qf_label=None, cmp_line=None,
         html.Div(caption, style={
             "color": MUTED, "fontSize": "11px", "marginTop": "6px"}),
     ]
-    if band is not None:
-        children.append(html.Div(
-            f"{band_text(score, band)} · ± above is MC statistics only",
-            title=_band_tooltip(band),
-            style={"color": INK, "fontSize": "12px", "marginTop": "4px",
-                   "cursor": "help", "textDecoration": "underline dotted"}))
+    # band is accepted but no longer rendered: the systematic spread lives in the
+    # downloadable report (and the Dose Analysis tab), not on the score card.
     strip = _context_strip(context)
     if strip is not None:
         children.append(strip)

@@ -1408,8 +1408,8 @@ class TestCombinedThinWallRender(unittest.TestCase):
         self.assertIn("Confidence: MEDIUM (thin-wall (optimistic))", report)
 
     def test_report_and_card_carry_systematic_band(self):
-        """The headline carries the model-spread band beside the MC ±, in both
-        the report and the score card, plus the provenance stamp."""
+        """The report carries the model-spread band and the provenance stamp; the
+        score card no longer shows the band line (removed 2026-11-27)."""
         spec = HabitatSpec(name="d", shape="dome", inner_radius_cm=750.0,
                            walls=[WallLayer("aluminium", 0.75)])   # ~2.03 g/cm^2
         _bar, _st, metrics, _an, _dis, report, _ov = self._poll_with(spec)
@@ -1417,7 +1417,7 @@ class TestCombinedThinWallRender(unittest.TestCase):
         self.assertIn("20 GeV/n ceiling", report)
         self.assertIn("Provenance: `git=", report)
         self.assertIn("engine=kernel", report)
-        self.assertIn("MC statistics only", str(metrics))
+        self.assertNotIn("MC statistics only", str(metrics))
 
 
 class TestCombinedJobOrchestration(unittest.TestCase):
